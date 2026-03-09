@@ -10,9 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Deploy to production server
+      - name: Deploy to server
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
@@ -20,12 +21,25 @@ jobs:
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
             cd ~/ReactAct
+
+            echo "Pull latest code"
             git pull origin master
 
+            echo "Backend setup"
             cd backend
             source venv/bin/activate
             pip install -r requirements.txt
             python manage.py migrate
             python manage.py collectstatic --noinput
 
+            echo "Frontend build"
+            cd ../frontend
+            npm install
+            npm run build
+
+            echo "Update web files"
+            sudo rm -rf /var/www/reactact/*
+            sudo cp -r dist/* /var/www/reactact/
+
+            echo "Restart backend"
             sudo systemctl restart gunicorn
