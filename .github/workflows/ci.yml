@@ -13,7 +13,21 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Deploy to server
+      # Cache Python dependencies
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('backend/requirements.txt') }}
+
+      # Cache Node modules
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
+
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.PROD_HOST }}
@@ -37,9 +51,9 @@ jobs:
             npm install
             npm run build
 
-            echo "Update web files"
+            echo "Update Nginx web root"
             sudo rm -rf /var/www/reactact/*
             sudo cp -r dist/* /var/www/reactact/
 
-            echo "Restart backend"
-            sudo systemctl restart gunicorn
+            echo "Reload backend"
+            sudo systemctl reload gunicorn || sudo systemctl restart gunicorn
