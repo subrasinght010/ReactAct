@@ -1,44 +1,32 @@
-name: Deploy App
+name: Production Deploy
 
 on:
   push:
     branches:
-      - dev
-      - main
+      - master
 
 jobs:
-
-  deploy-dev:
-    if: github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy Dev Server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
-            cd ReactAct
-            git pull origin dev
-
-
   deploy-prod:
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy Prod Server
+      - name: Deploy to production server
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.EC2_HOST }}
+          host: ${{ secrets.PROD_HOST }}
           username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
+          key: ${{ secrets.PROD_SSH_KEY }}
           script: |
-            cd ReactAct
-            git pull origin main
+            cd ~/ReactAct
+            git pull origin master
+
+            cd backend
+            source venv/bin/activate
+            pip install -r requirements.txt
+            python manage.py migrate
+
+            cd ../frontend
+            npm install
+            npm run build
