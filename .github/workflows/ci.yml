@@ -3,7 +3,7 @@ name: Deploy Docker App
 on:
   push:
     branches:
-      - master
+      - master_docker
 
 jobs:
   deploy:
@@ -20,6 +20,6 @@ jobs:
           key: ${{ secrets.PROD_SSH_KEY }}
           script: |
             cd ~/ReactAct
-            git pull origin master
+            git pull origin master_docker
             sudo docker-compose down
             sudo docker-compose up -d --build
