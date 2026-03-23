@@ -1,7 +1,10 @@
 from django.urls import path
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from .views import (
+    CookieTokenLogoutView,
+    CookieTokenObtainPairView,
+    CookieTokenRefreshView,
+    CsrfTokenView,
     HealthView,
     JobRoleListCreateView,
     ProfileView,
@@ -14,9 +17,11 @@ from .views import (
 
 urlpatterns = [
     path('health/', HealthView.as_view()),
+    path('csrf/', CsrfTokenView.as_view()),
     path('signup/', SignupView.as_view()),
-    path('token/', TokenObtainPairView.as_view()),
-    path('token/refresh/', TokenRefreshView.as_view()),
+    path('token/', CookieTokenObtainPairView.as_view()),
+    path('token/refresh/', CookieTokenRefreshView.as_view()),
+    path('token/logout/', CookieTokenLogoutView.as_view()),
     path('profile/', ProfileView.as_view()),
     path('job-roles/', JobRoleListCreateView.as_view()),
     path('resumes/', ResumeListCreateView.as_view()),

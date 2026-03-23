@@ -8,7 +8,7 @@ import {
   fetchResumes,
   runAnalysis,
 } from '../api'
-import { useAuth } from '../contexts/useAuth'
+import { useAuth } from '../store/useAuth'
 
 function formatDate(value) {
   if (!value) return ''
@@ -81,7 +81,7 @@ function MiniLineChart({ values }) {
 
   if (!values || values.length < 2) {
     return (
-      <div className="chart-empty">
+      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-900/50 dark:text-slate-400">
         Run at least 2 analyses to see the trend.
       </div>
     )
@@ -166,15 +166,18 @@ function MiniLineChart({ values }) {
   }
 
   return (
-    <div className="chart-wrap">
+    <div className="relative overflow-hidden rounded-[1.2rem] bg-[linear-gradient(180deg,rgba(248,250,252,0.96),rgba(241,245,249,0.72))] px-2 py-2 dark:bg-[linear-gradient(180deg,rgba(15,23,42,0.55),rgba(15,23,42,0.18))]">
       {hover && (
-        <div className="chart-tip" style={{ left: hover.px, top: hover.py }}>
-          <div className="chart-tip-score">{hover.score}</div>
-          <div className="chart-tip-when">{hover.when}</div>
+        <div
+          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[115%] rounded-2xl border border-slate-200 bg-white/96 px-3 py-2 text-slate-900 shadow-[0_18px_36px_rgba(15,23,42,0.12)] dark:border-slate-800 dark:bg-slate-950/96 dark:text-slate-100"
+          style={{ left: hover.px, top: hover.py }}
+        >
+          <div className="text-sm font-bold tracking-tight">{hover.score}</div>
+          <div className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{hover.when}</div>
         </div>
       )}
       <svg
-        className="chart"
+        className="h-auto w-full overflow-visible"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label="ATS score trend"
@@ -281,7 +284,7 @@ function DashboardPage() {
   const [keywords, setKeywords] = useState(() => localStorage.getItem('analysisCustomKeywords') || '')
   const [scopeLoading, setScopeLoading] = useState(false)
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, accessToken } = useAuth()
   const [profiles, setProfiles] = useState(() => {
     try {
       const raw = localStorage.getItem('analysisProfiles')
@@ -324,17 +327,13 @@ function DashboardPage() {
 
   useEffect(() => {
     const loadDashboard = async () => {
-      const access = localStorage.getItem('access')
-      if (!access) {
-        navigate('/login')
-        return
-      }
+      if (!accessToken) return
 
       try {
         const [profileData, analysisData, resumeData] = await Promise.all([
-          fetchProfile(access),
-          fetchAnalyses(access),
-          fetchResumes(access),
+          fetchProfile(),
+          fetchAnalyses(),
+          fetchResumes(),
         ])
         setProfile(profileData)
         setAnalyses(analysisData)
@@ -345,7 +344,7 @@ function DashboardPage() {
     }
 
     loadDashboard()
-  }, [navigate])
+  }, [accessToken])
 
   // Analytics scope:
   // - Default: overall (all resumes)
@@ -376,12 +375,11 @@ function DashboardPage() {
     const key = String(resumeId)
     if (analysesByResume[key]) return
 
-    const access = localStorage.getItem('access')
-    if (!access) return
+    if (!accessToken) return
 
     try {
       setScopeLoading(true)
-      const data = await fetchAnalyses(access, resumeId)
+      const data = await fetchAnalyses(resumeId)
       setAnalysesByResume((prev) => ({ ...prev, [key]: data }))
     } catch (err) {
       setError(err.message || 'Failed to load resume analytics')
@@ -396,13 +394,12 @@ function DashboardPage() {
       return
     }
     setError('')
-    const access = localStorage.getItem('access')
 
     try {
       setLoading(true)
       const custom = has('custom') ? keywords : ''
       localStorage.setItem('analysisCustomKeywords', custom)
-      const result = await runAnalysis(access, selectedResumeId, null, custom, profiles, profileKeywords)
+      const result = await runAnalysis(selectedResumeId, null, custom, profiles, profileKeywords)
       setAnalyses((prev) => [result, ...prev])
       setAnalysesByResume((prev) => {
         const next = { ...prev }
@@ -420,10 +417,9 @@ function DashboardPage() {
 
   const handleEditResumeInBuilder = async (id) => {
     setError('')
-    const access = localStorage.getItem('access')
     try {
       setLoading(true)
-      const full = await fetchResume(access, id)
+      const full = await fetchResume(id)
       sessionStorage.setItem('builderImport', JSON.stringify(full.builder_data || {}))
       sessionStorage.setItem('builderResumeId', String(id))
       navigate('/builder')
@@ -435,66 +431,68 @@ function DashboardPage() {
   }
 
   return (
-    <main className="page page-wide page-plain">
+    <main className="w-full max-w-7xl">
       <h1>Dashboard</h1>
-      <p className="subtitle">
+      <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">
         {profile ? `Welcome ${profile.username}` : 'Loading profile...'}
       </p>
 
-      <section className="dash-card">
-        <div className="ats-head">
+      <section className="mt-5 rounded-[2rem] border border-slate-200/90 bg-white/88 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] dark:border-slate-800 dark:bg-slate-900/62">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div>
-            <h2 className="ats-title">ATS Overview</h2>
-            <p className="ats-sub">
+            <h2 className="text-[1.35rem] font-semibold tracking-tight">ATS Overview</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-500 dark:text-slate-400">
               Showing <strong>{activeTitle}</strong>
               {activeResumeId && scopeLoading ? ' (loading...)' : ''}
             </p>
           </div>
-          <div className="ats-badges">
-            <span className="badge">Trend: Overall</span>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:border-sky-900/70 dark:bg-sky-950/60 dark:text-sky-300">
+              Trend: Overall
+            </span>
           </div>
         </div>
 
-        <div className="ats-grid">
-          <div className="ats-chart">
-            <div className="ats-chart-head">
+        <div className="mt-6 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(280px,0.65fr)]">
+          <div className="rounded-[1.7rem] border border-slate-200 bg-white p-5 shadow-[0_12px_28px_rgba(15,23,42,0.05)] dark:border-slate-800 dark:bg-slate-950/60">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div>
-                <div className="ats-chart-title">Score Trend</div>
-                <div className="ats-chart-note muted">Last {Math.min(trendData.length, 20)} runs</div>
+                <div className="text-base font-semibold tracking-tight">Score Trend</div>
+                <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">Last {Math.min(trendData.length, 20)} runs</div>
               </div>
-              <div className="ats-chart-summary">
-                <span className="ats-chart-summary-label">Current scope</span>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-right dark:border-slate-800 dark:bg-slate-900/70">
+                <span className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">Current scope</span>
                 <strong>{activeTitle}</strong>
               </div>
             </div>
             <MiniLineChart values={trendData.slice(-20).map((v) => ({ key: v.key, y: v.y, ts: v.ts }))} />
           </div>
-          <div className="ats-kpis">
-            <div className="kpi">
-              <div className="kpi-label">Best</div>
-              <div className="kpi-value">{activeStats.bestScore}</div>
-              <div className="kpi-meta">All time</div>
+          <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)] dark:border-slate-800 dark:bg-slate-950/60">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Best</div>
+              <div className="mt-2 text-[2.25rem] font-black tracking-tight text-slate-900 dark:text-slate-50">{activeStats.bestScore}</div>
+              <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">All time</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-label">Latest</div>
-              <div className="kpi-value">{activeStats.latestScore}</div>
-              <div className="kpi-meta">Most recent check</div>
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)] dark:border-slate-800 dark:bg-slate-950/60">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Latest</div>
+              <div className="mt-2 text-[2.25rem] font-black tracking-tight text-slate-900 dark:text-slate-50">{activeStats.latestScore}</div>
+              <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">Most recent check</div>
             </div>
-            <div className="kpi">
-              <div className="kpi-label">Checks</div>
-              <div className="kpi-value">{activeStats.checks}</div>
-              <div className="kpi-meta">Total runs</div>
+            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.05)] dark:border-slate-800 dark:bg-slate-950/60">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-slate-400">Checks</div>
+              <div className="mt-2 text-[2.25rem] font-black tracking-tight text-slate-900 dark:text-slate-50">{activeStats.checks}</div>
+              <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">Total runs</div>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="dash-card">
+      <section className="mt-5 rounded-[2rem] border border-slate-200/90 bg-white/88 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] dark:border-slate-800 dark:bg-slate-900/62">
         <h2>Saved Resumes</h2>
         {resumes.length === 0 ? (
-          <p className="hint">No saved resumes yet. Build one in Resume Builder first.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">No saved resumes yet. Build one in Resume Builder first.</p>
         ) : (
-          <div className="resume-grid">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {resumes.slice(0, 6).map((r) => {
               const isHovered = hoverResumeId === r.id
               const isSelected = selectedResumeId === r.id
@@ -509,7 +507,13 @@ function DashboardPage() {
               return (
               <article
                 key={r.id}
-                className={`resume-card ${isHovered ? 'is-hovered' : ''} ${isSelected ? 'is-selected' : ''}`}
+                className={`grid min-h-44 gap-2 rounded-3xl border bg-white p-4 shadow-sm transition dark:bg-slate-950/60 ${
+                  isSelected
+                    ? 'border-blue-500 shadow-lg dark:border-sky-500'
+                    : isHovered
+                      ? 'border-slate-300 shadow-md dark:border-slate-700 -translate-y-0.5'
+                      : 'border-slate-200 dark:border-slate-800'
+                }`}
                 onMouseEnter={() => {
                   setHoverResumeId(r.id)
                   ensureResumeAnalysesLoaded(r.id)
@@ -525,23 +529,26 @@ function DashboardPage() {
                   }
                 }}
               >
-                <div className="resume-card-top">
-                  <p className="resume-card-title">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="text-base leading-5">
                     <strong>{r.title}</strong>
                   </p>
                   {(isHovered || isSelected) && (
-                    <span className="score-pill" title={pillTitle}>
+                    <span
+                      className="inline-flex rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 dark:border-sky-900/70 dark:bg-sky-950/60 dark:text-sky-300"
+                      title={pillTitle}
+                    >
                       {resumeLatest ? `ATS ${resumeLatest.ats_score}` : 'No checks'}
                     </span>
                   )}
                 </div>
-                <p className="resume-card-meta muted">Updated: {formatDate(r.updated_at)}</p>
-                <p className="resume-card-snippet">{snippet}</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Updated: {formatDate(r.updated_at)}</p>
+                <p className="overflow-hidden text-sm leading-6 text-slate-700 dark:text-slate-200 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:3]">{snippet}</p>
 
-                <div className="resume-card-actions">
+                <div className="mt-auto flex items-center gap-2">
                   <button
                     type="button"
-                    className="icon-btn"
+                    className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-none hover:border-blue-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                     onClick={(e) => {
                       e.stopPropagation()
                       handleEditResumeInBuilder(r.id)
@@ -556,7 +563,7 @@ function DashboardPage() {
                   </button>
                   <button
                     type="button"
-                    className="icon-btn"
+                    className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-none hover:border-blue-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                     onClick={(e) => {
                       e.stopPropagation()
                       navigate(`/preview/${r.id}`)
@@ -576,23 +583,23 @@ function DashboardPage() {
         )}
       </section>
 
-      <section className="dash-card">
+      <section className="mt-5 rounded-[2rem] border border-slate-200/90 bg-white/88 p-5 shadow-[0_16px_40px_rgba(15,23,42,0.06)] dark:border-slate-800 dark:bg-slate-900/62">
         <h2>Run Analysis</h2>
-        <p className="hint">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           Select a resume above, then run analysis.
         </p>
-        <div className="profile-table">
-          <div className="profile-row profile-head">
+        <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
+          <div className="grid items-center gap-3 border-t-0 bg-slate-50 p-3 text-sm font-semibold dark:bg-slate-900/80 md:grid-cols-[80px_140px_minmax(0,1fr)]">
             <div>Use</div>
             <div>Profile</div>
             <div>Keywords</div>
           </div>
 
-          <div className="profile-row">
+          <div className="grid items-center gap-3 border-t border-slate-200 bg-white p-3 text-sm dark:border-slate-800 dark:bg-slate-950/50 md:grid-cols-[80px_140px_minmax(0,1fr)]">
             <div>
               <input type="checkbox" checked={has('frontend')} onChange={() => toggleProfile('frontend')} />
             </div>
-            <div className="profile-name">Frontend</div>
+            <div className="font-medium">Frontend</div>
             <div>
               <input
                 type="text"
@@ -603,11 +610,11 @@ function DashboardPage() {
             </div>
           </div>
 
-          <div className="profile-row">
+          <div className="grid items-center gap-3 border-t border-slate-200 bg-white p-3 text-sm dark:border-slate-800 dark:bg-slate-950/50 md:grid-cols-[80px_140px_minmax(0,1fr)]">
             <div>
               <input type="checkbox" checked={has('backend')} onChange={() => toggleProfile('backend')} />
             </div>
-            <div className="profile-name">Backend</div>
+            <div className="font-medium">Backend</div>
             <div>
               <input
                 type="text"
@@ -618,11 +625,11 @@ function DashboardPage() {
             </div>
           </div>
 
-          <div className="profile-row">
+          <div className="grid items-center gap-3 border-t border-slate-200 bg-white p-3 text-sm dark:border-slate-800 dark:bg-slate-950/50 md:grid-cols-[80px_140px_minmax(0,1fr)]">
             <div>
               <input type="checkbox" checked={has('fullstack')} onChange={() => toggleProfile('fullstack')} />
             </div>
-            <div className="profile-name">Fullstack</div>
+            <div className="font-medium">Fullstack</div>
             <div>
               <input
                 type="text"
@@ -633,11 +640,11 @@ function DashboardPage() {
             </div>
           </div>
 
-          <div className="profile-row">
+          <div className="grid items-center gap-3 border-t border-slate-200 bg-white p-3 text-sm dark:border-slate-800 dark:bg-slate-950/50 md:grid-cols-[80px_140px_minmax(0,1fr)]">
             <div>
               <input type="checkbox" checked={has('custom')} onChange={() => toggleProfile('custom')} />
             </div>
-            <div className="profile-name">Custom</div>
+            <div className="font-medium">Custom</div>
             <div>
               <input
                 type="text"
@@ -649,7 +656,7 @@ function DashboardPage() {
             </div>
           </div>
         </div>
-        <p className="hint">
+        <p className="text-sm text-slate-500 dark:text-slate-400">
           If you select no profile, ATS uses basic checks (length ~800+ chars + numbers in experience bullets).
         </p>
         <button type="button" onClick={handleRunAnalysis} disabled={loading || !selectedResumeId}>
@@ -657,12 +664,12 @@ function DashboardPage() {
         </button>
       </section>
 
-      {error && <p className="error">{error}</p>}
+      {error && <p className="text-sm font-medium text-red-700 dark:text-red-300">{error}</p>}
 
-      <div className="actions">
+      <div className="mt-3 flex flex-wrap gap-3">
         <button
           type="button"
-          className="secondary"
+          className="inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
           onClick={() => {
             logout()
             navigate('/login')

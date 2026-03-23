@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 
+import { restoreSession, subscribeToAuth } from '../api'
 import { useAppDispatch, useAppSelector } from '../store/hooks'
-import { syncFromStorage } from '../store/authSlice'
+import { authReadySet, authStateChanged } from '../store/authSlice'
 import { clearProfile, loadProfile } from '../store/profileSlice'
 
 function AppStateSync() {
@@ -10,14 +11,28 @@ function AppStateSync() {
   const theme = useAppSelector((state) => state.theme.value)
 
   useEffect(() => {
-    const sync = () => dispatch(syncFromStorage())
+    let active = true
+    const unsubscribe = subscribeToAuth((token) => {
+      if (active) {
+        dispatch(authStateChanged(token))
+      }
+    })
 
-    window.addEventListener('storage', sync)
-    window.addEventListener('auth-changed', sync)
+    const bootstrapAuth = async () => {
+      try {
+        await restoreSession()
+      } finally {
+        if (active) {
+          dispatch(authReadySet(true))
+        }
+      }
+    }
+
+    bootstrapAuth()
 
     return () => {
-      window.removeEventListener('storage', sync)
-      window.removeEventListener('auth-changed', sync)
+      active = false
+      unsubscribe()
     }
   }, [dispatch])
 
@@ -32,7 +47,7 @@ function AppStateSync() {
       return
     }
 
-    dispatch(loadProfile(accessToken))
+    dispatch(loadProfile())
   }, [accessToken, dispatch])
 
   return null

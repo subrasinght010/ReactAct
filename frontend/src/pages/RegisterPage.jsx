@@ -41,9 +41,9 @@ function RegisterPage() {
   }
 
   return (
-    <main className="page mx-auto w-full max-w-2xl">
+    <main className="mx-auto w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-7 shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
       <h1>Register</h1>
-      <form className="form grid gap-3" onSubmit={handleSubmit}>
+      <form className="grid gap-3" onSubmit={handleSubmit}>
         <label htmlFor="register-username">Username</label>
         <input
           id="register-username"
@@ -80,14 +80,18 @@ function RegisterPage() {
           placeholder="Confirm password"
         />
 
-        {error && <p className="error">{error}</p>}
-        {success && <p className="success">{success}</p>}
+        {error && <p className="text-sm font-medium text-red-700 dark:text-red-300">{error}</p>}
+        {success && <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">{success}</p>}
 
-        <div className="actions flex flex-wrap gap-3">
+        <div className="mt-3 flex flex-wrap gap-3">
           <button type="submit" disabled={loading}>
             {loading ? 'Creating account...' : 'Register'}
           </button>
-          <button type="button" className="secondary" onClick={() => navigate('/login')}>
+          <button
+            type="button"
+            className="inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
+            onClick={() => navigate('/login')}
+          >
             Go to Login
           </button>
         </div>

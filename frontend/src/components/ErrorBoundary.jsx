@@ -13,10 +13,12 @@ class ErrorBoundary extends React.Component {
   render() {
     if (this.state.error) {
       return (
-        <div className="page">
+        <div className="w-full rounded-3xl border border-slate-200 bg-white p-7 shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
           <h1>Page crashed</h1>
-          <p className="subtitle">Open DevTools console for full details.</p>
-          <pre className="error-box">{String(this.state.error?.stack || this.state.error)}</pre>
+          <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">Open DevTools console for full details.</p>
+          <pre className="overflow-auto rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-100 whitespace-pre-wrap">
+            {String(this.state.error?.stack || this.state.error)}
+          </pre>
         </div>
       )
     }
@@ -25,4 +27,3 @@ class ErrorBoundary extends React.Component {
 }
 
 export default ErrorBoundary
-

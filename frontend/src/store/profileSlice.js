@@ -2,16 +2,13 @@ import { createAsyncThunk, createSlice } from '@reduxjs/toolkit'
 
 import { fetchProfile } from '../api'
 
-export const loadProfile = createAsyncThunk(
-  'profile/loadProfile',
-  async (accessToken, { rejectWithValue }) => {
-    try {
-      return await fetchProfile(accessToken)
-    } catch (error) {
-      return rejectWithValue(error.message || 'Failed to load profile')
-    }
-  },
-)
+export const loadProfile = createAsyncThunk('profile/loadProfile', async (_, { rejectWithValue }) => {
+  try {
+    return await fetchProfile()
+  } catch (error) {
+    return rejectWithValue(error.message || 'Failed to load profile')
+  }
+})
 
 const profileSlice = createSlice({
   name: 'profile',

@@ -8,11 +8,23 @@ import ResumeBuilderPage from './pages/ResumeBuilderPage'
 import ResumePreviewPage from './pages/ResumePreviewPage'
 import ErrorBoundary from './components/ErrorBoundary'
 import NavBar from './components/NavBar'
-import { useAuth } from './contexts/useAuth'
+import { useAuth } from './store/useAuth'
+
+function AuthBootScreen() {
+  return (
+    <main className="mx-auto w-full max-w-2xl rounded-3xl border border-slate-200 bg-white p-7 shadow-sm dark:border-slate-800 dark:bg-slate-900/50">
+      <p className="mb-5 text-sm text-slate-500 dark:text-slate-400">Checking session...</p>
+    </main>
+  )
+}
 
 function RequireAuth({ children }) {
-  const { isLoggedIn } = useAuth()
+  const { isLoggedIn, authReady } = useAuth()
   const location = useLocation()
+
+  if (!authReady) {
+    return <AuthBootScreen />
+  }
 
   if (!isLoggedIn) {
     sessionStorage.setItem('redirectAfterLogin', location.pathname || '/')
@@ -23,7 +35,11 @@ function RequireAuth({ children }) {
 }
 
 function PublicOnly({ children }) {
-  const { isLoggedIn } = useAuth()
+  const { isLoggedIn, authReady } = useAuth()
+
+  if (!authReady) {
+    return <AuthBootScreen />
+  }
 
   if (!isLoggedIn) return children
 
@@ -33,15 +49,15 @@ function PublicOnly({ children }) {
 }
 
 function AppLayout() {
-  const { isLoggedIn } = useAuth()
+  const { isLoggedIn, authReady } = useAuth()
   const location = useLocation()
-  const showNav = isLoggedIn && location.pathname !== '/login' && location.pathname !== '/register'
+  const showNav = authReady && isLoggedIn && location.pathname !== '/login' && location.pathname !== '/register'
 
   return (
-    <div className="app-shell min-h-screen">
+    <div className="min-h-screen">
       <ErrorBoundary>
         {showNav && <NavBar />}
-        <div className="app-content mx-auto w-full">
+        <div className="mx-auto w-full px-4 py-6 md:px-6">
           <Routes>
             <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
             <Route path="/register" element={<PublicOnly><RegisterPage /></PublicOnly>} />

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
 import { createResume } from '../api'
+import { useAuth } from '../store/useAuth'
 
 function renderSummaryByStyle(text, style) {
   // The editor stores sanitized HTML, so style is currently "auto".
@@ -412,6 +413,7 @@ function buildDocHtml(form) {
 }
 
 function ResumeBuilderPage() {
+  const { accessToken } = useAuth()
   const navigate = useNavigate()
   const [form, setForm] = useState({
     resumeTitle: 'My Resume',
@@ -491,6 +493,21 @@ function ResumeBuilderPage() {
     const years = computeExperienceYears(form.experiences || [])
     return makeAutoTitle(form.fullName, years)
   }, [form.fullName, form.experiences])
+  const secondaryButtonClass =
+    'inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800'
+  const checkboxClass =
+    'inline-flex items-center gap-2 text-sm font-medium text-slate-600 dark:text-slate-300'
+  const sectionCardClass =
+    'rounded-2xl border border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/50'
+  const editorStackClass = 'grid gap-3'
+  const editorHeadClass = 'flex flex-wrap items-center justify-between gap-3'
+  const rowClass =
+    'flex flex-wrap items-center gap-3 [&>:not(.inline-remove-btn)]:min-w-[220px] [&>:not(.inline-remove-btn)]:flex-1'
+  const rowActionsClass = `${rowClass} items-center`
+  const removeButtonClass =
+    `${secondaryButtonClass} inline-remove-btn h-8 self-start rounded-lg border-red-200 bg-red-50 px-3 py-0 text-xs text-red-700 hover:border-red-300 hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/50`
+  const sectionOrderItemClass =
+    'flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-3 py-3 dark:border-slate-800 dark:bg-slate-900'
 
   const [showSectionOrder, setShowSectionOrder] = useState(false)
   const [dragKey, setDragKey] = useState(null)
@@ -709,8 +726,7 @@ function ResumeBuilderPage() {
   }
 
   const saveResumeToAccount = async () => {
-    const access = localStorage.getItem('access')
-    if (!access) {
+    if (!accessToken) {
       navigate('/login')
       return
     }
@@ -725,7 +741,7 @@ function ResumeBuilderPage() {
       }
 
       // Upsert by title: same title overwrites; different title creates new entry.
-      const data = await createResume(access, payload)
+      const data = await createResume(payload)
 
       setResumeRecordId(String(data.id))
       sessionStorage.setItem('builderResumeId', String(data.id))
@@ -740,14 +756,14 @@ function ResumeBuilderPage() {
       <button type="button" onClick={saveResumeToAccount} disabled={saveState.saving}>
         {saveState.saving ? 'Saving...' : 'Save'}
       </button>
-      <button type="button" className="secondary" onClick={downloadDoc}>
+      <button type="button" className={secondaryButtonClass} onClick={downloadDoc}>
         Download DOC
       </button>
-      <button type="button" className="secondary" onClick={() => window.print()}>
+      <button type="button" className={secondaryButtonClass} onClick={() => window.print()}>
         Exact PDF (Print)
       </button>
       {includeHome && (
-        <button type="button" className="secondary" onClick={() => navigate('/')}>
+        <button type="button" className={secondaryButtonClass} onClick={() => navigate('/')}>
           Back Home
         </button>
       )}
@@ -755,15 +771,17 @@ function ResumeBuilderPage() {
   )
 
   return (
-    <main className="builder-layout">
-      <section className="builder-panel">
-        <div className="builder-header">
+    <main className="grid gap-6 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
+      <section className="builder-panel-print-hide rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+        <div className="mb-5 flex flex-col gap-3">
           <h1>Resume Builder</h1>
-          <p className="subtitle">Fill inputs on left. Resume updates live on right.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            Fill inputs on left. Resume updates live on right.
+          </p>
         </div>
 
-        <div className="form">
-          <label className="checkbox">
+        <div className="grid gap-3">
+          <label className={checkboxClass}>
             <input
               type="checkbox"
               checked={showSectionOrder}
@@ -772,7 +790,7 @@ function ResumeBuilderPage() {
             Change section order
           </label>
 
-          <label className="checkbox">
+          <label className={checkboxClass}>
             <input
               type="checkbox"
               checked={Boolean(form.sectionUnderline)}
@@ -781,11 +799,21 @@ function ResumeBuilderPage() {
             Section underline
           </label>
 
-          {saveState.message && <p className={saveState.message.startsWith('Saved') ? 'success' : 'error'}>{saveState.message}</p>}
+          {saveState.message && (
+            <p
+              className={
+                saveState.message.startsWith('Saved')
+                  ? 'text-sm font-medium text-emerald-700 dark:text-emerald-300'
+                  : 'text-sm font-medium text-red-700 dark:text-red-300'
+              }
+            >
+              {saveState.message}
+            </p>
+          )}
 
-          <div className="section-options">
+          <div className={sectionCardClass}>
             <label>Typography</label>
-            <div className="exp-row">
+            <div className={rowClass}>
               <select
                 value={String(form.bodyFontSizePt || 10)}
                 onChange={(e) => updateField('bodyFontSizePt', Number(e.target.value))}
@@ -807,22 +835,22 @@ function ResumeBuilderPage() {
                 <option value="1.4">Line spacing: 1.4</option>
               </select>
             </div>
-            <p className="hint" style={{ margin: 0 }}>
+            <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
               Controls apply to the A4 preview and export.
             </p>
           </div>
 
           {showSectionOrder && (
-            <div className="section-order">
+            <div className={sectionCardClass}>
               <label>Section order (drag to reorder)</label>
-              <div className="section-order-list">
+              <div className="mt-3 grid gap-3">
                 {orderedKeys.map((key) => {
                   const label = getLabelForKey(key)
                   const disabled = key === 'summary' && !form.summaryEnabled
                   return (
                     <div
                       key={key}
-                      className={`section-order-item${disabled ? ' is-disabled' : ''}`}
+                      className={`${sectionOrderItemClass}${disabled ? ' opacity-60' : ''}`}
                       draggable={!disabled}
                       onDragStart={() => setDragKey(key)}
                       onDragEnd={() => setDragKey(null)}
@@ -833,14 +861,14 @@ function ResumeBuilderPage() {
                       onDrop={() => handleDropSection(key)}
                       title={disabled ? 'Enable Summary to include it' : 'Drag to reorder'}
                     >
-                      <span className="drag-handle" aria-hidden="true">
+                      <span className="text-lg text-slate-400" aria-hidden="true">
                         ⋮⋮
                       </span>
-                      <span className="section-order-label">{label}</span>
-                      <div className="section-order-actions">
+                      <span className="flex-1 text-sm font-semibold">{label}</span>
+                      <div className="flex flex-wrap items-center gap-3">
                         <button
                           type="button"
-                          className="secondary"
+                          className={secondaryButtonClass}
                           onClick={() => moveSection(key, -1)}
                           disabled={orderedKeys[0] === key}
                           title="Move up"
@@ -849,7 +877,7 @@ function ResumeBuilderPage() {
                         </button>
                         <button
                           type="button"
-                          className="secondary"
+                          className={secondaryButtonClass}
                           onClick={() => moveSection(key, 1)}
                           disabled={orderedKeys[orderedKeys.length - 1] === key}
                           title="Move down"
@@ -864,16 +892,16 @@ function ResumeBuilderPage() {
             </div>
           )}
 
-          <div className="exp-editor">
-            <div className="exp-editor-head">
+          <div className={editorStackClass}>
+            <div className={editorHeadClass}>
               <label>Extra sections (optional)</label>
-              <button type="button" className="secondary" onClick={addCustomSection}>
+              <button type="button" className={secondaryButtonClass} onClick={addCustomSection}>
                 Add Section
               </button>
             </div>
             {(form.customSections || []).map((section) => (
-              <div key={section.id} className="exp-card">
-                <div className="exp-row">
+              <div key={section.id} className={sectionCardClass}>
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={section.title || ''}
@@ -882,7 +910,7 @@ function ResumeBuilderPage() {
                   />
                   <button
                     type="button"
-                    className="secondary inline-remove-btn"
+                    className={removeButtonClass}
                     onClick={() => removeCustomSection(section.id)}
                     title="Remove section"
                   >
@@ -906,12 +934,12 @@ function ResumeBuilderPage() {
           <input value={form.phone} onChange={(e) => updateField('phone', e.target.value)} placeholder="Phone" />
           <input value={form.location} onChange={(e) => updateField('location', e.target.value)} placeholder="Location" />
 
-          <div className="exp-editor">
-            <div className="exp-editor-head">
+          <div className={editorStackClass}>
+            <div className={editorHeadClass}>
               <label>Profile Links (max 5)</label>
               <button
                 type="button"
-                className="secondary"
+                className={secondaryButtonClass}
                 onClick={addLink}
                 disabled={(form.links || []).length >= 5}
               >
@@ -920,8 +948,8 @@ function ResumeBuilderPage() {
             </div>
 
             {(form.links || []).map((link, index) => (
-              <div key={`link-${index}`} className="exp-card">
-                <div className="exp-row">
+              <div key={`link-${index}`} className={sectionCardClass}>
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={link.label}
@@ -935,8 +963,8 @@ function ResumeBuilderPage() {
                     placeholder="URL (e.g. https://...)"
                   />
                 </div>
-                <div className="actions">
-                  <button type="button" className="secondary" onClick={() => removeLink(index)}>
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <button type="button" className={secondaryButtonClass} onClick={() => removeLink(index)}>
                     Remove
                   </button>
                 </div>
@@ -944,8 +972,8 @@ function ResumeBuilderPage() {
             ))}
           </div>
 
-          <div className="section-options">
-            <label className="checkbox">
+          <div className={sectionCardClass}>
+            <label className={checkboxClass}>
               <input
                 type="checkbox"
                 checked={Boolean(form.summaryEnabled)}
@@ -990,17 +1018,17 @@ function ResumeBuilderPage() {
             placeholder="Add skills"
           />
 
-          <div className="exp-editor">
-            <div className="exp-editor-head">
+          <div className={editorStackClass}>
+            <div className={editorHeadClass}>
               <label>Experience</label>
-              <button type="button" className="secondary" onClick={addExperience}>
+              <button type="button" className={secondaryButtonClass} onClick={addExperience}>
                 Add Experience
               </button>
             </div>
 
             {(form.experiences || []).map((exp, index) => (
-              <div key={`exp-${index}`} className="exp-card">
-                <div className="exp-row">
+              <div key={`exp-${index}`} className={sectionCardClass}>
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={exp.company}
@@ -1015,7 +1043,7 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
-                <div className="exp-row">
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={exp.startDate || ''}
@@ -1031,8 +1059,8 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
-                <div className="exp-row exp-row-actions">
-                  <label className="checkbox">
+                <div className={rowActionsClass}>
+                  <label className={checkboxClass}>
                     <input
                       type="checkbox"
                       checked={Boolean(exp.isCurrent)}
@@ -1042,7 +1070,7 @@ function ResumeBuilderPage() {
                   </label>
                   <button
                     type="button"
-                    className="secondary inline-remove-btn"
+                    className={removeButtonClass}
                     onClick={() => removeExperience(index)}
                     disabled={(form.experiences || []).length <= 1}
                     title="Remove experience"
@@ -1062,17 +1090,17 @@ function ResumeBuilderPage() {
             ))}
           </div>
 
-          <div className="exp-editor">
-            <div className="exp-editor-head">
+          <div className={editorStackClass}>
+            <div className={editorHeadClass}>
               <label>Projects</label>
-              <button type="button" className="secondary" onClick={addProject}>
+              <button type="button" className={secondaryButtonClass} onClick={addProject}>
                 Add Project
               </button>
             </div>
 
             {(form.projects || []).map((proj, index) => (
-              <div key={`proj-${index}`} className="exp-card">
-                <div className="exp-row">
+              <div key={`proj-${index}`} className={sectionCardClass}>
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={proj.name}
@@ -1095,10 +1123,10 @@ function ResumeBuilderPage() {
                   placeholder="- What you built\n- What impact"
                 />
 
-                <div className="actions">
+                <div className="mt-3 flex flex-wrap gap-3">
                   <button
                     type="button"
-                    className="secondary inline-remove-btn"
+                    className={removeButtonClass}
                     onClick={() => removeProject(index)}
                     disabled={(form.projects || []).length <= 1}
                   >
@@ -1109,17 +1137,17 @@ function ResumeBuilderPage() {
             ))}
           </div>
 
-          <div className="edu-editor">
-            <div className="exp-editor-head">
+          <div className={editorStackClass}>
+            <div className={editorHeadClass}>
               <label>Education</label>
-              <button type="button" className="secondary" onClick={addEducation}>
+              <button type="button" className={secondaryButtonClass} onClick={addEducation}>
                 Add Education
               </button>
             </div>
 
             {(form.educations || []).map((edu, index) => (
-              <div key={`edu-${index}`} className="exp-card">
-                <div className="exp-row">
+              <div key={`edu-${index}`} className={sectionCardClass}>
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={edu.institution}
@@ -1134,8 +1162,8 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
-                <div className="exp-row">
-                  <label className="checkbox">
+                <div className={rowClass}>
+                  <label className={checkboxClass}>
                     <input
                       type="checkbox"
                       checked={Boolean(edu.scoreEnabled)}
@@ -1148,7 +1176,7 @@ function ResumeBuilderPage() {
                     />
                     Add score
                   </label>
-                  <label className="checkbox">
+                  <label className={checkboxClass}>
                     <input
                       type="checkbox"
                       checked={Boolean(edu.isCurrent)}
@@ -1159,7 +1187,7 @@ function ResumeBuilderPage() {
                 </div>
 
                 {edu.scoreEnabled && (
-                  <div className="exp-row">
+                  <div className={rowClass}>
                     <select
                       value={edu.scoreType || 'cgpa'}
                       onChange={(e) =>
@@ -1186,7 +1214,7 @@ function ResumeBuilderPage() {
                 )}
 
                 {edu.scoreEnabled && edu.scoreType === 'custom' && (
-                  <div className="exp-row">
+                  <div className={rowClass}>
                     <input
                       type="text"
                       value={edu.scoreLabel || ''}
@@ -1197,7 +1225,7 @@ function ResumeBuilderPage() {
                   </div>
                 )}
 
-                <div className="exp-row">
+                <div className={rowClass}>
                   <input
                     type="text"
                     value={edu.startDate || ''}
@@ -1213,10 +1241,10 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
-                <div className="actions">
+                <div className="mt-3 flex flex-wrap gap-3">
                   <button
                     type="button"
-                    className="secondary inline-remove-btn"
+                    className={removeButtonClass}
                     onClick={() => removeEducation(index)}
                     disabled={(form.educations || []).length <= 1}
                   >
@@ -1228,14 +1256,14 @@ function ResumeBuilderPage() {
           </div>
         </div>
 
-        <Actions className="builder-actions" includeHome />
-        <p className="builder-actions-hint">
+        <Actions className="mt-3 flex flex-wrap items-center gap-3 builder-actions-print-hide" includeHome />
+        <p className="builder-actions-hint-print-hide mt-3 text-sm text-slate-500 dark:text-slate-400">
           Use Exact PDF (Print) to export with the same design as the preview (A4).
         </p>
       </section>
 
-      <section className="preview-panel">
-        <Actions className="preview-actions" />
+      <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 preview-panel-print">
+        <Actions className="flex flex-wrap items-center gap-3 preview-actions-print-hide" />
         <ResumeSheet form={form} />
       </section>
     </main>

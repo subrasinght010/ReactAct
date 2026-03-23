@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { fetchResume } from '../api'
 import ResumeSheet from '../components/ResumeSheet'
+import { useAuth } from '../store/useAuth'
 
 function ResumePreviewPage() {
   const [resume, setResume] = useState(null)
@@ -10,22 +11,17 @@ function ResumePreviewPage() {
   const [error, setError] = useState('')
   const navigate = useNavigate()
   const { resumeId = '' } = useParams()
+  const { accessToken } = useAuth()
+  const secondaryButtonClass =
+    'inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800'
 
   useEffect(() => {
     const load = async () => {
-      const access = localStorage.getItem('access')
-      if (!access) {
-        navigate('/login')
-        return
-      }
-      if (!resumeId) {
-        navigate('/dashboard')
-        return
-      }
+      if (!accessToken || !resumeId) return
       setError('')
       try {
         setLoading(true)
-        const data = await fetchResume(access, resumeId)
+        const data = await fetchResume(resumeId)
         setResume(data)
       } catch (err) {
         setError(err.message || 'Failed to load resume')
@@ -35,17 +31,16 @@ function ResumePreviewPage() {
     }
 
     load()
-  }, [navigate, resumeId])
+  }, [accessToken, resumeId])
 
   const handleEdit = async () => {
-    const access = localStorage.getItem('access')
-    if (!access) {
+    if (!accessToken) {
       navigate('/login')
       return
     }
     try {
       setLoading(true)
-      const full = await fetchResume(access, resumeId)
+      const full = await fetchResume(resumeId)
       sessionStorage.setItem('builderImport', JSON.stringify(full.builder_data || {}))
       sessionStorage.setItem('builderResumeId', String(resumeId))
       navigate('/builder')
@@ -57,32 +52,32 @@ function ResumePreviewPage() {
   }
 
   return (
-    <main className="page page-wide page-plain">
-      <div className="preview-only-header">
+    <main className="w-full max-w-7xl">
+      <div className="preview-header-print-hide mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
-          <h1 className="preview-only-title">Preview</h1>
-          <p className="subtitle preview-only-subtitle">
+          <h1 className="mb-1 text-3xl font-bold">Preview</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">
             {resume?.title ? resume.title : 'Resume'}
           </p>
         </div>
-        <div className="actions">
-          <button type="button" className="secondary" onClick={() => navigate('/dashboard')}>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <button type="button" className={secondaryButtonClass} onClick={() => navigate('/dashboard')}>
             Back
           </button>
           <button type="button" onClick={handleEdit} disabled={loading || !resumeId}>
             Edit
           </button>
-          <button type="button" className="secondary" onClick={() => window.print()}>
+          <button type="button" className={secondaryButtonClass} onClick={() => window.print()}>
             Exact PDF (Print)
           </button>
         </div>
       </div>
 
-      {error && <p className="error">{error}</p>}
-      {loading && !resume && <p className="hint">Loading...</p>}
+      {error && <p className="text-sm font-medium text-red-700 dark:text-red-300">{error}</p>}
+      {loading && !resume && <p className="text-sm text-slate-500 dark:text-slate-400">Loading...</p>}
 
       {resume && (
-        <section className="preview-only">
+        <section className="preview-only-print rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
           <ResumeSheet form={resume.builder_data || {}} />
         </section>
       )}

@@ -366,6 +366,8 @@ function RichTextarea({ id, label, value, onChange, placeholder }) {
           }
         : DEFAULT_EDITOR_STATE,
   })
+  const secondaryButtonClass =
+    'inline-flex cursor-pointer items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:-translate-y-0.5 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800'
 
   useEffect(() => {
     if (!editor) return
@@ -571,7 +573,7 @@ function RichTextarea({ id, label, value, onChange, placeholder }) {
               </button>
               <button
                 type="button"
-                className="secondary"
+                className={secondaryButtonClass}
                 onClick={() => {
                   setShowLinkEditor(false)
                   setLinkDraft('')

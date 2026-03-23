@@ -35,6 +35,22 @@ class JobRoleSerializer(serializers.ModelSerializer):
 
 
 class ResumeSerializer(serializers.ModelSerializer):
+    def validate_file(self, value):
+        if not value:
+            return value
+
+        allowed_extensions = {'.pdf', '.doc', '.docx'}
+        name = str(getattr(value, 'name', '') or '')
+        lower_name = name.lower()
+        if not any(lower_name.endswith(ext) for ext in allowed_extensions):
+            raise serializers.ValidationError('Only .pdf, .doc, and .docx files are allowed.')
+
+        max_size = 5 * 1024 * 1024
+        if getattr(value, 'size', 0) > max_size:
+            raise serializers.ValidationError('File size must be 5 MB or smaller.')
+
+        return value
+
     class Meta:
         model = Resume
         fields = [
@@ -43,6 +59,7 @@ class ResumeSerializer(serializers.ModelSerializer):
             'original_text',
             'optimized_text',
             'builder_data',
+            'file',
             'status',
             'created_at',
             'updated_at',

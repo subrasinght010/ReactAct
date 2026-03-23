@@ -1,7 +1,15 @@
+from django.conf import settings
+from django.middleware.csrf import get_token
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect, ensure_csrf_cookie
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import JobRole, Resume, ResumeAnalysis
 from .serializers import (
@@ -10,6 +18,28 @@ from .serializers import (
     ResumeSerializer,
     SignupSerializer,
 )
+
+
+def _set_refresh_cookie(response, refresh_token: str):
+    response.set_cookie(
+        settings.AUTH_COOKIE_REFRESH,
+        refresh_token,
+        httponly=settings.AUTH_COOKIE_HTTP_ONLY,
+        secure=settings.AUTH_COOKIE_SECURE,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+        path=settings.AUTH_COOKIE_PATH,
+        max_age=int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds()),
+    )
+    return response
+
+
+def _clear_refresh_cookie(response):
+    response.delete_cookie(
+        settings.AUTH_COOKIE_REFRESH,
+        path=settings.AUTH_COOKIE_PATH,
+        samesite=settings.AUTH_COOKIE_SAMESITE,
+    )
+    return response
 
 def _plain_text_from_html(value: str) -> str:
     import re
@@ -299,13 +329,94 @@ class HealthView(APIView):
         return Response({'status': 'ok'})
 
 
+@method_decorator(ensure_csrf_cookie, name='dispatch')
+class CsrfTokenView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def get(self, request):
+        return Response({'csrfToken': get_token(request)})
+
+
+@method_decorator(csrf_protect, name='dispatch')
 class SignupView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
     def post(self, request):
         serializer = SignupSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
             return Response({'message': 'User created'}, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class CookieTokenObtainPairView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        serializer = TokenObtainPairSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        access = serializer.validated_data["access"]
+        refresh = serializer.validated_data["refresh"]
+        response = Response(
+            {
+                "access": access,
+                "user": {
+                    "username": request.data.get("username", ""),
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+        return _set_refresh_cookie(response, refresh)
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class CookieTokenRefreshView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        refresh = request.COOKIES.get(settings.AUTH_COOKIE_REFRESH)
+        if not refresh:
+            return Response({"detail": "No refresh session found."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        serializer = TokenRefreshSerializer(data={"refresh": refresh})
+        serializer.is_valid(raise_exception=True)
+
+        response = Response({"access": serializer.validated_data["access"]}, status=status.HTTP_200_OK)
+        rotated_refresh = serializer.validated_data.get("refresh")
+        if rotated_refresh:
+            _set_refresh_cookie(response, rotated_refresh)
+        return response
+
+
+@method_decorator(csrf_protect, name='dispatch')
+class CookieTokenLogoutView(APIView):
+    permission_classes = [AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth'
+
+    def post(self, request):
+        refresh = request.COOKIES.get(settings.AUTH_COOKIE_REFRESH)
+        response = Response({"message": "Logged out."}, status=status.HTTP_200_OK)
+
+        if refresh:
+            try:
+                token = RefreshToken(refresh)
+                blacklist = getattr(token, "blacklist", None)
+                if callable(blacklist):
+                    blacklist()
+            except TokenError:
+                pass
+
+        return _clear_refresh_cookie(response)
 
 
 class ProfileView(APIView):
