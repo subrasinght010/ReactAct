@@ -1,17 +1,17 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
-import { fetchProfile } from '../api'
 import { useAuth } from '../contexts/useAuth'
 import { useTheme } from '../contexts/useTheme'
+import { useAppSelector } from '../store/hooks'
 
 function NavBar() {
   const [open, setOpen] = useState(false)
-  const [username, setUsername] = useState('')
   const { logout } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const { theme, toggleTheme } = useTheme()
+  const username = useAppSelector((state) => String(state.profile.data?.username || ''))
   const currentPath = location.pathname
 
   const items = useMemo(
@@ -27,14 +27,6 @@ function NavBar() {
     setOpen(false)
     navigate(path)
   }
-
-  useEffect(() => {
-    const access = localStorage.getItem('access')
-    if (!access) return
-    fetchProfile(access)
-      .then((p) => setUsername(String(p?.username || '')))
-      .catch(() => {})
-  }, [])
 
   return (
     <header className="nav sticky top-0">

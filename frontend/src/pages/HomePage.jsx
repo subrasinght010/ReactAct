@@ -1,21 +1,12 @@
-import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { fetchProfile } from '../api'
 import { useAuth } from '../contexts/useAuth'
+import { useAppSelector } from '../store/hooks'
 
 function HomePage() {
-  const [username, setUsername] = useState('')
   const navigate = useNavigate()
   const { isLoggedIn } = useAuth()
-
-  useEffect(() => {
-    const access = localStorage.getItem('access')
-    if (!access) return
-    fetchProfile(access)
-      .then((p) => setUsername(String(p?.username || '')))
-      .catch(() => {})
-  }, [])
+  const username = useAppSelector((state) => String(state.profile.data?.username || ''))
 
   return (
     <main className="home-shell w-full">

@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@reduxjs/toolkit": "^2.11.2",
     "@tailwindcss/vite": "^4.2.2",
     "@tiptap/extension-color": "^3.20.4",
     "@tiptap/extension-highlight": "^3.20.4",
@@ -22,6 +23,7 @@
     "@tiptap/starter-kit": "^3.20.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-redux": "^9.2.0",
     "react-router-dom": "^7.13.1",
     "tailwindcss": "^4.2.2"
   },

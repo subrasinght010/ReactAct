@@ -1,11 +1,37 @@
-import { useContext } from 'react'
+import { useMemo } from 'react'
 
-import AuthContext from './auth-context'
+import { clearProfile } from '../store/profileSlice'
+import { loginSucceeded, logoutCompleted } from '../store/authSlice'
+import { useAppDispatch, useAppSelector } from '../store/hooks'
+
+function dispatchAuthChanged() {
+  window.dispatchEvent(new Event('auth-changed'))
+}
 
 export function useAuth() {
-  const context = useContext(AuthContext)
-  if (!context) {
-    throw new Error('useAuth must be used inside AuthProvider')
-  }
-  return context
+  const dispatch = useAppDispatch()
+  const accessToken = useAppSelector((state) => state.auth.accessToken)
+  const refreshToken = useAppSelector((state) => state.auth.refreshToken)
+
+  return useMemo(
+    () => ({
+      accessToken,
+      refreshToken,
+      isLoggedIn: Boolean(accessToken),
+      login: (access, refresh) => {
+        localStorage.setItem('access', access)
+        localStorage.setItem('refresh', refresh)
+        dispatch(loginSucceeded({ access, refresh }))
+        dispatchAuthChanged()
+      },
+      logout: () => {
+        localStorage.removeItem('access')
+        localStorage.removeItem('refresh')
+        dispatch(logoutCompleted())
+        dispatch(clearProfile())
+        dispatchAuthChanged()
+      },
+    }),
+    [accessToken, refreshToken, dispatch],
+  )
 }
