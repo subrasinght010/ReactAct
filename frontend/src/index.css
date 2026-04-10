@@ -380,10 +380,23 @@
     @apply grid gap-6 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)];
   }
 
+  .builder-page {
+    @apply xl:h-[calc(100dvh-9rem)] xl:min-h-0 xl:overflow-hidden;
+  }
+
   .builder-panel,
   .preview-panel,
   .preview-only {
     @apply rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60;
+  }
+
+  .builder-panel,
+  .preview-panel {
+    @apply xl:h-full xl:min-h-0 xl:overflow-auto;
+  }
+
+  .preview-only {
+    @apply border-0 bg-transparent p-0 shadow-none;
   }
 
   .builder-header {
@@ -451,6 +464,35 @@
     @apply mt-3 text-sm text-slate-500 dark:text-slate-400;
   }
 
+  @media (min-width: 1280px) {
+    .builder-actions-top {
+      position: sticky;
+      top: 0.75rem;
+      z-index: 30;
+      margin-top: 0;
+      padding: 0.75rem 0 1rem;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(255, 255, 255, 0.92));
+      backdrop-filter: blur(12px);
+    }
+
+    [data-theme='dark'] .builder-actions-top {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.92));
+    }
+
+    .builder-actions {
+      position: sticky;
+      bottom: 0;
+      z-index: 20;
+      margin-top: 1rem;
+      padding: 1rem 0 0.5rem;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.96) 30%, rgba(255, 255, 255, 1));
+    }
+
+    [data-theme='dark'] .builder-actions {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0), rgba(15, 23, 42, 0.92) 30%, rgba(15, 23, 42, 1));
+    }
+  }
+
   .preview-only-header {
     @apply mb-5 flex flex-col gap-3 md:flex-row md:items-start md:justify-between;
   }
@@ -460,7 +502,9 @@
   }
 
   .resume-sheet {
-    @apply mx-auto w-full max-w-[210mm] min-h-[297mm] bg-white p-8 text-slate-900 shadow-xl;
+    @apply mx-auto w-full max-w-[210mm] min-h-[297mm] bg-white p-8 text-slate-900;
+    padding: var(--resume-sheet-padding, 2rem);
+    font-family: var(--resume-font-family, Arial, Helvetica, sans-serif);
     font-size: var(--resume-font-size, 10pt);
     line-height: var(--resume-line-height, 1);
   }
@@ -482,21 +526,61 @@
     @apply mt-2 text-sm text-slate-600;
   }
 
+  .resume-head-links {
+    @apply mt-3;
+  }
+
   .resume-head-links a,
   .resume-link {
-    @apply text-sm font-medium text-slate-600 underline decoration-slate-400 underline-offset-2;
+    @apply text-sm font-medium text-slate-600 no-underline;
+  }
+
+  .resume-project-link {
+    @apply ml-1 inline-block;
   }
 
   .resume-section {
     @apply mt-4;
   }
 
+  .resume-sheet.is-compact .resume-head {
+    @apply pb-2;
+  }
+
+  .resume-sheet.is-compact .resume-head-line,
+  .resume-sheet.is-compact .resume-head-links {
+    @apply mt-1;
+  }
+
+  .resume-sheet.is-compact .resume-head-links {
+    @apply mt-2;
+  }
+
+  .resume-sheet.is-compact .resume-section {
+    @apply mt-1;
+  }
+
+  .resume-sheet.is-compact .resume-section h3 {
+    @apply mb-0.5;
+  }
+
+  .resume-sheet.is-compact .resume-exp {
+    @apply mt-2;
+  }
+
+  .resume-sheet.is-compact .resume-rich p,
+  .resume-sheet.is-compact .resume-summary p,
+  .resume-sheet.is-compact .resume-rich li,
+  .resume-sheet.is-compact .resume-summary li {
+    @apply my-0.5;
+  }
+
   .resume-section.has-underline h3 {
-    @apply border-b border-slate-300 pb-1;
+    @apply border-b border-slate-300 pb-0.5;
   }
 
   .resume-section h3 {
-    @apply mb-2 text-xs font-bold uppercase tracking-[0.22em] text-slate-700;
+    @apply mb-1 text-xs font-bold uppercase tracking-[0.22em] text-slate-700;
   }
 
   .resume-exp {
@@ -525,7 +609,7 @@
   }
 
   .resume-exp-body {
-    @apply mt-1;
+    @apply mt-0.5;
   }
 
   .resume-edu-inst {
@@ -540,7 +624,18 @@
     @apply text-slate-800;
   }
 
+  .resume-summary {
+    @apply text-slate-800;
+    font-family: var(--resume-font-family, Arial, Helvetica, sans-serif);
+    font-size: var(--resume-font-size, 10pt);
+    line-height: var(--resume-line-height, 1);
+  }
+
   .resume-rich p {
+    @apply my-1;
+  }
+
+  .resume-summary p {
     @apply my-1;
   }
 
@@ -548,11 +643,23 @@
     @apply my-1 list-disc pl-5;
   }
 
+  .resume-summary ul {
+    @apply my-1 list-disc pl-5;
+  }
+
   .resume-rich ol {
     @apply my-1 list-decimal pl-5;
   }
 
+  .resume-summary ol {
+    @apply my-1 list-decimal pl-5;
+  }
+
   .resume-rich li {
+    @apply my-0.5;
+  }
+
+  .resume-summary li {
     @apply my-0.5;
   }
 
@@ -686,6 +793,11 @@
 }
 
 @layer utilities {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+
   @media (max-width: 900px) {
     .nav-toggle {
       @apply inline-flex;
@@ -710,8 +822,19 @@
   }
 
   @media print {
+    html,
     body {
+      margin: 0 !important;
+      padding: 0 !important;
       @apply bg-white;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-shadow: none !important;
+      text-shadow: none !important;
+      filter: none !important;
     }
 
     .nav,
@@ -733,6 +856,8 @@
 
     .resume-sheet {
       box-shadow: none !important;
+      min-height: auto !important;
+      height: auto !important;
       margin: 0 auto !important;
     }
   }

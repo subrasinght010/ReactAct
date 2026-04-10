@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { fetchResume } from '../api'
 import ResumeSheet from '../components/ResumeSheet'
+import { printAtsPdf } from '../utils/resumeExport'
 
 function ResumePreviewPage() {
   const [resume, setResume] = useState(null)
@@ -56,6 +57,11 @@ function ResumePreviewPage() {
     }
   }
 
+  const handlePdf = () => {
+    if (!resume?.builder_data) return
+    printAtsPdf(resume.builder_data)
+  }
+
   return (
     <main className="page page-wide page-plain">
       <div className="preview-only-header">
@@ -72,8 +78,8 @@ function ResumePreviewPage() {
           <button type="button" onClick={handleEdit} disabled={loading || !resumeId}>
             Edit
           </button>
-          <button type="button" className="secondary" onClick={() => window.print()}>
-            Exact PDF (Print)
+          <button type="button" className="secondary" onClick={handlePdf}>
+            ATS PDF
           </button>
         </div>
       </div>

@@ -128,6 +128,10 @@ export default function ResumeSheet({ form }) {
   const orderedKeys = useMemo(() => buildOrderedKeys(safeForm), [safeForm])
   const bodyFontSize = Number(safeForm.bodyFontSizePt || 10)
   const bodyLineHeight = Number(safeForm.bodyLineHeight || 1)
+  const bodyFontFamily = String(safeForm.bodyFontFamily || 'Arial, Helvetica, sans-serif')
+  const pageMarginIn = Number(safeForm.pageMarginIn || 0.3)
+  const safePageMarginIn = Number.isFinite(pageMarginIn) ? pageMarginIn : 0.3
+  const compactSpacing = true
 
   const parsed = useMemo(
     () => ({
@@ -167,11 +171,13 @@ export default function ResumeSheet({ form }) {
 
   return (
     <article
-      className="resume-sheet"
+      className={`resume-sheet${compactSpacing ? ' is-compact' : ''}`}
       style={{
-        '--resume-font-size': `${Number.isFinite(bodyFontSize) ? bodyFontSize : 10}pt`,
-        '--resume-line-height': `${Number.isFinite(bodyLineHeight) ? bodyLineHeight : 1}`,
-      }}
+      '--resume-font-family': bodyFontFamily,
+      '--resume-font-size': `${Number.isFinite(bodyFontSize) ? bodyFontSize : 10}pt`,
+      '--resume-line-height': `${Number.isFinite(bodyLineHeight) ? bodyLineHeight : 1}`,
+      '--resume-sheet-padding': `${safePageMarginIn}in`,
+    }}
     >
       <header className={`resume-head${safeForm.sectionUnderline ? ' no-divider' : ''}`}>
         <h2>{safeForm.fullName || 'Your Name'}</h2>
@@ -203,7 +209,7 @@ export default function ResumeSheet({ form }) {
           return (
             <div key="summary" className={sectionClass}>
               <h3>{safeForm.summaryHeading || 'Summary'}</h3>
-              <div className="resume-rich" dangerouslySetInnerHTML={{ __html: parsed.summary }} />
+              <div className="resume-summary" dangerouslySetInnerHTML={{ __html: parsed.summary }} />
             </div>
           )
         }
@@ -258,7 +264,7 @@ export default function ResumeSheet({ form }) {
                       <span className="resume-exp-company">{proj.name || ''}</span>
                       {proj.normalizedUrl && (
                         <a
-                          className="resume-link"
+                          className="resume-link resume-project-link"
                           href={proj.normalizedUrl}
                           target="_blank"
                           rel="noreferrer"

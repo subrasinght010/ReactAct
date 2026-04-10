@@ -30,6 +30,7 @@ class Resume(models.Model):
     original_text = models.TextField(blank=True)
     optimized_text = models.TextField(blank=True)
     builder_data = models.JSONField(default=dict, blank=True)
+    is_default = models.BooleanField(default=False)
     file = models.FileField(upload_to='resumes/', blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     created_at = models.DateTimeField(auto_now_add=True)

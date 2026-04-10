@@ -1,8 +1,10 @@
 from rest_framework import status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .pdf_parser import parse_resume_pdf
 from .models import JobRole, Resume, ResumeAnalysis
 from .serializers import (
     JobRoleSerializer,
@@ -308,6 +310,34 @@ class SignupView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class ResumeParseView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        uploaded_file = (
+            request.FILES.get('file')
+            or request.FILES.get('pdf')
+            or request.FILES.get('resume')
+        )
+        if not uploaded_file:
+            return Response({'detail': 'Please upload a PDF file.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        name = str(getattr(uploaded_file, 'name', '') or '').lower()
+        content_type = str(getattr(uploaded_file, 'content_type', '') or '').lower()
+        if not name.endswith('.pdf') and content_type not in {'application/pdf', 'application/x-pdf'}:
+            return Response({'detail': 'Only PDF files are supported.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            parsed = parse_resume_pdf(uploaded_file)
+        except Exception as exc:
+            return Response(
+                {'detail': f'Could not parse PDF: {exc}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(parsed, status=status.HTTP_200_OK)
+
+
 class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -340,6 +370,11 @@ class JobRoleListCreateView(APIView):
 class ResumeListCreateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def _apply_default_resume(self, user, resume):
+        if not getattr(resume, 'is_default', False):
+            return
+        Resume.objects.filter(user=user).exclude(id=resume.id).update(is_default=False)
+
     def get(self, request):
         # Always return the latest 6 resumes (do not de-dupe by title).
         qs = Resume.objects.filter(user=request.user).order_by('-updated_at', '-created_at')[:6]
@@ -359,6 +394,7 @@ class ResumeListCreateView(APIView):
                 incoming_text = _builder_data_to_text(incoming_builder)
 
             created = serializer.save(user=request.user, original_text=incoming_text or serializer.validated_data.get("original_text") or "")
+            self._apply_default_resume(request.user, created)
 
             # Enforce max 6 resumes by deleting older ones (by updated_at/created_at).
             keep_ids = list(
@@ -366,6 +402,14 @@ class ResumeListCreateView(APIView):
                 .order_by('-updated_at', '-created_at')
                 .values_list('id', flat=True)[:6]
             )
+            default_id = (
+                Resume.objects.filter(user=request.user, is_default=True)
+                .order_by('-updated_at', '-created_at')
+                .values_list('id', flat=True)
+                .first()
+            )
+            if default_id and default_id not in keep_ids and keep_ids:
+                keep_ids = keep_ids[:-1] + [default_id]
             Resume.objects.filter(user=request.user).exclude(id__in=keep_ids).delete()
 
             return Response(ResumeSerializer(created).data, status=status.HTTP_201_CREATED)
@@ -374,6 +418,11 @@ class ResumeListCreateView(APIView):
 
 class ResumeDetailView(APIView):
     permission_classes = [IsAuthenticated]
+
+    def _apply_default_resume(self, user, resume):
+        if not getattr(resume, 'is_default', False):
+            return
+        Resume.objects.filter(user=user).exclude(id=resume.id).update(is_default=False)
 
     def get_object(self, request, resume_id):
         return Resume.objects.get(id=resume_id, user=request.user)
@@ -394,7 +443,8 @@ class ResumeDetailView(APIView):
 
         serializer = ResumeSerializer(resume, data=request.data, partial=True)
         if serializer.is_valid():
-            serializer.save()
+            updated = serializer.save()
+            self._apply_default_resume(request.user, updated)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
