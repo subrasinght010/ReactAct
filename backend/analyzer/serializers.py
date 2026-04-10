@@ -43,6 +43,7 @@ class ResumeSerializer(serializers.ModelSerializer):
             'original_text',
             'optimized_text',
             'builder_data',
+            'is_default',
             'status',
             'created_at',
             'updated_at',

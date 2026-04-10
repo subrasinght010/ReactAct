@@ -1,9 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
-import { createResume } from '../api'
+import { createResume, fetchResume, fetchResumes, parseResumePdf, updateResume } from '../api'
+import { printAtsPdf } from '../utils/resumeExport'
+
+const FONT_FAMILY_OPTIONS = [
+  { label: 'Default', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Arial', value: 'Arial, Helvetica, sans-serif' },
+  { label: 'Calibri', value: 'Calibri, Arial, sans-serif' },
+  { label: 'Cambria', value: 'Cambria, Georgia, serif' },
+  { label: 'Georgia', value: 'Georgia, serif' },
+  { label: 'Garamond', value: 'Garamond, Georgia, serif' },
+  { label: 'Times New Roman', value: '"Times New Roman", Times, serif' },
+  { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
+  { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
+]
 
 function renderSummaryByStyle(text, style) {
   // The editor stores sanitized HTML, so style is currently "auto".
@@ -307,6 +320,9 @@ function buildDocHtml(form) {
   const lineHeight = Number(form.bodyLineHeight || 1)
   const safeFontSize = Number.isFinite(fontSize) ? fontSize : 10
   const safeLineHeight = Number.isFinite(lineHeight) ? lineHeight : 1
+  const safeBodyFontFamily = String(form.bodyFontFamily || 'Arial, Helvetica, sans-serif')
+  const marginIn = Number(form.pageMarginIn || 0.3)
+  const safeMarginIn = Number.isFinite(marginIn) ? marginIn : 0.3
 
   const contact = [form.location, form.phone, form.email]
     .map((v) => String(v || '').trim())
@@ -323,7 +339,7 @@ function buildDocHtml(form) {
     .map((p) => {
       const name = escapeHtml(p.name || '')
       const url = normalizeHttpUrl(p.url)
-      const link = url ? ` <span style="color:#6b778f;font-style:italic;">(${escapeHtml(url)})</span>` : ''
+      const link = url ? ` <a href="${escapeHtml(url)}" style="color:#6b778f;text-decoration:none;">link</a>` : ''
       return `<div style="margin-top:10px;"><div><strong>${name}</strong>${link}</div>${richTextToHtml(
         p.highlights || '',
       )}</div>`
@@ -376,8 +392,10 @@ function buildDocHtml(form) {
 
   const summaryTitle = escapeHtml(form.summaryHeading || 'Summary')
   const summarySection = form.summaryEnabled
-    ? `<h3>${summaryTitle}</h3>${richTextToHtml(form.summary)}`
+    ? `<h3>${summaryTitle}</h3><div>${richTextToHtml(form.summary)}</div>`
     : ''
+  const compactClass = 'compact'
+  const headerClass = form.sectionUnderline ? 'resume-header' : 'resume-header has-underline'
 
   return `<!DOCTYPE html>
 <html>
@@ -385,20 +403,41 @@ function buildDocHtml(form) {
   <meta charset="utf-8" />
   <title>Resume</title>
   <style>
-    body { font-family: Calibri, Arial, sans-serif; }
+    body { font-family: ${escapeHtml(safeBodyFontFamily)}; }
+    @page { size: A4; margin: ${safeMarginIn}in; }
+    body { margin: 0; padding: ${safeMarginIn}in; }
+    body.compact { font-size: ${Math.max(9, safeFontSize - 0.5)}pt; }
     h1 { margin: 0; text-align: center; }
+    .resume-header {
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+    }
+    .resume-header.has-underline {
+      border-bottom: 1px solid #d1d5db;
+    }
     .center { text-align: center; color: #3a4861; margin-top: 4px; }
     h3 { margin: 14px 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
     p, li { font-size: ${safeFontSize}pt; line-height: ${safeLineHeight}; margin: 6px 0; }
+    .summary-block p, .summary-block li { font-size: ${safeFontSize}pt; line-height: ${safeLineHeight}; }
+    body.compact h3 { margin: 10px 0 4px; }
+    body.compact p,
+    body.compact li { margin: 4px 0; }
+    body.compact .center { margin-top: 2px; }
+    body.compact ul,
+    body.compact ol { margin-top: 4px; }
+    body.compact .summary-block p,
+    body.compact .summary-block li { margin: 4px 0; }
     ul, ol { margin: 6px 0 0; padding-left: 18px; }
-    a { color: #1b2230; text-decoration: underline; }
+    a { color: #1b2230; text-decoration: none; }
   </style>
 </head>
-<body>
-  <h1>${escapeHtml(form.fullName || '')}</h1>
-  <div class="center">${escapeHtml(contact)}</div>
-  ${links ? `<div class="center">${links}</div>` : ''}
-  ${summarySection}
+<body class="${compactClass}">
+  <header class="${headerClass}">
+    <h1>${escapeHtml(form.fullName || '')}</h1>
+    <div class="center">${escapeHtml(contact)}</div>
+    ${links ? `<div class="center">${links}</div>` : ''}
+  </header>
+  ${summarySection ? `<div class="summary-block">${summarySection}</div>` : ''}
   <h3>Skills</h3>
   ${richTextToHtml(form.skills)}
   <h3>Experience</h3>
@@ -424,10 +463,14 @@ function ResumeBuilderPage() {
     summaryEnabled: false,
     summaryHeading: 'Summary',
     summaryStyle: 'auto',
+    bodyFontFamily: 'Arial, Helvetica, sans-serif',
     bodyFontSizePt: 10,
     bodyLineHeight: 1,
+    pageMarginIn: 0.3,
     sectionOrder: ['summary', 'skills', 'experience', 'projects', 'education'],
     sectionUnderline: false,
+    compactSpacing: true,
+    isDefaultResume: false,
     customSections: [],
     summary: '',
     skills: '',
@@ -464,6 +507,8 @@ function ResumeBuilderPage() {
   })
   const [resumeRecordId, setResumeRecordId] = useState(() => sessionStorage.getItem('builderResumeId'))
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
+  const [importState, setImportState] = useState({ importing: false, message: '' })
+  const pdfInputRef = useRef(null)
 
   useEffect(() => {
     const raw = sessionStorage.getItem('builderImport')
@@ -483,8 +528,93 @@ function ResumeBuilderPage() {
     if (id) setResumeRecordId(id)
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+
+    const loadDefaultFromList = async (access) => {
+      const resumes = await fetchResumes(access)
+      const defaultResume = Array.isArray(resumes) ? resumes.find((item) => item.is_default) : null
+      if (!defaultResume) return
+      const full = await fetchResume(access, defaultResume.id)
+      if (cancelled) return
+      setForm((prev) => ({
+        ...prev,
+        ...(full.builder_data || {}),
+        isDefaultResume: Boolean(full.is_default),
+      }))
+      setResumeRecordId(String(full.id))
+      sessionStorage.setItem('builderResumeId', String(full.id))
+    }
+
+    const hydrateDefaultResume = async () => {
+      const access = localStorage.getItem('access')
+      if (!access) return
+
+      const storedId = sessionStorage.getItem('builderResumeId')
+      if (storedId) {
+        try {
+          const full = await fetchResume(access, storedId)
+          if (cancelled) return
+          setForm((prev) => ({
+            ...prev,
+            isDefaultResume: Boolean(full.is_default),
+          }))
+        } catch {
+          // ignore; keep local state
+        }
+        if (cancelled) return
+        try {
+          await loadDefaultFromList(access)
+        } catch {
+          // ignore
+        }
+        return
+      }
+
+      if (sessionStorage.getItem('builderImport')) return
+
+      try {
+        await loadDefaultFromList(access)
+      } catch {
+        // ignore
+      }
+    }
+
+    hydrateDefaultResume()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const updateField = (key, value) => {
     setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const openPdfPicker = () => {
+    pdfInputRef.current?.click()
+  }
+
+  const handlePdfImport = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+
+    const isPdf =
+      file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+    if (!isPdf) {
+      setImportState({ importing: false, message: 'Please choose a PDF file.' })
+      return
+    }
+
+    try {
+      setImportState({ importing: true, message: '' })
+      const parsed = await parseResumePdf(file)
+      setForm((prev) => ({ ...prev, ...parsed }))
+      setImportState({ importing: false, message: `Imported ${file.name}` })
+    } catch (err) {
+      setImportState({ importing: false, message: err.message || 'Import failed' })
+    }
   }
 
   const autoTitle = useMemo(() => {
@@ -708,6 +838,10 @@ function ResumeBuilderPage() {
     URL.revokeObjectURL(url)
   }
 
+  const downloadAtsPdf = () => {
+    printAtsPdf(form)
+  }
+
   const saveResumeToAccount = async () => {
     const access = localStorage.getItem('access')
     if (!access) {
@@ -722,13 +856,19 @@ function ResumeBuilderPage() {
         title: derivedTitle,
         builder_data: form,
         original_text: formToPlainText(form),
+        is_default: Boolean(form.isDefaultResume),
       }
 
-      // Upsert by title: same title overwrites; different title creates new entry.
-      const data = await createResume(access, payload)
+      const data = resumeRecordId
+        ? await updateResume(access, resumeRecordId, payload)
+        : await createResume(access, payload)
 
       setResumeRecordId(String(data.id))
       sessionStorage.setItem('builderResumeId', String(data.id))
+      setForm((prev) => ({
+        ...prev,
+        isDefaultResume: Boolean(data.is_default),
+      }))
       setSaveState({ saving: false, message: `Saved: ${new Date().toLocaleTimeString()}` })
     } catch (err) {
       setSaveState({ saving: false, message: err.message || 'Save failed' })
@@ -737,14 +877,19 @@ function ResumeBuilderPage() {
 
   const Actions = ({ className, includeHome }) => (
     <div className={className}>
+      {includeHome && (
+        <button type="button" className="secondary" onClick={openPdfPicker} disabled={importState.importing}>
+          {importState.importing ? 'Importing...' : 'Import PDF'}
+        </button>
+      )}
       <button type="button" onClick={saveResumeToAccount} disabled={saveState.saving}>
         {saveState.saving ? 'Saving...' : 'Save'}
       </button>
       <button type="button" className="secondary" onClick={downloadDoc}>
         Download DOC
       </button>
-      <button type="button" className="secondary" onClick={() => window.print()}>
-        Exact PDF (Print)
+      <button type="button" className="secondary" onClick={downloadAtsPdf}>
+        ATS PDF
       </button>
       {includeHome && (
         <button type="button" className="secondary" onClick={() => navigate('/')}>
@@ -755,12 +900,21 @@ function ResumeBuilderPage() {
   )
 
   return (
-    <main className="builder-layout">
+    <main className="builder-layout builder-page">
       <section className="builder-panel">
+        <input
+          ref={pdfInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          onChange={handlePdfImport}
+          style={{ display: 'none' }}
+        />
         <div className="builder-header">
           <h1>Resume Builder</h1>
           <p className="subtitle">Fill inputs on left. Resume updates live on right.</p>
         </div>
+
+        <Actions className="builder-actions builder-actions-top" includeHome />
 
         <div className="form">
           <label className="checkbox">
@@ -781,34 +935,72 @@ function ResumeBuilderPage() {
             Section underline
           </label>
 
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={Boolean(form.isDefaultResume)}
+              onChange={(e) => updateField('isDefaultResume', e.target.checked)}
+            />
+            Default resume
+          </label>
+
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={Number(form.pageMarginIn || 0.3) <= 0.2}
+              onChange={(e) => updateField('pageMarginIn', e.target.checked ? 0.2 : 0.3)}
+            />
+            Narrow margin
+          </label>
+
           {saveState.message && <p className={saveState.message.startsWith('Saved') ? 'success' : 'error'}>{saveState.message}</p>}
+          {importState.message && (
+            <p className={importState.message.startsWith('Imported') ? 'success' : 'error'}>
+              {importState.message}
+            </p>
+          )}
 
           <div className="section-options">
             <label>Typography</label>
             <div className="exp-row">
               <select
+                value={form.bodyFontFamily || FONT_FAMILY_OPTIONS[0].value}
+                onChange={(e) => updateField('bodyFontFamily', e.target.value)}
+              >
+                {FONT_FAMILY_OPTIONS.map((option) => (
+                  <option key={option.label} value={option.value}>
+                    Font: {option.label}
+                  </option>
+                ))}
+              </select>
+              <select
                 value={String(form.bodyFontSizePt || 10)}
                 onChange={(e) => updateField('bodyFontSizePt', Number(e.target.value))}
               >
-                <option value="9">Text size: 9</option>
-                <option value="10">Text size: 10</option>
-                <option value="11">Text size: 11</option>
-                <option value="12">Text size: 12</option>
+                <option value="9">Font size: 9</option>
+                <option value="10">Font size: 10</option>
+                <option value="11">Font size: 11</option>
+                <option value="12">Font size: 12</option>
               </select>
+            </div>
+            <div className="exp-row">
               <select
                 value={String(form.bodyLineHeight || 1)}
                 onChange={(e) => updateField('bodyLineHeight', Number(e.target.value))}
               >
-                <option value="1">Line spacing: 1.0</option>
-                <option value="1.1">Line spacing: 1.1</option>
-                <option value="1.15">Line spacing: 1.15</option>
-                <option value="1.2">Line spacing: 1.2</option>
-                <option value="1.3">Line spacing: 1.3</option>
-                <option value="1.4">Line spacing: 1.4</option>
+                <option value="1">Spacing: 1.0</option>
+                <option value="1.05">Spacing: 1.05</option>
+                <option value="1.1">Spacing: 1.1</option>
+                <option value="1.15">Spacing: 1.15</option>
+                <option value="1.2">Spacing: 1.2</option>
+                <option value="1.25">Spacing: 1.25</option>
+                <option value="1.3">Spacing: 1.3</option>
+                <option value="1.35">Spacing: 1.35</option>
+                <option value="1.4">Spacing: 1.4</option>
               </select>
             </div>
             <p className="hint" style={{ margin: 0 }}>
-              Controls apply to the A4 preview and export.
+              Controls apply to the preview and export.
             </p>
           </div>
 
@@ -1228,10 +1420,10 @@ function ResumeBuilderPage() {
           </div>
         </div>
 
-        <Actions className="builder-actions" includeHome />
-        <p className="builder-actions-hint">
-          Use Exact PDF (Print) to export with the same design as the preview (A4).
-        </p>
+          <Actions className="builder-actions" includeHome />
+          <p className="builder-actions-hint">
+          Import a PDF to auto-fill the builder, then use ATS PDF or Download DOC to export.
+          </p>
       </section>
 
       <section className="preview-panel">

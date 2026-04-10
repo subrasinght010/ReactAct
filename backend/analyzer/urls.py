@@ -7,6 +7,7 @@ from .views import (
     ProfileView,
     ResumeAnalysisListView,
     ResumeDetailView,
+    ResumeParseView,
     ResumeListCreateView,
     RunAnalysisView,
     SignupView,
@@ -15,6 +16,7 @@ from .views import (
 urlpatterns = [
     path('health/', HealthView.as_view()),
     path('signup/', SignupView.as_view()),
+    path('parse-resume/', ResumeParseView.as_view()),
     path('token/', TokenObtainPairView.as_view()),
     path('token/refresh/', TokenRefreshView.as_view()),
     path('profile/', ProfileView.as_view()),

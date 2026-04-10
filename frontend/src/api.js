@@ -77,6 +77,17 @@ export async function signupUser(username, email, password) {
   return parseResponse(response)
 }
 
+export async function parseResumePdf(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await fetch(`${API_BASE_URL}/parse-resume/`, {
+    method: 'POST',
+    body: formData,
+  })
+  return parseResponse(response)
+}
+
 export async function fetchProfile(accessToken) {
   const response = await authFetch(`${API_BASE_URL}/profile/`, {}, accessToken)
   return parseResponse(response)
