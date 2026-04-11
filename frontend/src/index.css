@@ -564,6 +564,7 @@
 
   .resume-section {
     margin-top: 8pt;
+    margin-bottom: 3pt;
   }
 
   .resume-sheet.is-compact .resume-head {
@@ -582,6 +583,7 @@
 
   .resume-sheet.is-compact .resume-section {
     margin-top: 4pt;
+    margin-bottom: 2pt;
   }
 
   .resume-sheet.is-compact .resume-section h3 {

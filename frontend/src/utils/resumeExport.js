@@ -248,10 +248,12 @@ export function buildAtsPdfHtml(form) {
 
     .section {
       margin-top: 8pt;
+      margin-bottom: 3pt;
     }
 
     body.compact .section {
       margin-top: 4pt;
+      margin-bottom: 2pt;
     }
 
     .section h2 {
