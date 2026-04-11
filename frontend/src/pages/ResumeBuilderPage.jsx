@@ -18,6 +18,16 @@ const FONT_FAMILY_OPTIONS = [
   { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
 ]
 
+const MIN_PAGE_MARGIN_IN = 0.2
+const DEFAULT_PAGE_MARGIN_IN = 0.3
+
+function normalizePageMarginIn(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_PAGE_MARGIN_IN
+  if (numeric <= MIN_PAGE_MARGIN_IN) return MIN_PAGE_MARGIN_IN
+  return DEFAULT_PAGE_MARGIN_IN
+}
+
 function renderSummaryByStyle(text, style) {
   // The editor stores sanitized HTML, so style is currently "auto".
   // Keep the option for future transformations.
@@ -334,8 +344,7 @@ function buildDocHtml(form) {
   const safeFontSize = Number.isFinite(fontSize) ? fontSize : 10
   const safeLineHeight = Number.isFinite(lineHeight) ? lineHeight : 1
   const safeBodyFontFamily = String(form.bodyFontFamily || 'Arial, Helvetica, sans-serif')
-  const marginIn = Number(form.pageMarginIn || 0.3)
-  const safeMarginIn = Number.isFinite(marginIn) ? marginIn : 0.3
+  const safeMarginIn = normalizePageMarginIn(form.pageMarginIn)
 
   const contact = [form.location, form.phone, form.email]
     .map((v) => String(v || '').trim())
@@ -439,20 +448,20 @@ function buildDocHtml(form) {
     body.compact { font-size: ${Math.max(9, safeFontSize - 0.5)}pt; }
     h1 { margin: 0; text-align: center; }
     .resume-header {
-      margin-bottom: 10px;
-      padding-bottom: 8px;
+      margin-bottom: 6px;
+      padding-bottom: 4px;
     }
     .resume-header.has-underline {
       border-bottom: 1px solid #d1d5db;
     }
-    .center { text-align: center; color: #3a4861; margin-top: 4px; }
+    .center { text-align: center; color: #3a4861; margin-top: 2px; }
     h3 { margin: 14px 0 8px; font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
     p, li { font-size: ${safeFontSize}pt; line-height: ${safeLineHeight}; margin: 6px 0; }
     .summary-block p, .summary-block li { font-size: ${safeFontSize}pt; line-height: ${safeLineHeight}; }
     body.compact h3 { margin: 10px 0 4px; }
     body.compact p,
     body.compact li { margin: 4px 0; }
-    body.compact .center { margin-top: 2px; }
+    body.compact .center { margin-top: 1px; }
     body.compact ul,
     body.compact ol { margin-top: 4px; }
     body.compact .summary-block p,
@@ -496,7 +505,7 @@ function ResumeBuilderPage() {
     bodyFontFamily: 'Arial, Helvetica, sans-serif',
     bodyFontSizePt: 10,
     bodyLineHeight: 1,
-    pageMarginIn: 0.3,
+    pageMarginIn: DEFAULT_PAGE_MARGIN_IN,
     sectionOrder: ['summary', 'skills', 'experience', 'projects', 'education'],
     sectionUnderline: true,
     compactSpacing: true,
@@ -550,7 +559,12 @@ function ResumeBuilderPage() {
       try {
         const imported = JSON.parse(raw)
         if (imported && typeof imported === 'object') {
-          setForm((prev) => ({ ...prev, ...imported, sectionUnderline: true }))
+          setForm((prev) => ({
+            ...prev,
+            ...imported,
+            pageMarginIn: normalizePageMarginIn(imported.pageMarginIn ?? prev.pageMarginIn),
+            sectionUnderline: true,
+          }))
         }
       } catch {
         // ignore
@@ -574,6 +588,7 @@ function ResumeBuilderPage() {
       setForm((prev) => ({
         ...prev,
         ...(full.builder_data || {}),
+        pageMarginIn: normalizePageMarginIn(full.builder_data?.pageMarginIn ?? prev.pageMarginIn),
         sectionUnderline: true,
         isDefaultResume: Boolean(full.is_default),
       }))
@@ -622,6 +637,10 @@ function ResumeBuilderPage() {
   }, [])
 
   const updateField = (key, value) => {
+    if (key === 'pageMarginIn') {
+      setForm((prev) => ({ ...prev, pageMarginIn: normalizePageMarginIn(value) }))
+      return
+    }
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -645,7 +664,12 @@ function ResumeBuilderPage() {
     try {
       setImportState({ importing: true, message: '' })
       const parsed = await parseResumePdf(file)
-      setForm((prev) => ({ ...prev, ...parsed, sectionUnderline: true }))
+      setForm((prev) => ({
+        ...prev,
+        ...parsed,
+        pageMarginIn: normalizePageMarginIn(parsed.pageMarginIn ?? prev.pageMarginIn),
+        sectionUnderline: true,
+      }))
       setImportState({ importing: false, message: `Imported ${file.name}` })
     } catch (err) {
       setImportState({ importing: false, message: err.message || 'Import failed' })
@@ -886,7 +910,10 @@ function ResumeBuilderPage() {
   }
 
   const downloadAtsPdf = () => {
-    printAtsPdf(form)
+    printAtsPdf({
+      ...form,
+      pageMarginIn: normalizePageMarginIn(form.pageMarginIn),
+    })
   }
 
   const saveResumeToAccount = async () => {
@@ -994,8 +1021,10 @@ function ResumeBuilderPage() {
           <label className="checkbox">
             <input
               type="checkbox"
-              checked={Number(form.pageMarginIn || 0.3) <= 0.1}
-              onChange={(e) => updateField('pageMarginIn', e.target.checked ? 0.1 : 0.3)}
+              checked={normalizePageMarginIn(form.pageMarginIn) <= MIN_PAGE_MARGIN_IN}
+              onChange={(e) =>
+                updateField('pageMarginIn', e.target.checked ? MIN_PAGE_MARGIN_IN : DEFAULT_PAGE_MARGIN_IN)
+              }
             />
             Minimum margin
           </label>

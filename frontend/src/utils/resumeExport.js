@@ -7,6 +7,21 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;')
 }
 
+const MIN_PAGE_MARGIN_IN = 0.2
+const DEFAULT_PAGE_MARGIN_IN = 0.3
+const TOP_PAGE_PADDING_OFFSET_IN = 0.08
+
+function normalizePageMarginIn(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_PAGE_MARGIN_IN
+  if (numeric <= MIN_PAGE_MARGIN_IN) return MIN_PAGE_MARGIN_IN
+  return DEFAULT_PAGE_MARGIN_IN
+}
+
+function computeTopPagePaddingIn(marginIn) {
+  return Math.max(0.08, Number(marginIn) - TOP_PAGE_PADDING_OFFSET_IN)
+}
+
 function plainTextFromHtml(value) {
   return String(value || '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
@@ -128,24 +143,32 @@ function renderProjectItem(proj, form) {
 }
 
 function renderEducationItem(edu) {
-  const schoolBits = [edu.institution, edu.program].filter(Boolean).join(' - ')
+  const institution = String(edu.institution || '').trim()
+  const program = String(edu.program || '').trim()
   const scoreType = String(edu.scoreType || 'cgpa')
   const rawScore = String(edu.scoreValue || '').trim()
   const scoreLabel = String(edu.scoreLabel || '').trim()
   const scoreText = (() => {
-    if (!edu.scoreEnabled || !rawScore) return ''
+    // Keep score in ATS export whenever a value is present.
+    if (!rawScore) return ''
     if (scoreType === 'custom') return `${scoreLabel || 'Score'}: ${rawScore}`
     if (scoreType === 'percentage') return `Percentage: ${rawScore.includes('%') ? rawScore : `${rawScore}%`}`
     return `CGPA: ${rawScore}`
   })()
   const dateLine = [edu.startDate, edu.isCurrent ? 'Present' : edu.endDate].filter(Boolean).join(' - ')
-  const meta = [scoreText, dateLine].filter(Boolean).join(' | ')
 
   return `
     <div class="entry">
-      <div class="entry-head">
-        <span>${escapeHtml(schoolBits)}</span>
-        <span class="entry-dates">${escapeHtml(meta)}</span>
+      <div class="entry-head entry-head--edu">
+        <div class="entry-head-main">
+          ${institution ? `<div class="edu-inst">${escapeHtml(institution)}</div>` : ''}
+          ${program || scoreText
+            ? `<div class="edu-meta">${program ? `<span>${escapeHtml(program)}</span>` : ''}${
+                program && scoreText ? '<span class="edu-sep"> | </span>' : ''
+              }${scoreText ? `<span>${escapeHtml(scoreText)}</span>` : ''}</div>`
+            : ''}
+        </div>
+        ${dateLine ? `<span class="entry-dates">${escapeHtml(dateLine)}</span>` : ''}
       </div>
     </div>
   `
@@ -169,8 +192,8 @@ export function buildAtsPdfHtml(form) {
   const sectionClass = safeForm.sectionUnderline ? 'section has-underline' : 'section'
   const bodyClass = 'compact'
   const headerClass = safeForm.sectionUnderline ? 'header' : 'header has-underline'
-  const marginIn = Number(safeForm.pageMarginIn || 0.3)
-  const safeMarginIn = Number.isFinite(marginIn) ? marginIn : 0.3
+  const safeMarginIn = normalizePageMarginIn(safeForm.pageMarginIn)
+  const safeTopPaddingIn = computeTopPagePaddingIn(safeMarginIn)
   const { contactLine, links } = renderContact(safeForm)
   const summaryHtml = String(safeForm.summary || '').trim()
   const skillsHtml = String(safeForm.skills || '').trim()
@@ -252,7 +275,7 @@ export function buildAtsPdfHtml(form) {
     }
 
     body {
-      padding: ${safeMarginIn}in;
+      padding: ${safeTopPaddingIn}in ${safeMarginIn}in ${safeMarginIn}in;
       font-size: 10pt;
       line-height: 1.35;
     }
@@ -272,7 +295,7 @@ export function buildAtsPdfHtml(form) {
     }
 
     .contact {
-      margin-top: 3pt;
+      margin-top: 1pt;
       text-align: center;
       font-size: 9.5pt;
     }
@@ -283,8 +306,8 @@ export function buildAtsPdfHtml(form) {
     }
 
     .header {
-      margin-bottom: 8pt;
-      padding-bottom: 6pt;
+      margin-bottom: 4pt;
+      padding-bottom: 2pt;
       text-align: center;
     }
 
@@ -345,6 +368,14 @@ export function buildAtsPdfHtml(form) {
       font-weight: 700;
     }
 
+    .entry-head--edu {
+      align-items: flex-start;
+    }
+
+    .entry-head-main {
+      min-width: 0;
+    }
+
     .entry-dates,
     .entry-link {
       font-weight: 400;
@@ -352,6 +383,22 @@ export function buildAtsPdfHtml(form) {
       color: #374151;
       text-decoration: none;
       white-space: nowrap;
+    }
+
+    .edu-inst {
+      font-weight: 700;
+      color: #111827;
+    }
+
+    .edu-meta {
+      margin-top: 1pt;
+      font-size: 9.5pt;
+      font-weight: 400;
+      color: #111827;
+    }
+
+    .edu-sep {
+      color: #4b5563;
     }
 
     .project-link {
@@ -407,7 +454,7 @@ export function buildAtsPdfHtml(form) {
     }
 
     .plain-links {
-      margin-top: 7pt;
+      margin-top: 2pt;
       text-align: center;
       font-size: 9pt;
       word-break: break-word;

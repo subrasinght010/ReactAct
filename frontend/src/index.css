@@ -511,15 +511,18 @@
 
   .resume-sheet {
     @apply mx-auto w-full max-w-[210mm] min-h-[297mm] bg-white p-8 text-slate-900;
-    padding: var(--resume-sheet-padding, 2rem);
+    padding:
+      var(--resume-sheet-padding-top, var(--resume-sheet-padding, 2rem))
+      var(--resume-sheet-padding, 2rem)
+      var(--resume-sheet-padding, 2rem);
     font-family: var(--resume-font-family, Arial, Helvetica, sans-serif);
     font-size: var(--resume-font-size, 10pt);
     line-height: var(--resume-line-height, 1);
   }
 
   .resume-head {
-    margin-bottom: 8pt;
-    padding-bottom: 6pt;
+    margin-bottom: 4pt;
+    padding-bottom: 2pt;
     text-align: center;
     border-bottom: 1px solid #d1d5db;
   }
@@ -543,13 +546,13 @@
   }
 
   .resume-head-line {
-    margin-top: 3pt;
+    margin-top: 1pt;
     font-size: 9.5pt;
     text-align: center;
   }
 
   .resume-head-links {
-    margin-top: 7pt;
+    margin-top: 2pt;
     font-size: 9pt;
     text-align: center;
     word-break: break-word;
@@ -572,17 +575,17 @@
   }
 
   .resume-sheet.is-compact .resume-head {
-    margin-bottom: 8pt;
-    padding-bottom: 6pt;
+    margin-bottom: 4pt;
+    padding-bottom: 2pt;
   }
 
   .resume-sheet.is-compact .resume-head-line,
   .resume-sheet.is-compact .resume-head-links {
-    margin-top: 3pt;
+    margin-top: 1pt;
   }
 
   .resume-sheet.is-compact .resume-head-links {
-    margin-top: 7pt;
+    margin-top: 2pt;
   }
 
   .resume-sheet.is-compact .resume-section {
@@ -684,6 +687,12 @@
 
   .resume-edu-meta {
     @apply mt-0.5 leading-snug;
+    font-weight: 400;
+  }
+
+  .resume-edu-meta .resume-exp-title,
+  .resume-edu-meta .resume-exp-sep {
+    font-weight: 400;
   }
 
   .resume-rich {

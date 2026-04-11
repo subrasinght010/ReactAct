@@ -1,5 +1,20 @@
 import { useMemo } from 'react'
 
+const MIN_PAGE_MARGIN_IN = 0.2
+const DEFAULT_PAGE_MARGIN_IN = 0.3
+const TOP_PAGE_PADDING_OFFSET_IN = 0.08
+
+function normalizePageMarginIn(value) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) return DEFAULT_PAGE_MARGIN_IN
+  if (numeric <= MIN_PAGE_MARGIN_IN) return MIN_PAGE_MARGIN_IN
+  return DEFAULT_PAGE_MARGIN_IN
+}
+
+function computeTopPagePaddingIn(marginIn) {
+  return Math.max(0.08, Number(marginIn) - TOP_PAGE_PADDING_OFFSET_IN)
+}
+
 function renderSummaryByStyle(text) {
   // The builder stores sanitized HTML already.
   return String(text || '')
@@ -143,8 +158,8 @@ export default function ResumeSheet({ form }) {
   const bodyFontSize = Number(safeForm.bodyFontSizePt || 10)
   const bodyLineHeight = Number(safeForm.bodyLineHeight || 1)
   const bodyFontFamily = String(safeForm.bodyFontFamily || 'Arial, Helvetica, sans-serif')
-  const pageMarginIn = Number(safeForm.pageMarginIn || 0.3)
-  const safePageMarginIn = Number.isFinite(pageMarginIn) ? pageMarginIn : 0.3
+  const safePageMarginIn = normalizePageMarginIn(safeForm.pageMarginIn)
+  const safeTopPagePaddingIn = computeTopPagePaddingIn(safePageMarginIn)
   const compactSpacing = true
 
   const parsed = useMemo(
@@ -192,6 +207,7 @@ export default function ResumeSheet({ form }) {
       '--resume-font-family': bodyFontFamily,
       '--resume-font-size': `${Number.isFinite(bodyFontSize) ? bodyFontSize : 10}pt`,
       '--resume-line-height': `${Number.isFinite(bodyLineHeight) ? bodyLineHeight : 1}`,
+      '--resume-sheet-padding-top': `${safeTopPagePaddingIn}in`,
       '--resume-sheet-padding': `${safePageMarginIn}in`,
     }}
     >
