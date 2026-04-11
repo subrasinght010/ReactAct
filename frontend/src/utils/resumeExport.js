@@ -1,3 +1,5 @@
+import { buildResumeViewModel } from './resumeShared'
+
 function escapeHtml(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -5,21 +7,6 @@ function escapeHtml(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
-}
-
-const MIN_PAGE_MARGIN_IN = 0.2
-const DEFAULT_PAGE_MARGIN_IN = 0.3
-const TOP_PAGE_PADDING_OFFSET_IN = 0.08
-
-function normalizePageMarginIn(value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return DEFAULT_PAGE_MARGIN_IN
-  if (numeric <= MIN_PAGE_MARGIN_IN) return MIN_PAGE_MARGIN_IN
-  return DEFAULT_PAGE_MARGIN_IN
-}
-
-function computeTopPagePaddingIn(marginIn) {
-  return Math.max(0.08, Number(marginIn) - TOP_PAGE_PADDING_OFFSET_IN)
 }
 
 function plainTextFromHtml(value) {
@@ -54,61 +41,9 @@ function htmlToBulletList(htmlValue) {
   return `<p>${escapeHtml(text)}</p>`
 }
 
-function normalizeHttpUrl(value) {
-  const raw = String(value || '').trim()
-  if (!raw) return ''
-  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw)
-  const candidate = hasScheme ? raw : `https://${raw}`
-  try {
-    const url = new URL(candidate)
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return ''
-    return url.toString()
-  } catch {
-    return ''
-  }
-}
-
-function normalizeTechStackText(value) {
-  return String(value || '')
-    .replace(/\s*,\s*/g, ', ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function renderContact(form) {
-  const links = (form.links || [])
-    .map((item) => {
-      const label = String(item.label || '').trim()
-      const url = normalizeHttpUrl(item.url)
-      if (!label || !url) return ''
-      return `<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`
-    })
-    .filter(Boolean)
-    .join(' | ')
-
-  const contactLine = [form.location, form.phone, form.email]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean)
-    .join(' | ')
-
-  return {
-    contactLine,
-    links,
-  }
-}
-
-function renderTechStackLine(techStack, show) {
-  if (!show) return ''
-  const text = normalizeTechStackText(techStack)
-  if (!text) return ''
-  return `<p class="entry-tech-stack entry-tech-stack--end"><span class="entry-tech-stack-label">Tech Stack:</span> <span class="entry-tech-stack-items">${escapeHtml(text)}</span></p>`
-}
-
-function renderExperienceItem(exp, form) {
-  const legacy = form && typeof form === 'object' ? form : {}
+function renderExperienceItem(exp) {
   const title = escapeHtml([exp.company, exp.title].filter(Boolean).join(' - '))
   const dates = escapeHtml([exp.startDate, exp.isCurrent ? 'Present' : exp.endDate].filter(Boolean).join(' - '))
-  const tech = renderTechStackLine(exp.techStack, Boolean(exp.showTechUsed ?? legacy.showExperienceTechUsed))
   const bullets = htmlToBulletList(exp.highlights)
 
   return `
@@ -118,18 +53,16 @@ function renderExperienceItem(exp, form) {
         <span class="entry-dates">${dates}</span>
       </div>
       ${bullets}
-      ${tech}
     </div>
   `
 }
 
-function renderProjectItem(proj, form) {
-  const legacy = form && typeof form === 'object' ? form : {}
-  const name = escapeHtml(proj.name || '')
-  const url = normalizeHttpUrl(proj.url)
-  const link = url ? `<a class="entry-link project-link" href="${escapeHtml(url)}">link</a>` : ''
-  const tech = renderTechStackLine(proj.techStack, Boolean(proj.showTechUsed ?? legacy.showProjectTechUsed))
-  const bullets = htmlToBulletList(proj.highlights)
+function renderProjectItem(project) {
+  const name = escapeHtml(project.name || '')
+  const link = project.normalizedUrl
+    ? `<a class="entry-link project-link" href="${escapeHtml(project.normalizedUrl)}">link</a>`
+    : ''
+  const bullets = htmlToBulletList(project.highlights)
 
   return `
     <div class="entry">
@@ -137,35 +70,22 @@ function renderProjectItem(proj, form) {
         <span>${name}${link}</span>
       </div>
       ${bullets}
-      ${tech}
     </div>
   `
 }
 
 function renderEducationItem(edu) {
-  const institution = String(edu.institution || '').trim()
-  const program = String(edu.program || '').trim()
-  const scoreType = String(edu.scoreType || 'cgpa')
-  const rawScore = String(edu.scoreValue || '').trim()
-  const scoreLabel = String(edu.scoreLabel || '').trim()
-  const scoreText = (() => {
-    // Keep score in ATS export whenever a value is present.
-    if (!rawScore) return ''
-    if (scoreType === 'custom') return `${scoreLabel || 'Score'}: ${rawScore}`
-    if (scoreType === 'percentage') return `Percentage: ${rawScore.includes('%') ? rawScore : `${rawScore}%`}`
-    return `CGPA: ${rawScore}`
-  })()
   const dateLine = [edu.startDate, edu.isCurrent ? 'Present' : edu.endDate].filter(Boolean).join(' - ')
 
   return `
     <div class="entry">
       <div class="entry-head entry-head--edu">
         <div class="entry-head-main">
-          ${institution ? `<div class="edu-inst">${escapeHtml(institution)}</div>` : ''}
-          ${program || scoreText
-            ? `<div class="edu-meta">${program ? `<span>${escapeHtml(program)}</span>` : ''}${
-                program && scoreText ? '<span class="edu-sep"> | </span>' : ''
-              }${scoreText ? `<span>${escapeHtml(scoreText)}</span>` : ''}</div>`
+          ${edu.institution ? `<div class="edu-inst">${escapeHtml(edu.institution)}</div>` : ''}
+          ${edu.program || edu.scoreText
+            ? `<div class="edu-meta">${edu.program ? `<span>${escapeHtml(edu.program)}</span>` : ''}${
+                edu.program && edu.scoreText ? '<span class="edu-sep"> | </span>' : ''
+              }${edu.scoreText ? `<span>${escapeHtml(edu.scoreText)}</span>` : ''}</div>`
             : ''}
         </div>
         ${dateLine ? `<span class="entry-dates">${escapeHtml(dateLine)}</span>` : ''}
@@ -174,94 +94,105 @@ function renderEducationItem(edu) {
   `
 }
 
-function renderCustomItem(section) {
+function renderCustomSection(section, sectionClass) {
   const title = escapeHtml(section.title || 'Custom section')
   const content = htmlToBulletList(section.content) || `<p>${escapeHtml(plainTextFromHtml(section.content))}</p>`
   return `
-    <div class="entry">
-      <div class="entry-head">
-        <span>${title}</span>
-      </div>
-      ${content}
-    </div>
+    <section class="${sectionClass}">
+      <h2>${title}</h2>
+      <div class="section-body">${content}</div>
+    </section>
   `
 }
 
 export function buildAtsPdfHtml(form) {
-  const safeForm = form && typeof form === 'object' ? form : {}
-  const sectionClass = safeForm.sectionUnderline ? 'section has-underline' : 'section'
+  const model = buildResumeViewModel(form, { forceEducationScoreWhenValue: true })
+  const sectionClass = model.sectionUnderline ? 'section has-underline' : 'section'
   const bodyClass = 'compact'
-  const headerClass = safeForm.sectionUnderline ? 'header' : 'header has-underline'
-  const safeMarginIn = normalizePageMarginIn(safeForm.pageMarginIn)
-  const safeTopPaddingIn = computeTopPagePaddingIn(safeMarginIn)
-  const { contactLine, links } = renderContact(safeForm)
-  const summaryHtml = String(safeForm.summary || '').trim()
-  const skillsHtml = String(safeForm.skills || '').trim()
+  const headerClass = model.sectionUnderline ? 'header' : 'header has-underline'
+  const linksHtml = model.links
+    .map((item) => `<a href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>`)
+    .join(' | ')
+
+  const getCustomByKey = (key) => {
+    if (!key.startsWith(model.customKeyPrefix)) return null
+    const id = key.slice(model.customKeyPrefix.length)
+    return model.customSections.find((section) => section.id === id) || null
+  }
 
   const sections = []
+  model.orderedKeys.forEach((key) => {
+    if (key === 'summary') {
+      if (!model.summaryEnabled || !model.summaryHtml.trim()) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>${escapeHtml(model.summaryHeading || 'Summary')}</h2>
+          <div class="section-body">${model.summaryHtml}</div>
+        </section>
+      `)
+      return
+    }
 
-  if (safeForm.summaryEnabled && summaryHtml) {
-    sections.push(`
-      <section class="${sectionClass}">
-        <h2>${escapeHtml(safeForm.summaryHeading || 'Summary')}</h2>
-        <div class="section-body">${summaryHtml}</div>
-      </section>
-    `)
-  }
+    if (key === 'skills') {
+      if (!model.skillsHtml.trim()) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Skills</h2>
+          <div class="section-body">${model.skillsHtml}</div>
+        </section>
+      `)
+      return
+    }
 
-  if (skillsHtml) {
-    sections.push(`
-      <section class="${sectionClass}">
-        <h2>Skills</h2>
-        <div class="section-body">${skillsHtml}</div>
-      </section>
-    `)
-  }
+    if (key === 'experience') {
+      if (!model.experiences.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Experience</h2>
+          ${model.experiences.map((exp) => renderExperienceItem(exp)).join('')}
+        </section>
+      `)
+      return
+    }
 
-  if ((safeForm.experiences || []).length) {
-    sections.push(`
-      <section class="${sectionClass}">
-        <h2>Experience</h2>
-        ${(safeForm.experiences || []).map((exp) => renderExperienceItem(exp, safeForm)).join('')}
-      </section>
-    `)
-  }
+    if (key === 'projects') {
+      if (!model.projects.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Projects</h2>
+          ${model.projects.map((project) => renderProjectItem(project)).join('')}
+        </section>
+      `)
+      return
+    }
 
-  if ((safeForm.projects || []).length) {
-    sections.push(`
-      <section class="${sectionClass}">
-        <h2>Projects</h2>
-        ${(safeForm.projects || []).map((proj) => renderProjectItem(proj, safeForm)).join('')}
-      </section>
-    `)
-  }
+    if (key === 'education') {
+      if (!model.educations.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Education</h2>
+          ${model.educations.map((edu) => renderEducationItem(edu)).join('')}
+        </section>
+      `)
+      return
+    }
 
-  if ((safeForm.educations || []).length) {
-    sections.push(`
-      <section class="${sectionClass}">
-        <h2>Education</h2>
-        ${(safeForm.educations || []).map((edu) => renderEducationItem(edu)).join('')}
-      </section>
-    `)
-  }
-
-  if ((safeForm.customSections || []).length) {
-    sections.push(`
-      <section class="${sectionClass}">
-        ${(safeForm.customSections || []).map((section) => renderCustomItem(section)).join('')}
-      </section>
-    `)
-  }
+    if (key.startsWith(model.customKeyPrefix)) {
+      const custom = getCustomByKey(key)
+      if (!custom) return
+      sections.push(renderCustomSection(custom, sectionClass))
+    }
+  })
 
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>${escapeHtml(safeForm.fullName || 'Resume')}</title>
+  <title>${escapeHtml(model.fullName || 'Resume')}</title>
   <style>
     @page {
       size: A4;
-      margin: ${safeMarginIn}in;
+      margin: ${model.pageMarginIn}in;
     }
 
     html, body {
@@ -275,7 +206,7 @@ export function buildAtsPdfHtml(form) {
     }
 
     body {
-      padding: ${safeTopPaddingIn}in ${safeMarginIn}in ${safeMarginIn}in;
+      padding: ${model.topPagePaddingIn}in ${model.pageMarginIn}in ${model.pageMarginIn}in;
       font-size: 10pt;
       line-height: 1.35;
     }
@@ -407,32 +338,6 @@ export function buildAtsPdfHtml(form) {
       text-decoration: none;
     }
 
-    .entry-tech-stack {
-      display: block;
-      font-size: inherit;
-      line-height: inherit;
-    }
-
-    .entry-tech-stack--end {
-      margin-top: 5pt;
-    }
-
-    body.compact .entry-tech-stack--end {
-      margin-top: 3pt;
-    }
-
-    .entry-tech-stack-label {
-      flex: 0 0 auto;
-      font-weight: 600;
-      letter-spacing: 0.03em;
-      color: #0f172a;
-    }
-
-    .entry-tech-stack-items {
-      color: #1f2937;
-      font-weight: 600;
-    }
-
     ul {
       margin: 4pt 0 0;
       padding-left: 16pt;
@@ -474,9 +379,9 @@ export function buildAtsPdfHtml(form) {
 </head>
 <body class="${bodyClass}">
   <header class="${headerClass}">
-    <h1>${escapeHtml(safeForm.fullName || '')}</h1>
-    <div class="contact">${escapeHtml(contactLine)}</div>
-    ${links ? `<div class="plain-links">${links}</div>` : ''}
+    <h1>${escapeHtml(model.fullName || '')}</h1>
+    <div class="contact">${escapeHtml(model.contactLine)}</div>
+    ${linksHtml ? `<div class="plain-links">${linksHtml}</div>` : ''}
   </header>
   ${sections.join('')}
 </body>
@@ -518,9 +423,7 @@ export function printAtsPdf(form) {
     const win = iframe.contentWindow
     const doc = iframe.contentDocument
     const bodyHtml = String(doc?.body?.innerHTML || '').trim()
-    if (!win || !bodyHtml) {
-      return
-    }
+    if (!win || !bodyHtml) return
 
     printed = true
     const finish = () => cleanup()

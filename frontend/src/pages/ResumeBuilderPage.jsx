@@ -5,6 +5,11 @@ import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
 import { createResume, fetchResume, fetchResumes, parseResumePdf, updateResume } from '../api'
 import { printAtsPdf } from '../utils/resumeExport'
+import {
+  DEFAULT_PAGE_MARGIN_IN,
+  MIN_PAGE_MARGIN_IN,
+  normalizePageMarginIn,
+} from '../utils/resumeShared'
 
 const FONT_FAMILY_OPTIONS = [
   { label: 'Default', value: 'Arial, Helvetica, sans-serif' },
@@ -17,16 +22,6 @@ const FONT_FAMILY_OPTIONS = [
   { label: 'Verdana', value: 'Verdana, Geneva, sans-serif' },
   { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
 ]
-
-const MIN_PAGE_MARGIN_IN = 0.2
-const DEFAULT_PAGE_MARGIN_IN = 0.3
-
-function normalizePageMarginIn(value) {
-  const numeric = Number(value)
-  if (!Number.isFinite(numeric)) return DEFAULT_PAGE_MARGIN_IN
-  if (numeric <= MIN_PAGE_MARGIN_IN) return MIN_PAGE_MARGIN_IN
-  return DEFAULT_PAGE_MARGIN_IN
-}
 
 function renderSummaryByStyle(text, style) {
   // The editor stores sanitized HTML, so style is currently "auto".
@@ -69,9 +64,6 @@ function formToPlainText(form) {
     if (head) parts.push(head)
     const highlights = plainTextFromHtml(exp.highlights || '')
     if (highlights) parts.push(highlights)
-    const tech = String(exp.techStack || '').trim()
-    const showTech = Boolean(exp.showTechUsed ?? f.showExperienceTechUsed)
-    if (tech && showTech) parts.push(`Tech Stack: ${tech}`)
   })
 
   ;(f.projects || []).forEach((proj) => {
@@ -79,9 +71,6 @@ function formToPlainText(form) {
     if (head) parts.push(head)
     const highlights = plainTextFromHtml(proj.highlights || '')
     if (highlights) parts.push(highlights)
-    const tech = String(proj.techStack || '').trim()
-    const showTech = Boolean(proj.showTechUsed ?? f.showProjectTechUsed)
-    if (tech && showTech) parts.push(`Tech Stack: ${tech}`)
   })
 
   ;(f.educations || []).forEach((edu) => {
@@ -343,13 +332,6 @@ function normalizeHttpUrl(value) {
   }
 }
 
-function normalizeTechStackText(value) {
-  return String(value || '')
-    .replace(/\s*,\s*/g, ', ')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
 function renderLink(label, value) {
   const url = normalizeHttpUrl(value)
   if (!url) return null
@@ -438,17 +420,9 @@ function buildDocHtml(form) {
       const name = escapeHtml(p.name || '')
       const url = normalizeHttpUrl(p.url)
       const link = url ? ` <a href="${escapeHtml(url)}" style="color:#6b778f;text-decoration:none;">link</a>` : ''
-      const techRaw = normalizeTechStackText(p.techStack)
-      const showTech = Boolean(p.showTechUsed ?? form.showProjectTechUsed)
-      const techBlock =
-        showTech && techRaw
-          ? `<p style="margin:6px 0 0;font-size:${safeFontSize}pt;line-height:${safeLineHeight};color:#1f2937;"><span style="font-weight:600;letter-spacing:0.03em;color:#111827;">Tech Stack:</span> <span style="font-weight:600;">${escapeHtml(
-              techRaw,
-            )}</span></p>`
-          : ''
       return `<div style="margin-top:10px;"><div><strong>${name}</strong>${link}</div>${richTextToHtml(
         p.highlights || '',
-      )}${techBlock}</div>`
+      )}</div>`
     })
     .join('')
 
@@ -459,21 +433,12 @@ function buildDocHtml(form) {
         .map((v) => String(v || '').trim())
         .filter(Boolean)
         .join(' – ')
-      const techRaw = normalizeTechStackText(e.techStack)
-      const showTech = Boolean(e.showTechUsed ?? form.showExperienceTechUsed)
-      const techBlock =
-        showTech && techRaw
-          ? `<p style="margin:6px 0 0;font-size:${safeFontSize}pt;line-height:${safeLineHeight};color:#1f2937;"><span style="font-weight:600;letter-spacing:0.03em;color:#111827;">Tech Stack:</span> <span style="font-weight:600;">${escapeHtml(
-              techRaw,
-            )}</span></p>`
-          : ''
       return `<div style="margin-top:10px;">
         <div style="display:flex;justify-content:space-between;gap:12px;">
           <div><strong>${inlineToHtml(left)}</strong></div>
           <div style="color:#3a4861;white-space:nowrap;">${inlineToHtml(right)}</div>
         </div>
         ${richTextToHtml(e.highlights || '')}
-        ${techBlock}
       </div>`
     })
     .join('')
@@ -596,8 +561,6 @@ function ResumeBuilderPage() {
         startDate: '',
         endDate: '',
         isCurrent: true,
-        techStack: '',
-        showTechUsed: false,
         highlights: '<ul><li>Write 3+ bullets. Add numbers where possible.</li></ul>',
       },
     ],
@@ -605,8 +568,6 @@ function ResumeBuilderPage() {
       {
         name: '',
         url: '',
-        techStack: '',
-        showTechUsed: false,
         highlights: '<ul><li>Add 2-3 bullet points about what you built.</li></ul>',
       },
     ],
@@ -893,8 +854,6 @@ function ResumeBuilderPage() {
           startDate: '',
           endDate: '',
           isCurrent: true,
-          techStack: '',
-          showTechUsed: false,
           highlights: '- ',
         },
         ...(prev.experiences || []),
@@ -959,7 +918,7 @@ function ResumeBuilderPage() {
       ...prev,
       projects: [
         ...(prev.projects || []),
-        { name: '', url: '', techStack: '', showTechUsed: false, highlights: '- ' },
+        { name: '', url: '', highlights: '- ' },
       ],
     }))
   }
@@ -1401,23 +1360,6 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
-                <div className="exp-row exp-row-tech">
-                  <input
-                    type="text"
-                    value={exp.techStack ?? ''}
-                    onChange={(e) => updateExperience(index, { techStack: e.target.value })}
-                    placeholder="Tech stack (e.g. HTML, SCSS, React, Redux)"
-                  />
-                  <label className="checkbox exp-tech-toggle">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(exp.showTechUsed)}
-                      onChange={(e) => updateExperience(index, { showTechUsed: e.target.checked })}
-                    />
-                    Show tech stack
-                  </label>
-                </div>
-
                 <div className="exp-row exp-row-actions">
                   <label className="checkbox">
                     <input
@@ -1472,23 +1414,6 @@ function ResumeBuilderPage() {
                     onChange={(e) => updateProject(index, { url: e.target.value })}
                     placeholder="Project link (optional, e.g. https://...)"
                   />
-                </div>
-
-                <div className="exp-row exp-row-tech">
-                  <input
-                    type="text"
-                    value={proj.techStack ?? ''}
-                    onChange={(e) => updateProject(index, { techStack: e.target.value })}
-                    placeholder="Tech stack (e.g. React, Electron, Highcharts, Ant Design)"
-                  />
-                  <label className="checkbox exp-tech-toggle">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(proj.showTechUsed)}
-                      onChange={(e) => updateProject(index, { showTechUsed: e.target.checked })}
-                    />
-                    Show tech stack
-                  </label>
                 </div>
 
                 <RichTextarea

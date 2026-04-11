@@ -460,14 +460,6 @@
     @apply min-w-[220px] flex-1;
   }
 
-  .exp-row-tech > input[type='text'] {
-    @apply min-w-0 flex-1;
-  }
-
-  .exp-row-tech > .exp-tech-toggle {
-    @apply flex-none shrink-0;
-  }
-
   .builder-actions-hint {
     @apply mt-3 text-sm text-slate-500 dark:text-slate-400;
   }
@@ -652,33 +644,6 @@
 
   .resume-exp-body {
     margin-top: 0;
-  }
-
-  .resume-tech-stack {
-    display: block;
-    color: #1f2937;
-    font-family: var(--resume-font-family, Arial, Helvetica, sans-serif);
-    font-size: inherit;
-    line-height: inherit;
-  }
-
-  .resume-tech-stack--end {
-    margin-top: 5pt;
-  }
-
-  .resume-sheet.is-compact .resume-tech-stack--end {
-    margin-top: 3pt;
-  }
-
-  .resume-tech-stack-label {
-    font-weight: 600;
-    color: #0f172a;
-    letter-spacing: 0.03em;
-  }
-
-  .resume-tech-stack-items {
-    color: #1f2937;
-    font-weight: 600;
   }
 
   .resume-edu-inst {
