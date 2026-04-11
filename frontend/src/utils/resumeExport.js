@@ -75,9 +75,18 @@ function renderContact(form) {
   }
 }
 
-function renderExperienceItem(exp) {
+function renderTechStackLine(techStack, show) {
+  if (!show) return ''
+  const text = String(techStack || '').trim()
+  if (!text) return ''
+  return `<p class="entry-tech-stack entry-tech-stack--end"><span class="entry-tech-stack-label">Tech Stack</span><span class="entry-tech-stack-sep">·</span><span class="entry-tech-stack-items">${escapeHtml(text)}</span></p>`
+}
+
+function renderExperienceItem(exp, form) {
+  const legacy = form && typeof form === 'object' ? form : {}
   const title = escapeHtml([exp.company, exp.title].filter(Boolean).join(' - '))
   const dates = escapeHtml([exp.startDate, exp.isCurrent ? 'Present' : exp.endDate].filter(Boolean).join(' - '))
+  const tech = renderTechStackLine(exp.techStack, Boolean(exp.showTechUsed ?? legacy.showExperienceTechUsed))
   const bullets = htmlToBulletList(exp.highlights)
 
   return `
@@ -87,14 +96,17 @@ function renderExperienceItem(exp) {
         <span class="entry-dates">${dates}</span>
       </div>
       ${bullets}
+      ${tech}
     </div>
   `
 }
 
-function renderProjectItem(proj) {
+function renderProjectItem(proj, form) {
+  const legacy = form && typeof form === 'object' ? form : {}
   const name = escapeHtml(proj.name || '')
   const url = normalizeHttpUrl(proj.url)
   const link = url ? `<a class="entry-link project-link" href="${escapeHtml(url)}">link</a>` : ''
+  const tech = renderTechStackLine(proj.techStack, Boolean(proj.showTechUsed ?? legacy.showProjectTechUsed))
   const bullets = htmlToBulletList(proj.highlights)
 
   return `
@@ -103,6 +115,7 @@ function renderProjectItem(proj) {
         <span>${name}${link}</span>
       </div>
       ${bullets}
+      ${tech}
     </div>
   `
 }
@@ -179,7 +192,7 @@ export function buildAtsPdfHtml(form) {
     sections.push(`
       <section class="${sectionClass}">
         <h2>Experience</h2>
-        ${(safeForm.experiences || []).map((exp) => renderExperienceItem(exp)).join('')}
+        ${(safeForm.experiences || []).map((exp) => renderExperienceItem(exp, safeForm)).join('')}
       </section>
     `)
   }
@@ -188,7 +201,7 @@ export function buildAtsPdfHtml(form) {
     sections.push(`
       <section class="${sectionClass}">
         <h2>Projects</h2>
-        ${(safeForm.projects || []).map((proj) => renderProjectItem(proj)).join('')}
+        ${(safeForm.projects || []).map((proj) => renderProjectItem(proj, safeForm)).join('')}
       </section>
     `)
   }
@@ -338,6 +351,57 @@ export function buildAtsPdfHtml(form) {
       margin-left: 3pt;
       display: inline-block;
       text-decoration: none;
+    }
+
+    .entry-tech-stack {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 4pt 6pt;
+      font-size: 9.25pt;
+      line-height: 1.35;
+    }
+
+    .entry-tech-stack--end {
+      margin-top: 5pt;
+    }
+
+    body.compact .entry-tech-stack--end {
+      margin-top: 3pt;
+    }
+
+    .section.has-underline .entry-tech-stack--end {
+      border-bottom: 0.35pt solid #d1d5db;
+      padding-bottom: 2pt;
+    }
+
+    body.compact .section.has-underline .entry-tech-stack--end {
+      padding-bottom: 1.5pt;
+    }
+
+    body.compact .entry-tech-stack {
+      font-size: 9pt;
+      line-height: 1.28;
+    }
+
+    .entry-tech-stack-label {
+      flex: 0 0 auto;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: #0f172a;
+    }
+
+    .entry-tech-stack-sep {
+      flex: 0 0 auto;
+      color: #94a3b8;
+      font-weight: 400;
+    }
+
+    .entry-tech-stack-items {
+      flex: 1 1 140pt;
+      min-width: 0;
+      color: #475569;
+      word-spacing: 0.08em;
     }
 
     ul {

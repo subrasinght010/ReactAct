@@ -59,6 +59,9 @@ function formToPlainText(form) {
     if (head) parts.push(head)
     const highlights = plainTextFromHtml(exp.highlights || '')
     if (highlights) parts.push(highlights)
+    const tech = String(exp.techStack || '').trim()
+    const showTech = Boolean(exp.showTechUsed ?? f.showExperienceTechUsed)
+    if (tech && showTech) parts.push(`Tech Stack — ${tech}`)
   })
 
   ;(f.projects || []).forEach((proj) => {
@@ -66,6 +69,9 @@ function formToPlainText(form) {
     if (head) parts.push(head)
     const highlights = plainTextFromHtml(proj.highlights || '')
     if (highlights) parts.push(highlights)
+    const tech = String(proj.techStack || '').trim()
+    const showTech = Boolean(proj.showTechUsed ?? f.showProjectTechUsed)
+    if (tech && showTech) parts.push(`Tech Stack — ${tech}`)
   })
 
   ;(f.educations || []).forEach((edu) => {
@@ -323,6 +329,9 @@ function buildDocHtml(form) {
   const safeBodyFontFamily = String(form.bodyFontFamily || 'Arial, Helvetica, sans-serif')
   const marginIn = Number(form.pageMarginIn || 0.3)
   const safeMarginIn = Number.isFinite(marginIn) ? marginIn : 0.3
+  const techStackFootRule = form.sectionUnderline
+    ? 'padding-bottom:6px;border-bottom:1px solid #d1d5db;'
+    : ''
 
   const contact = [form.location, form.phone, form.email]
     .map((v) => String(v || '').trim())
@@ -340,9 +349,17 @@ function buildDocHtml(form) {
       const name = escapeHtml(p.name || '')
       const url = normalizeHttpUrl(p.url)
       const link = url ? ` <a href="${escapeHtml(url)}" style="color:#6b778f;text-decoration:none;">link</a>` : ''
+      const techRaw = String(p.techStack || '').trim()
+      const showTech = Boolean(p.showTechUsed ?? form.showProjectTechUsed)
+      const techBlock =
+        showTech && techRaw
+          ? `<p style="margin:10px 0 0;${techStackFootRule}display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;font-size:${safeFontSize}pt;line-height:${safeLineHeight};color:#475569;"><span style="flex:0 0 auto;font-weight:600;letter-spacing:0.03em;color:#0f172a;">Tech Stack</span><span style="flex:0 0 auto;color:#94a3b8;">·</span><span style="flex:1 1 160px;min-width:0;word-spacing:0.08em;">${escapeHtml(
+              techRaw,
+            )}</span></p>`
+          : ''
       return `<div style="margin-top:10px;"><div><strong>${name}</strong>${link}</div>${richTextToHtml(
         p.highlights || '',
-      )}</div>`
+      )}${techBlock}</div>`
     })
     .join('')
 
@@ -353,12 +370,21 @@ function buildDocHtml(form) {
         .map((v) => String(v || '').trim())
         .filter(Boolean)
         .join(' – ')
+      const techRaw = String(e.techStack || '').trim()
+      const showTech = Boolean(e.showTechUsed ?? form.showExperienceTechUsed)
+      const techBlock =
+        showTech && techRaw
+          ? `<p style="margin:10px 0 0;${techStackFootRule}display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 10px;font-size:${safeFontSize}pt;line-height:${safeLineHeight};color:#475569;"><span style="flex:0 0 auto;font-weight:600;letter-spacing:0.03em;color:#0f172a;">Tech Stack</span><span style="flex:0 0 auto;color:#94a3b8;">·</span><span style="flex:1 1 160px;min-width:0;word-spacing:0.08em;">${escapeHtml(
+              techRaw,
+            )}</span></p>`
+          : ''
       return `<div style="margin-top:10px;">
         <div style="display:flex;justify-content:space-between;gap:12px;">
           <div><strong>${inlineToHtml(left)}</strong></div>
           <div style="color:#3a4861;white-space:nowrap;">${inlineToHtml(right)}</div>
         </div>
         ${richTextToHtml(e.highlights || '')}
+        ${techBlock}
       </div>`
     })
     .join('')
@@ -481,6 +507,8 @@ function ResumeBuilderPage() {
         startDate: '',
         endDate: '',
         isCurrent: true,
+        techStack: '',
+        showTechUsed: false,
         highlights: '<ul><li>Write 3+ bullets. Add numbers where possible.</li></ul>',
       },
     ],
@@ -488,6 +516,8 @@ function ResumeBuilderPage() {
       {
         name: '',
         url: '',
+        techStack: '',
+        showTechUsed: false,
         highlights: '<ul><li>Add 2-3 bullet points about what you built.</li></ul>',
       },
     ],
@@ -751,7 +781,16 @@ function ResumeBuilderPage() {
     setForm((prev) => ({
       ...prev,
       experiences: [
-        { company: '', title: '', startDate: '', endDate: '', isCurrent: true, highlights: '- ' },
+        {
+          company: '',
+          title: '',
+          startDate: '',
+          endDate: '',
+          isCurrent: true,
+          techStack: '',
+          showTechUsed: false,
+          highlights: '- ',
+        },
         ...(prev.experiences || []),
       ],
     }))
@@ -812,7 +851,10 @@ function ResumeBuilderPage() {
   const addProject = () => {
     setForm((prev) => ({
       ...prev,
-      projects: [...(prev.projects || []), { name: '', url: '', highlights: '- ' }],
+      projects: [
+        ...(prev.projects || []),
+        { name: '', url: '', techStack: '', showTechUsed: false, highlights: '- ' },
+      ],
     }))
   }
 
@@ -1223,6 +1265,23 @@ function ResumeBuilderPage() {
                   />
                 </div>
 
+                <div className="exp-row exp-row-tech">
+                  <input
+                    type="text"
+                    value={exp.techStack ?? ''}
+                    onChange={(e) => updateExperience(index, { techStack: e.target.value })}
+                    placeholder="Tech stack (e.g. HTML, SCSS, React, Redux)"
+                  />
+                  <label className="checkbox exp-tech-toggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(exp.showTechUsed)}
+                      onChange={(e) => updateExperience(index, { showTechUsed: e.target.checked })}
+                    />
+                    Show tech stack
+                  </label>
+                </div>
+
                 <div className="exp-row exp-row-actions">
                   <label className="checkbox">
                     <input
@@ -1277,6 +1336,23 @@ function ResumeBuilderPage() {
                     onChange={(e) => updateProject(index, { url: e.target.value })}
                     placeholder="Project link (optional, e.g. https://...)"
                   />
+                </div>
+
+                <div className="exp-row exp-row-tech">
+                  <input
+                    type="text"
+                    value={proj.techStack ?? ''}
+                    onChange={(e) => updateProject(index, { techStack: e.target.value })}
+                    placeholder="Tech stack (e.g. React, Electron, Highcharts, Ant Design)"
+                  />
+                  <label className="checkbox exp-tech-toggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(proj.showTechUsed)}
+                      onChange={(e) => updateProject(index, { showTechUsed: e.target.checked })}
+                    />
+                    Show tech stack
+                  </label>
                 </div>
 
                 <RichTextarea

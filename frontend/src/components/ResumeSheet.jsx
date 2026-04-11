@@ -99,6 +99,20 @@ function renderLink(label, value) {
   )
 }
 
+function techStackBlock(techStack) {
+  const text = String(techStack || '').trim()
+  if (!text) return null
+  return (
+    <p className="resume-tech-stack resume-tech-stack--end" role="group" aria-label="Tech stack">
+      <span className="resume-tech-stack-label">Tech Stack</span>
+      <span className="resume-tech-stack-sep" aria-hidden="true">
+        ·
+      </span>
+      <span className="resume-tech-stack-items">{text}</span>
+    </p>
+  )
+}
+
 function buildOrderedKeys(form) {
   const sectionMeta = [
     { key: 'summary', label: 'Summary' },
@@ -140,6 +154,7 @@ export default function ResumeSheet({ form }) {
       experiences: sortNewestFirst(
         (safeForm.experiences || []).map((exp) => ({
           ...exp,
+          techStack: String(exp.techStack || ''),
           highlights: String(exp.highlights || ''),
         })),
         (e) => dateKey(e.endDate, e.isCurrent),
@@ -147,6 +162,7 @@ export default function ResumeSheet({ form }) {
       ),
       projects: (safeForm.projects || []).map((proj) => ({
         ...proj,
+        techStack: String(proj.techStack || ''),
         normalizedUrl: normalizeHttpUrl(proj.url),
         highlights: String(proj.highlights || ''),
       })),
@@ -246,6 +262,8 @@ export default function ResumeSheet({ form }) {
                   </div>
                   <div className="resume-exp-body">
                     <div className="resume-rich" dangerouslySetInnerHTML={{ __html: exp.highlights }} />
+                    {Boolean(exp.showTechUsed ?? safeForm.showExperienceTechUsed) &&
+                      techStackBlock(exp.techStack)}
                   </div>
                 </div>
               ))}
@@ -278,6 +296,8 @@ export default function ResumeSheet({ form }) {
                   </div>
                   <div className="resume-exp-body">
                     <div className="resume-rich" dangerouslySetInnerHTML={{ __html: proj.highlights }} />
+                    {Boolean(proj.showTechUsed ?? safeForm.showProjectTechUsed) &&
+                      techStackBlock(proj.techStack)}
                   </div>
                 </div>
               ))}
