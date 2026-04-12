@@ -122,6 +122,38 @@ def _lines_to_list_html(lines: list[str]) -> str:
     return '<ul>' + ''.join(items) + '</ul>'
 
 
+def _strip_list_prefix(text: str) -> str:
+    line = _norm(text)
+    if not line:
+        return ''
+    # Remove explicit list prefixes only (dot, bullet, dash, asterisk, numbered markers).
+    line = re.sub(r'^\s*(?:[•\-*]|\.|(?:\d{1,3}[\).\]]))\s*', '', line)
+    return _norm(line)
+
+
+def _is_explicit_bullet_line(text: str) -> bool:
+    line = _norm(text)
+    if not line:
+        return False
+    return bool(re.match(r'^\s*(?:[•\-*]|\.|(?:\d{1,3}[\).\]]))\s+', line))
+
+
+def _lines_to_custom_html(lines: list[str]) -> str:
+    cleaned = [_norm(line) for line in (lines or []) if _norm(line) and _norm(line).lower() != 'link']
+    if not cleaned:
+        return ''
+
+    # Only preserve bullets when the source clearly uses explicit bullet markers.
+    if any(_is_explicit_bullet_line(line) for line in cleaned):
+        items = [f'<li>{html.escape(_strip_list_prefix(line))}</li>' for line in cleaned if _strip_list_prefix(line)]
+        if items:
+            return '<ul>' + ''.join(items) + '</ul>'
+
+    # Otherwise keep as plain paragraph text (no synthetic bullets).
+    merged = ' '.join(_strip_list_prefix(line) for line in cleaned if _strip_list_prefix(line)).strip()
+    return _escape_paragraph(merged)
+
+
 def _group_bullets(lines: list[str]) -> list[str]:
     bullets: list[str] = []
     current: list[str] = []
@@ -524,7 +556,7 @@ def parse_resume_pdf(file_obj) -> dict[str, Any]:
         lines_for_section = sections.get(key) or []
         if not lines_for_section:
             continue
-        content = _lines_to_list_html(_group_bullets(lines_for_section))
+        content = _lines_to_custom_html(lines_for_section)
         if not content:
             content = _escape_paragraph(' '.join(lines_for_section))
         if content:

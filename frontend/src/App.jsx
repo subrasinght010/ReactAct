@@ -1,6 +1,5 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 
-import DashboardPage from './pages/DashboardPage'
 import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
@@ -28,7 +27,7 @@ function PublicOnly({ children }) {
 
   if (!isLoggedIn) return children
 
-  const redirect = sessionStorage.getItem('redirectAfterLogin') || '/dashboard'
+  const redirect = sessionStorage.getItem('redirectAfterLogin') || '/'
   sessionStorage.removeItem('redirectAfterLogin')
   return <Navigate to={redirect} replace />
 }
@@ -47,7 +46,6 @@ function AppLayout() {
             <Route path="/login" element={<PublicOnly><LoginPage /></PublicOnly>} />
             <Route path="/register" element={<PublicOnly><RegisterPage /></PublicOnly>} />
             <Route path="/" element={<RequireAuth><HomePage /></RequireAuth>} />
-            <Route path="/dashboard" element={<RequireAuth><DashboardPage /></RequireAuth>} />
             <Route path="/builder" element={<RequireAuth><ResumeBuilderPage /></RequireAuth>} />
             <Route path="/tailored-builder" element={<RequireAuth><TailoredResumePage /></RequireAuth>} />
             <Route path="/preview/:resumeId" element={<RequireAuth><ResumePreviewPage /></RequireAuth>} />

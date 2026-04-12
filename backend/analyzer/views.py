@@ -84,6 +84,47 @@ def _builder_data_to_text(builder_data: dict) -> str:
     return "\n".join([p for p in [p.strip() for p in parts] if p])
 
 
+def _section_presence_from_builder(builder_data: dict) -> dict:
+    data = sanitize_builder_data(builder_data or {})
+    return {
+        "summary": bool(_plain_text_from_html(data.get("summary") or "")),
+        "skills": bool(_plain_text_from_html(data.get("skills") or "")),
+        "experiences": bool(data.get("experiences") or []),
+        "projects": bool(data.get("projects") or []),
+        "educations": bool(data.get("educations") or []),
+        "customSections": bool(data.get("customSections") or []),
+        "role": bool(str(data.get("role") or "").strip()),
+    }
+
+
+def _restrict_to_reference_sections(reference_builder: dict, result_builder: dict) -> dict:
+    reference = sanitize_builder_data(reference_builder or {})
+    result = sanitize_builder_data(result_builder or {})
+    present = _section_presence_from_builder(reference)
+
+    # Keep exact section order from reference when available.
+    if isinstance(reference.get("sectionOrder"), list):
+        result["sectionOrder"] = list(reference.get("sectionOrder") or [])
+
+    if not present["summary"]:
+        result["summaryEnabled"] = False
+        result["summary"] = ""
+    if not present["skills"]:
+        result["skills"] = ""
+    if not present["experiences"]:
+        result["experiences"] = []
+    if not present["projects"]:
+        result["projects"] = []
+    if not present["educations"]:
+        result["educations"] = []
+    if not present["customSections"]:
+        result["customSections"] = []
+    if not present["role"]:
+        result["role"] = ""
+
+    return sanitize_builder_data(result)
+
+
 def _sanitize_filename_stem(raw: str) -> str:
     value = re.sub(r"\s+", " ", str(raw or "").strip())
     value = re.sub(r"[^\w\s-]", "", value)
@@ -774,6 +815,7 @@ class TailorResumeView(APIView):
             model_override=ai_model or None,
         )
         tailored_builder = self._apply_tailor_mode(base_builder, tailored_builder, tailor_mode)
+        tailored_builder = _restrict_to_reference_sections(base_builder, tailored_builder)
         plain_text = builder_data_to_text(tailored_builder)
         title = self._tailored_title(jd_text, fallback_title=(base_builder.get('resumeTitle') or 'Tailored Resume'))
 
@@ -881,6 +923,7 @@ class OptimizeResumeQualityView(APIView):
             ai_payload,
             model_override=ai_model or None,
         )
+        optimized_builder = _restrict_to_reference_sections(request_builder, optimized_builder)
         plain_text = builder_data_to_text(optimized_builder)
         title = str(optimized_builder.get('resumeTitle') or 'Optimized Resume').strip() or 'Optimized Resume'
         preview_only = self._to_bool(request.data.get('preview_only'), default=True)

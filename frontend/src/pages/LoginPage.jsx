@@ -25,7 +25,7 @@ function LoginPage() {
       setLoading(true)
       const data = await loginUser(username, password)
       login(data.access, data.refresh)
-      const redirect = sessionStorage.getItem('redirectAfterLogin') || '/dashboard'
+      const redirect = sessionStorage.getItem('redirectAfterLogin') || '/'
       sessionStorage.removeItem('redirectAfterLogin')
       navigate(redirect)
     } catch (err) {

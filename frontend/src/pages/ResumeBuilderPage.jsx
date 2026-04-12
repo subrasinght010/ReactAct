@@ -593,6 +593,8 @@ function ResumeBuilderPage({
   referenceResumeIdSessionKey = 'builderReferenceResumeId',
   aiModelSessionKey = 'builderAiModel',
   tailorModeSessionKey = 'builderTailorMode',
+  showSaveButton = true,
+  disableAutoLoadDefaultResume = false,
 }) {
   const navigate = useNavigate()
   const [form, setForm] = useState({
@@ -664,6 +666,7 @@ function ResumeBuilderPage({
     keywords: [],
     matchScore: null,
   })
+  const [activeTailorAction, setActiveTailorAction] = useState('')
   const [tailorReferenceBuilder, setTailorReferenceBuilder] = useState(() => {
     if (!enableTailorFlow) return null
     try {
@@ -680,6 +683,9 @@ function ResumeBuilderPage({
     return sessionStorage.getItem(referenceResumeIdSessionKey) || ''
   })
   const pdfInputRef = useRef(null)
+  const tailorReferenceLoaded = enableTailorFlow
+    ? hasBuilderSubstance(tailorReferenceBuilder || form)
+    : hasBuilderSubstance(form)
 
   useEffect(() => {
     if (!enableTailorFlow) return
@@ -749,6 +755,7 @@ function ResumeBuilderPage({
   }, [enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
 
   useEffect(() => {
+    if (disableAutoLoadDefaultResume) return
     let cancelled = false
 
     const loadDefaultFromList = async (access) => {
@@ -810,7 +817,7 @@ function ResumeBuilderPage({
     return () => {
       cancelled = true
     }
-  }, [enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
+  }, [disableAutoLoadDefaultResume, enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
 
   const updateField = (key, value) => {
     if (key === 'pageMarginIn') {
@@ -1148,6 +1155,7 @@ function ResumeBuilderPage({
   const runTailorAndSave = async () => {
     if (!showJdBox || !enableTailorFlow) return
     if (tailorState.loading) return
+    setActiveTailorAction('tailor')
 
     const jd = String(jobDescription || '').trim()
     if (jd.length < 40) {
@@ -1258,6 +1266,7 @@ function ResumeBuilderPage({
   const runQualityOptimize = async () => {
     if (!enableTailorFlow) return
     if (tailorState.loading) return
+    setActiveTailorAction('optimize')
 
     const access = localStorage.getItem('access')
     if (!access) {
@@ -1359,9 +1368,11 @@ function ResumeBuilderPage({
           {importState.importing ? 'Importing...' : 'Import PDF'}
         </button>
       )}
-      <button type="button" onClick={saveResumeToAccount} disabled={saveState.saving}>
-        {saveState.saving ? 'Saving...' : 'Save'}
-      </button>
+      {showSaveButton && (
+        <button type="button" onClick={saveResumeToAccount} disabled={saveState.saving}>
+          {saveState.saving ? 'Saving...' : 'Save'}
+        </button>
+      )}
       {!minimalTailorUi && (
         <button type="button" className="secondary" onClick={downloadDoc}>
           Download DOC
@@ -1373,12 +1384,22 @@ function ResumeBuilderPage({
         </button>
       )}
       {showJdBox && enableTailorFlow && (
-        <button type="button" className="secondary" onClick={runQualityOptimize} disabled={tailorState.loading}>
+        <button
+          type="button"
+          className={`secondary${activeTailorAction === 'optimize' ? ' is-active' : ''}${tailorState.loading && tailorState.mode === 'optimize' ? ' is-busy' : ''}`}
+          onClick={runQualityOptimize}
+          disabled={tailorState.loading && tailorState.mode === 'optimize'}
+        >
           {tailorState.loading && tailorState.mode === 'optimize' ? 'Optimizing...' : 'Optimize Existing'}
         </button>
       )}
       {showJdBox && enableTailorFlow && (
-        <button type="button" className="secondary" onClick={runTailorAndSave} disabled={tailorState.loading}>
+        <button
+          type="button"
+          className={`secondary${activeTailorAction === 'tailor' ? ' is-active' : ''}${tailorState.loading && tailorState.mode === 'tailor' ? ' is-busy' : ''}`}
+          onClick={runTailorAndSave}
+          disabled={tailorState.loading && tailorState.mode === 'tailor'}
+        >
           {tailorState.loading && tailorState.mode === 'tailor' ? 'Tailoring...' : 'Tailor First'}
         </button>
       )}
@@ -1393,11 +1414,6 @@ function ResumeBuilderPage({
       {!enableTailorFlow && (
         <button type="button" className="secondary" onClick={saveAtsPdfLocal} disabled={pdfSaveState.saving}>
           {pdfSaveState.saving ? 'Saving PDF...' : 'Save ATS PDF Local'}
-        </button>
-      )}
-      {includeHome && (
-        <button type="button" className="secondary" onClick={() => navigate('/')}>
-          Back Home
         </button>
       )}
     </div>
@@ -1455,6 +1471,11 @@ function ResumeBuilderPage({
                 onChange={(e) => setJobDescription(e.target.value)}
                 placeholder="Paste the full job description here..."
               />
+              {enableTailorFlow && !tailorReferenceLoaded && (
+                <p className="hint" style={{ margin: '8px 0 0' }}>
+                  Upload a reference resume PDF first. Tailor/Optimize runs only on uploaded reference content.
+                </p>
+              )}
               <p className="hint" style={{ margin: '8px 0 0' }}>
                 `Optimize Existing` works independently to improve quality (buzzword-free, duplicate-free, quantified) without JD.
               </p>

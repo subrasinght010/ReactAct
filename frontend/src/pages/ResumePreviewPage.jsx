@@ -20,7 +20,7 @@ function ResumePreviewPage() {
         return
       }
       if (!resumeId) {
-        navigate('/dashboard')
+        navigate('/')
         return
       }
       setError('')
@@ -72,7 +72,7 @@ function ResumePreviewPage() {
           </p>
         </div>
         <div className="actions">
-          <button type="button" className="secondary" onClick={() => navigate('/dashboard')}>
+          <button type="button" className="secondary" onClick={() => navigate('/')}>
             Back
           </button>
           <button type="button" onClick={handleEdit} disabled={loading || !resumeId}>

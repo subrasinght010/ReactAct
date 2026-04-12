@@ -22,13 +22,15 @@ function plainTextFromHtml(value) {
     .trim()
 }
 
-function sanitizeInlineHtml(value) {
+function sanitizeRichHtml(value) {
   const parser = new DOMParser()
   const doc = parser.parseFromString(`<div>${String(value || '')}</div>`, 'text/html')
   const root = doc.body.firstElementChild
   if (!root) return ''
 
-  const allowed = new Set(['MARK', 'STRONG', 'EM', 'B', 'I', 'U', 'A', 'BR', 'SPAN'])
+  // Remove script/style tags from rich editor payload.
+  root.querySelectorAll('script,style').forEach((node) => node.remove())
+
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
   const nodes = []
   let node = walker.nextNode()
@@ -38,25 +40,23 @@ function sanitizeInlineHtml(value) {
   }
 
   nodes.forEach((el) => {
-    if (!allowed.has(el.tagName)) {
-      const parent = el.parentNode
-      while (el.firstChild) parent?.insertBefore(el.firstChild, el)
-      parent?.removeChild(el)
-      return
-    }
-    // Keep links safe and minimal.
+    // Keep links safe.
     if (el.tagName === 'A') {
       const href = String(el.getAttribute('href') || '').trim()
-      const safe = /^https?:\/\//i.test(href) ? href : ''
+      const safe = /^(https?:\/\/|mailto:|tel:)/i.test(href) ? href : ''
       el.setAttribute('href', safe)
-      el.removeAttribute('target')
-      el.removeAttribute('rel')
+      if (safe) {
+        el.setAttribute('target', '_blank')
+        el.setAttribute('rel', 'noreferrer')
+      } else {
+        el.removeAttribute('target')
+        el.removeAttribute('rel')
+      }
     }
-    // Drop style/event attrs to avoid broken markup.
+    // Remove JS event handlers, keep formatting attrs/styles from editor.
     Array.from(el.attributes || []).forEach((attr) => {
       const name = String(attr.name || '').toLowerCase()
-      if (name === 'href') return
-      el.removeAttribute(attr.name)
+      if (name.startsWith('on')) el.removeAttribute(attr.name)
     })
   })
 
@@ -64,25 +64,10 @@ function sanitizeInlineHtml(value) {
 }
 
 function htmlToBulletList(htmlValue, options = {}) {
-  const preserveInline = Boolean(options.preserveInline)
   const raw = String(htmlValue || '')
   if (!raw.trim()) return ''
-
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(raw, 'text/html')
-  const listItems = Array.from(doc.querySelectorAll('li')).map((li) => {
-    if (preserveInline) {
-      const html = sanitizeInlineHtml(li.innerHTML)
-      const text = String(li.textContent || '').replace(/\s+/g, ' ').trim()
-      return text ? { text, html } : null
-    }
-    const text = String(li.textContent || '').replace(/\s+/g, ' ').trim()
-    return text ? { text, html: '' } : null
-  }).filter(Boolean)
-
-  if (listItems.length) {
-    return `<ul>${listItems.map((item) => `<li>${preserveInline ? item.html : escapeHtml(item.text)}</li>`).join('')}</ul>`
-  }
+  const rich = sanitizeRichHtml(raw)
+  if (rich.trim()) return rich
 
   const text = plainTextFromHtml(raw)
   if (!text) return ''
@@ -92,7 +77,7 @@ function htmlToBulletList(htmlValue, options = {}) {
 function renderExperienceItem(exp) {
   const title = escapeHtml([exp.company, exp.title].filter(Boolean).join(' - '))
   const dates = escapeHtml([exp.startDate, exp.isCurrent ? 'Present' : exp.endDate].filter(Boolean).join(' - '))
-  const bullets = htmlToBulletList(exp.highlights)
+  const content = htmlToBulletList(exp.highlights)
 
   return `
     <div class="entry">
@@ -100,7 +85,7 @@ function renderExperienceItem(exp) {
         <span>${title}</span>
         <span class="entry-dates">${dates}</span>
       </div>
-      ${bullets}
+      <div class="entry-body">${content}</div>
     </div>
   `
 }
@@ -110,14 +95,14 @@ function renderProjectItem(project) {
   const link = project.normalizedUrl
     ? `<a class="entry-link project-link" href="${escapeHtml(project.normalizedUrl)}">link</a>`
     : ''
-  const bullets = htmlToBulletList(project.highlights)
+  const content = htmlToBulletList(project.highlights)
 
   return `
     <div class="entry">
       <div class="entry-head">
         <span>${name}${link}</span>
       </div>
-      ${bullets}
+      <div class="entry-body">${content}</div>
     </div>
   `
 }
@@ -153,43 +138,13 @@ function renderCustomSection(section, sectionClass) {
   `
 }
 
-function renderExperienceItemPreserveInline(exp) {
-  const title = escapeHtml([exp.company, exp.title].filter(Boolean).join(' - '))
-  const dates = escapeHtml([exp.startDate, exp.isCurrent ? 'Present' : exp.endDate].filter(Boolean).join(' - '))
-  const bullets = htmlToBulletList(exp.highlights, { preserveInline: true })
-
-  return `
-    <div class="entry">
-      <div class="entry-head">
-        <span>${title}</span>
-        <span class="entry-dates">${dates}</span>
-      </div>
-      ${bullets}
-    </div>
-  `
-}
-
-function renderProjectItemPreserveInline(project) {
-  const name = escapeHtml(project.name || '')
-  const link = project.normalizedUrl
-    ? `<a class="entry-link project-link" href="${escapeHtml(project.normalizedUrl)}">link</a>`
-    : ''
-  const bullets = htmlToBulletList(project.highlights, { preserveInline: true })
-
-  return `
-    <div class="entry">
-      <div class="entry-head">
-        <span>${name}${link}</span>
-      </div>
-      ${bullets}
-    </div>
-  `
-}
-
 export function buildAtsPdfHtml(form) {
   const model = buildResumeViewModel(form, { forceEducationScoreWhenValue: true })
+  const safeBodyFontFamily = String(model.bodyFontFamily || 'Arial, Helvetica, sans-serif').trim() || 'Arial, Helvetica, sans-serif'
+  const safeFontSizePt = Number.isFinite(model.bodyFontSizePt) ? Math.max(8, Math.min(16, Number(model.bodyFontSizePt))) : 10
+  const safeLineHeight = Number.isFinite(model.bodyLineHeight) ? Math.max(0.9, Math.min(2.0, Number(model.bodyLineHeight))) : 1.25
   const sectionClass = model.sectionUnderline ? 'section has-underline' : 'section'
-  const bodyClass = 'compact'
+  const bodyClass = ''
   const headerClass = model.sectionUnderline ? 'header' : 'header has-underline'
   const linksHtml = model.links
     .map((item) => `<a href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>`)
@@ -281,20 +236,15 @@ export function buildAtsPdfHtml(form) {
       padding: 0;
       background: #fff;
       color: #111827;
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: ${escapeHtml(safeBodyFontFamily)};
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
 
     body {
       padding: ${model.topPagePaddingIn}in ${model.pageMarginIn}in ${model.pageMarginIn}in;
-      font-size: 10pt;
-      line-height: 1.35;
-    }
-
-    body.compact {
-      font-size: 9.5pt;
-      line-height: 1.25;
+      font-size: ${safeFontSizePt}pt;
+      line-height: ${safeLineHeight};
     }
 
     h1 {
@@ -308,7 +258,7 @@ export function buildAtsPdfHtml(form) {
     .contact {
       margin-top: 1pt;
       text-align: center;
-      font-size: 9.5pt;
+      font-size: inherit;
     }
 
     .contact a {
@@ -331,11 +281,6 @@ export function buildAtsPdfHtml(form) {
       margin-bottom: 3pt;
     }
 
-    body.compact .section {
-      margin-top: 4pt;
-      margin-bottom: 2pt;
-    }
-
     .section h2 {
       margin: 0 0 2pt;
       font-size: 11pt;
@@ -349,27 +294,10 @@ export function buildAtsPdfHtml(form) {
       padding-bottom: 1pt;
     }
 
-    body.compact .section h2 {
-      margin: 0 0 1pt;
-    }
-
-    .section p {
-      margin: 2pt 0 0;
-      font-size: 9.5pt;
-      line-height: 1.35;
-    }
-
-    body.compact .section p {
-      margin: 1pt 0 0;
-      line-height: 1.25;
-    }
+    .section p { margin: 2pt 0 0; }
 
     .entry {
       margin-top: 4pt;
-    }
-
-    body.compact .entry {
-      margin-top: 2pt;
     }
 
     .entry-head {
@@ -377,7 +305,7 @@ export function buildAtsPdfHtml(form) {
       justify-content: space-between;
       gap: 12pt;
       align-items: baseline;
-      font-size: 9.75pt;
+      font-size: inherit;
       font-weight: 700;
     }
 
@@ -392,7 +320,7 @@ export function buildAtsPdfHtml(form) {
     .entry-dates,
     .entry-link {
       font-weight: 400;
-      font-size: 9pt;
+      font-size: inherit;
       color: #374151;
       text-decoration: none;
       white-space: nowrap;
@@ -405,7 +333,7 @@ export function buildAtsPdfHtml(form) {
 
     .edu-meta {
       margin-top: 1pt;
-      font-size: 9.5pt;
+      font-size: inherit;
       font-weight: 400;
       color: #111827;
     }
@@ -425,25 +353,19 @@ export function buildAtsPdfHtml(form) {
       padding-left: 16pt;
     }
 
-    body.compact ul {
-      margin-top: 2pt;
+    ol {
+      margin: 4pt 0 0;
+      padding-left: 16pt;
     }
 
     li {
       margin: 1.5pt 0;
-      font-size: 9.5pt;
-      line-height: 1.3;
-    }
-
-    body.compact li {
-      margin: 1pt 0;
-      line-height: 1.2;
     }
 
     .plain-links {
       margin-top: 2pt;
       text-align: center;
-      font-size: 9pt;
+      font-size: inherit;
       word-break: break-word;
     }
 
@@ -550,100 +472,9 @@ function applyKeywordHighlightsToHtml(baseHtml, words) {
 }
 
 export function buildAtsPdfHtmlPreserveHighlights(form) {
-  const model = buildResumeViewModel(form, { forceEducationScoreWhenValue: true })
-  const sectionClass = model.sectionUnderline ? 'section has-underline' : 'section'
-  const bodyClass = 'compact'
-  const headerClass = model.sectionUnderline ? 'header' : 'header has-underline'
-  const linksHtml = model.links
-    .map((item) => `<a href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>`)
-    .join(' | ')
-
-  const getCustomByKey = (key) => {
-    if (!key.startsWith(model.customKeyPrefix)) return null
-    const id = key.slice(model.customKeyPrefix.length)
-    return model.customSections.find((section) => section.id === id) || null
-  }
-
-  const sections = []
-  model.orderedKeys.forEach((key) => {
-    if (key === 'summary') {
-      if (!model.summaryEnabled || !model.summaryHtml.trim()) return
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>${escapeHtml(model.summaryHeading || 'Summary')}</h2>
-          <div class="section-body">${model.summaryHtml}</div>
-        </section>
-      `)
-      return
-    }
-    if (key === 'skills') {
-      if (!model.skillsHtml.trim()) return
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>Skills</h2>
-          <div class="section-body">${model.skillsHtml}</div>
-        </section>
-      `)
-      return
-    }
-    if (key === 'experience') {
-      if (!model.experiences.length) return
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>Experience</h2>
-          ${model.experiences.map((exp) => renderExperienceItemPreserveInline(exp)).join('')}
-        </section>
-      `)
-      return
-    }
-    if (key === 'projects') {
-      if (!model.projects.length) return
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>Projects</h2>
-          ${model.projects.map((project) => renderProjectItemPreserveInline(project)).join('')}
-        </section>
-      `)
-      return
-    }
-    if (key === 'education') {
-      if (!model.educations.length) return
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>Education</h2>
-          ${model.educations.map((edu) => renderEducationItem(edu)).join('')}
-        </section>
-      `)
-      return
-    }
-    if (key.startsWith(model.customKeyPrefix)) {
-      const custom = getCustomByKey(key)
-      if (!custom) return
-      const title = escapeHtml(custom.title || 'Custom section')
-      const content = htmlToBulletList(custom.content, { preserveInline: true }) || `<p>${escapeHtml(plainTextFromHtml(custom.content))}</p>`
-      sections.push(`
-        <section class="${sectionClass}">
-          <h2>${title}</h2>
-          <div class="section-body">${content}</div>
-        </section>
-      `)
-    }
-  })
-
   const html = buildAtsPdfHtml(form)
   const parser = new DOMParser()
   const doc = parser.parseFromString(html, 'text/html')
-  const body = doc.body
-  if (body) {
-    body.innerHTML = `
-      <header class="${headerClass}">
-        <h1>${escapeHtml(model.fullName || '')}</h1>
-        <div class="contact">${escapeHtml(model.contactLine)}</div>
-        ${linksHtml ? `<div class="plain-links">${linksHtml}</div>` : ''}
-      </header>
-      ${sections.join('')}
-    `
-  }
   const style = doc.createElement('style')
   style.textContent = `
     mark, .kw-highlight {

@@ -45,9 +45,6 @@ function HomePage() {
                   </button>
                 </>
               )}
-              <button type="button" onClick={() => navigate('/dashboard')}>
-                Dashboard
-              </button>
               <button type="button" className="secondary" onClick={() => navigate('/builder')}>
                 Resume Builder
               </button>
