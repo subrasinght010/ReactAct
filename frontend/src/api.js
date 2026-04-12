@@ -245,20 +245,29 @@ export async function exportAtsPdfLocal(accessToken, payload) {
   return parseResponse(response)
 }
 
-export async function fetchTrackingRows(accessToken) {
-  const response = await authFetch(`${API_BASE_URL}/tracking/`, {}, accessToken)
+export async function fetchTrackingRows(accessToken, params = {}) {
+  const search = new URLSearchParams()
+  if (params.page) search.set('page', String(params.page))
+  if (params.page_size) search.set('page_size', String(params.page_size))
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const response = await authFetch(`${API_BASE_URL}/tracking/${suffix}`, {}, accessToken)
   return parseResponse(response)
 }
 
 export async function createTrackingRow(accessToken, payload) {
+  const isFormData = payload instanceof FormData
   const response = await authFetch(
     `${API_BASE_URL}/tracking/`,
     {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload || {}),
+      ...(isFormData
+        ? { body: payload }
+        : {
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload || {}),
+          }),
     },
     accessToken,
   )
@@ -266,14 +275,19 @@ export async function createTrackingRow(accessToken, payload) {
 }
 
 export async function updateTrackingRow(accessToken, trackingId, payload) {
+  const isFormData = payload instanceof FormData
   const response = await authFetch(
     `${API_BASE_URL}/tracking/${trackingId}/`,
     {
       method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload || {}),
+      ...(isFormData
+        ? { body: payload }
+        : {
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload || {}),
+          }),
     },
     accessToken,
   )
@@ -292,8 +306,12 @@ export async function deleteTrackingRow(accessToken, trackingId) {
   return parseResponse(response)
 }
 
-export async function fetchCompanies(accessToken) {
-  const response = await authFetch(`${API_BASE_URL}/companies/`, {}, accessToken)
+export async function fetchCompanies(accessToken, params = {}) {
+  const search = new URLSearchParams()
+  if (params.page) search.set('page', String(params.page))
+  if (params.page_size) search.set('page_size', String(params.page_size))
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const response = await authFetch(`${API_BASE_URL}/companies/${suffix}`, {}, accessToken)
   return parseResponse(response)
 }
 

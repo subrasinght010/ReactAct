@@ -149,8 +149,9 @@ class Employee(TimeStampedModel):
         blank=True
     )
     email = models.EmailField(blank=True, max_length=320)
+    contact_number = models.CharField(max_length=32, blank=True)
     about = models.TextField(blank=True)
-    helpful= models.CharField(
+    helpful = models.CharField(
         max_length=20,
         choices=TEMPLATE_HELPFUL_CHOICES,
         default='partial_somewhat',
@@ -172,6 +173,7 @@ class Job(TimeStampedModel):
     job_id = models.CharField(max_length=120)
     role = models.CharField(max_length=180)
     job_link = models.URLField(blank=True, max_length=1000)
+    tailored_resume_file = models.FileField(upload_to='tailored_resumes/', blank=True, null=True)
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
@@ -216,9 +218,9 @@ class MailTracking(TimeStampedModel):
     mail_history = models.JSONField(default=list, blank=True)
     maild_at = models.DateTimeField(blank=True, null=True)
     replied_at = models.DateTimeField(blank=True, null=True)
-    got_replied = models.BooleanField(default=False)
+
     class Meta:
-        ordering = ['-applied_date', '-created_at']
+        ordering = ['-created_at']
 
     def __str__(self):
         company_name = self.company.name if self.company_id else 'Company'
@@ -239,6 +241,9 @@ class Tracking(TimeStampedModel):
     )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tracking_rows')
     schedule_time = models.DateTimeField(blank=True, null=True)
+    mailed = models.BooleanField(default=False)
+    got_replied = models.BooleanField(default=False)
+    is_open = models.BooleanField(default=True)
     selected_hrs = models.ManyToManyField(Employee, blank=True, related_name='selected_in_tracking_rows')
     action = models.CharField(
         max_length=20,
@@ -255,7 +260,31 @@ class Tracking(TimeStampedModel):
         related_name='tracking_rows',
     )
     class Meta:
-        ordering = ['-applied_date', '-created_at']
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f'{self.company_name} ({self.user.username})'
+        job_name = self.Job.role if self.Job_id and getattr(self.Job, 'role', None) else 'Tracking'
+        return f'{job_name} ({self.user.username})'
+
+
+class TrackingAction(TimeStampedModel):
+    ACTION_TYPE_CHOICES = [
+        ('fresh', 'Fresh'),
+        ('followup', 'Follow Up'),
+    ]
+    SEND_MODE_CHOICES = [
+        ('sent', 'Sent Now'),
+        ('scheduled', 'Scheduled'),
+    ]
+
+    tracking = models.ForeignKey(Tracking, on_delete=models.CASCADE, related_name='actions')
+    action_type = models.CharField(max_length=20, choices=ACTION_TYPE_CHOICES)
+    send_mode = models.CharField(max_length=20, choices=SEND_MODE_CHOICES, default='sent')
+    action_at = models.DateTimeField()
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.action_type} ({self.tracking_id})'

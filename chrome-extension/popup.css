@@ -1,6 +1,4 @@
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 :root {
   --bg: #f1f5f9;
@@ -12,6 +10,9 @@
   --primary-2: #1d4ed8;
   --ok: #0f766e;
   --error: #b91c1c;
+  --li-blue: #0a66c2;
+  --dot-ok: #22c55e;
+  --dot-miss: #e2e8f0;
 }
 
 body {
@@ -22,52 +23,16 @@ body {
   min-height: 100vh;
 }
 
-.app {
-  width: 100%;
-  max-width: 430px;
-  padding: 14px;
-}
+.app { width: 100%; max-width: 430px; padding: 14px; }
+body.embedded .app { max-width: none; }
 
-body.embedded .app {
-  max-width: none;
-}
+h1 { margin: 0; font-size: 17px; letter-spacing: 0.1px; }
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+.brand { display: flex; justify-content: space-between; align-items: flex-start; margin: 0 0 12px; }
+.brand-left { display: flex; align-items: center; gap: 10px; }
+.brand img { width: 30px; height: 30px; border-radius: 8px; box-shadow: 0 6px 14px rgba(37,99,235,0.25); }
 
-h1 {
-  margin: 0;
-  font-size: 17px;
-  letter-spacing: 0.1px;
-}
-
-.brand p {
-  margin: 2px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.brand {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin: 0 0 12px;
-}
-.brand-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.brand img {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);
-}
-
-h2 {
-  margin: 0 0 8px;
-  font-size: 14px;
-  font-weight: 700;
-}
+h2 { margin: 0 0 8px; font-size: 14px; font-weight: 700; }
 
 .card {
   background: var(--card);
@@ -75,91 +40,139 @@ h2 {
   border-radius: 12px;
   padding: 12px;
   margin-bottom: 12px;
-  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.05);
+  box-shadow: 0 6px 14px rgba(15,23,42,0.05);
 }
 
-label {
-  display: block;
-  font-size: 12px;
-  margin: 7px 0 4px;
-  color: #334155;
-  font-weight: 500;
-}
+label { display: block; font-size: 12px; margin: 7px 0 4px; color: #334155; font-weight: 500; }
 
-input,
-textarea {
-  width: 100%;
-  border: 1px solid #cfdced;
-  border-radius: 8px;
-  padding: 8px;
-  font-size: 12px;
-  outline: 0;
+input, textarea {
+  width: 100%; border: 1px solid #cfdced; border-radius: 8px;
+  padding: 8px; font-size: 12px; outline: 0;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
+input:focus, textarea:focus { border-color: #7aa2ff; box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
+textarea { resize: vertical; min-height: 88px; }
 
-input:focus,
-textarea:focus {
-  border-color: #7aa2ff;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
-}
-
-textarea {
-  resize: vertical;
-  min-height: 88px;
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
+.row { display: flex; gap: 8px; margin-top: 8px; }
 
 button {
-  flex: 1;
-  border: 1px solid var(--primary);
-  border-radius: 8px;
+  flex: 1; border: 1px solid var(--primary); border-radius: 8px;
   background: linear-gradient(180deg, #3b82f6 0%, var(--primary) 100%);
-  color: white;
-  padding: 9px;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: transform 0.12s ease, filter 0.12s ease;
+  color: white; padding: 9px; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: transform 0.12s ease, filter 0.12s ease;
+}
+button:hover { filter: brightness(0.98); transform: translateY(-1px); }
+button:active { transform: translateY(0); background: var(--primary-2); }
+button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; filter: none; }
+
+.btn-send {
+  border-color: var(--li-blue);
+  background: linear-gradient(180deg, #1878c8 0%, var(--li-blue) 100%);
 }
 
-button:hover {
-  filter: brightness(0.98);
-  transform: translateY(-1px);
-}
+.check { display: flex; align-items: center; gap: 8px; }
+.check input { width: auto; }
 
-button:active {
-  transform: translateY(0);
-  background: var(--primary-2);
-}
+.status { margin: 8px 0 2px; font-size: 12px; color: var(--ok); min-height: 16px; }
+.status.error { color: var(--error); }
 
-button:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none;
+/* ── LinkedIn section ── */
+.li-section-head {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;
 }
+.li-section-head h2 { margin: 0; }
 
-.check {
+.li-badge {
+  font-size: 10px; font-weight: 700; padding: 3px 8px;
+  border-radius: 20px; background: #f1f5f9; color: var(--muted);
+  border: 1px solid var(--line); letter-spacing: 0.4px; text-transform: uppercase;
+}
+.li-badge.detected { background: #ecfdf5; color: #059669; border-color: #6ee7b7; }
+.li-badge.sent     { background: #eff6ff; color: var(--li-blue); border-color: #93c5fd; }
+.li-badge.error    { background: #fef2f2; color: var(--error); border-color: #fca5a5; }
+
+/* Profile box */
+.li-profile-box {
+  background: #f8faff;
+  border: 1px solid #dbeafe;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 10px;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 5px;
 }
 
-.check input {
-  width: auto;
+.li-profile-top {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
 }
 
-.status {
-  margin: 8px 0 2px;
-  font-size: 12px;
-  color: var(--ok);
-  min-height: 16px;
+.li-avatar {
+  width: 40px; height: 40px; border-radius: 50%; flex-shrink: 0;
+  background: linear-gradient(135deg, var(--li-blue), #0891b2);
+  color: #fff; font-size: 15px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 2px 8px rgba(10,102,194,0.28);
 }
 
-.status.error {
-  color: var(--error);
+.li-profile-meta { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+
+.li-field-row {
+  display: flex; align-items: flex-start; gap: 5px; font-size: 12px; min-height: 18px;
 }
+.li-field-row--link { align-items: center; }
+.li-field-row--about { align-items: flex-start; }
+
+.li-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--dot-miss); flex-shrink: 0; margin-top: 4px;
+  transition: background 0.2s;
+}
+.li-dot.ok  { background: var(--dot-ok); }
+.li-dot.miss { background: #fbbf24; }
+
+.li-field-label {
+  min-width: 60px; font-weight: 600; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: #64748b; padding-top: 1px; flex-shrink: 0;
+}
+
+.li-field-value {
+  color: var(--text); flex: 1; word-break: break-word;
+  font-size: 12px; line-height: 1.4;
+}
+
+.li-field-link {
+  color: var(--li-blue); flex: 1; word-break: break-all;
+  text-decoration: none; font-size: 11px; line-height: 1.4;
+}
+.li-field-link:hover { text-decoration: underline; }
+.li-field-link.empty { color: var(--muted); pointer-events: none; }
+
+.li-about {
+  margin: 0; flex: 1; color: var(--muted); font-size: 11px;
+  line-height: 1.5; max-height: 64px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+}
+
+.li-divider { height: 1px; background: #dbeafe; margin: 4px 0; }
+
+.li-dept-row { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
+
+.li-dept-pill {
+  display: inline-block; padding: 2px 8px; border-radius: 20px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.3px;
+  background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd;
+}
+.li-dept-pill[data-dept="HR"]          { background:#fce7f3; color:#be185d; border-color:#f9a8d4; }
+.li-dept-pill[data-dept="Engineering"] { background:#ecfdf5; color:#065f46; border-color:#6ee7b7; }
+.li-dept-pill[data-dept="Product"]     { background:#eff6ff; color:#1e40af; border-color:#93c5fd; }
+.li-dept-pill[data-dept="Design"]      { background:#fff7ed; color:#c2410c; border-color:#fdba74; }
+.li-dept-pill[data-dept="Marketing"]   { background:#fefce8; color:#854d0e; border-color:#fde047; }
+.li-dept-pill[data-dept="Sales"]       { background:#f0fdf4; color:#166534; border-color:#86efac; }
+.li-dept-pill[data-dept="Finance"]     { background:#f0f9ff; color:#0c4a6e; border-color:#7dd3fc; }
+.li-dept-pill[data-dept="Legal"]       { background:#f5f3ff; color:#4c1d95; border-color:#a78bfa; }
+.li-dept-pill[data-dept="Operations"]  { background:#fff1f2; color:#9f1239; border-color:#fda4af; }
+.li-dept-pill[data-dept="Other"]       { background:#f8fafc; color:#475569; border-color:#cbd5e1; }

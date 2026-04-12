@@ -3,34 +3,11 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
   createTrackingRow,
   deleteTrackingRow,
-  fetchEmployees,
   fetchTrackingRows,
   updateTrackingRow,
 } from '../api'
 
-const ACTION_STATE_KEY = 'trackingActionState'
 const EMPTY_MILESTONE_DOTS = 10
-
-function readActionState() {
-  try {
-    const raw = localStorage.getItem(ACTION_STATE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object' ? parsed : {}
-  } catch {
-    return {}
-  }
-}
-
-function hasFreshMilestone(actionState) {
-  return (actionState?.milestones || []).some((item) => item.type === 'fresh')
-}
-
-function lastActionType(actionState) {
-  const items = actionState?.milestones || []
-  if (!items.length) return ''
-  return String(items[items.length - 1]?.type || '')
-}
 
 function toDateInput(value) {
   if (!value) return ''
@@ -39,22 +16,51 @@ function toDateInput(value) {
   return date.toISOString().slice(0, 10)
 }
 
-function nowDateInput() {
-  return toDateInput(new Date().toISOString())
+function formatMilestoneLabel(item) {
+  if (!item) return '--'
+  const type = item.type === 'followup' ? 'Follow Up' : 'Fresh'
+  const date = item.at ? new Date(item.at) : null
+  const timeText = date && !Number.isNaN(date.getTime())
+    ? `${toDateInput(item.at)} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+    : '--'
+  return `${type} | ${timeText}`
 }
 
-function nowDateTimeInput() {
-  const now = new Date()
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000)
-  return local.toISOString().slice(0, 16)
+function rowHasFreshMilestone(row) {
+  return (row?.milestones || []).some((item) => item.type === 'fresh')
+}
+
+function rowLastActionType(row) {
+  const items = row?.milestones || []
+  if (!items.length) return ''
+  return String(items[items.length - 1]?.type || '')
+}
+
+function buildHrOptions(row) {
+  const names = Array.isArray(row?.available_hrs) ? row.available_hrs : []
+  const ids = Array.isArray(row?.available_hr_ids) ? row.available_hr_ids : []
+  return names.map((name, index) => ({
+    id: ids[index] || null,
+    name: String(name || '').trim(),
+  })).filter((item) => item.name)
+}
+
+function uniqueArray(values) {
+  return Array.from(new Set((Array.isArray(values) ? values : []).map((x) => String(x || '').trim()).filter(Boolean)))
 }
 
 function TrackingPage() {
   const access = localStorage.getItem('access') || ''
   const [rows, setRows] = useState([])
-  const [employees, setEmployees] = useState([])
+  const [page, setPage] = useState(1)
+  const [pageSize] = useState(8)
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalCount, setTotalCount] = useState(0)
   const [selectedIds, setSelectedIds] = useState([])
-  const [actionByRow, setActionByRow] = useState(() => readActionState())
+  const [rowControls, setRowControls] = useState({})
+  const [applyStateByRow, setApplyStateByRow] = useState({})
+  const [openHrPickerId, setOpenHrPickerId] = useState(null)
+  const [createForm, setCreateForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filters, setFilters] = useState({
@@ -68,124 +74,208 @@ function TrackingPage() {
   })
   const [editForm, setEditForm] = useState(null)
 
-  useEffect(() => {
-    localStorage.setItem(ACTION_STATE_KEY, JSON.stringify(actionByRow))
-  }, [actionByRow])
-
-  useEffect(() => {
-    let cancelled = false
-    const load = async () => {
-      if (!access) {
-        setRows([])
-        setLoading(false)
-        return
+  const load = async () => {
+    if (!access) {
+      setRows([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const data = await fetchTrackingRows(access, { page, page_size: pageSize })
+      const list = Array.isArray(data?.results) ? data.results : (Array.isArray(data) ? data : [])
+      setRows(list)
+      setTotalCount(Number(data?.count || list.length || 0))
+      setTotalPages(Number(data?.total_pages || 1))
+      if (data?.page && Number(data.page) !== page) {
+        setPage(Number(data.page))
       }
-      setLoading(true)
-      setError('')
-      try {
-        const data = await fetchTrackingRows(access)
-        const employeeRows = await fetchEmployees(access)
-        if (cancelled) return
-        const list = Array.isArray(data) ? data : []
-        setEmployees(Array.isArray(employeeRows) ? employeeRows : [])
-        setRows(list)
-        setActionByRow((prev) => {
-          const next = { ...prev }
-          for (const row of list) {
-            const key = String(row.id)
-            if (!next[key]) {
-              next[key] = {
-                actionType: 'fresh',
-                sendMode: 'now',
-                actionAt: '',
-                milestones: [],
-              }
+      setRowControls((prev) => {
+        const next = { ...prev }
+        for (const row of list) {
+          const key = String(row.id)
+          if (!next[key]) {
+            next[key] = {
+              actionType: rowHasFreshMilestone(row) ? 'followup' : 'fresh',
+              sendMode: 'now',
+              actionAt: '',
             }
           }
-          return next
-        })
-      } catch (err) {
-        if (!cancelled) setError(err.message || 'Failed to load tracking rows.')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+        }
+        return next
+      })
+    } catch (err) {
+      setError(err.message || 'Failed to load tracking rows.')
+    } finally {
+      setLoading(false)
     }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [access])
+  }
 
-  const hrMapByCompanyName = useMemo(() => {
-    const map = {}
-    for (const employee of employees) {
-      const companyName = String(employee.company_name || '').trim()
-      if (!companyName) continue
-      if (!map[companyName]) map[companyName] = []
-      map[companyName].push(String(employee.name || '').trim())
-    }
-    return map
-  }, [employees])
+  useEffect(() => {
+    load()
+  }, [access, page, pageSize])
+
+  const openCreateForm = () => {
+    setCreateForm({
+      company_name: '',
+      job_id: '',
+      role: '',
+      job_url: '',
+      tailored_resume_file: '',
+      tailored_resume_upload: null,
+      mailed: false,
+      got_replied: false,
+      applied_date: toDateInput(new Date().toISOString()),
+      posting_date: toDateInput(new Date().toISOString()),
+      is_open: true,
+      selected_hrs: [],
+    })
+  }
 
   const createRow = async () => {
+    if (!createForm) return
+    const companyName = String(createForm.company_name || '').trim()
+    const jobId = String(createForm.job_id || '').trim()
+    const role = String(createForm.role || '').trim()
+    if (!companyName || !jobId || !role) {
+      setError('Company Name, Job ID, and Role are required.')
+      return
+    }
     try {
-      const created = await createTrackingRow(access, {
-        company_name: 'New Company',
-        job_id: '',
-        mailed: false,
-        applied_date: nowDateInput(),
-        posting_date: nowDateInput(),
-        is_open: true,
-        available_hrs: [],
-        selected_hrs: [],
-        got_replied: false,
-      })
+      const payload = createForm.tailored_resume_upload ? new FormData() : {
+        company_name: companyName,
+        job_id: jobId,
+        role,
+        job_url: String(createForm.job_url || '').trim(),
+        mailed: Boolean(createForm.mailed),
+        got_replied: Boolean(createForm.got_replied),
+        applied_date: createForm.applied_date || null,
+        posting_date: createForm.posting_date || null,
+        is_open: Boolean(createForm.is_open),
+        selected_hrs: Array.isArray(createForm.selected_hrs) ? createForm.selected_hrs : [],
+      }
+      if (payload instanceof FormData) {
+        payload.append('company_name', companyName)
+        payload.append('job_id', jobId)
+        payload.append('role', role)
+        payload.append('job_url', String(createForm.job_url || '').trim())
+        payload.append('mailed', String(Boolean(createForm.mailed)))
+        payload.append('got_replied', String(Boolean(createForm.got_replied)))
+        payload.append('applied_date', String(createForm.applied_date || ''))
+        payload.append('posting_date', String(createForm.posting_date || ''))
+        payload.append('is_open', String(Boolean(createForm.is_open)))
+        payload.append('tailored_resume_upload', createForm.tailored_resume_upload)
+      }
+      const created = await createTrackingRow(access, payload)
       setRows((prev) => [created, ...prev])
-      setActionByRow((prev) => ({
+      setRowControls((prev) => ({
         ...prev,
         [String(created.id)]: {
           actionType: 'fresh',
           sendMode: 'now',
           actionAt: '',
-          milestones: [],
         },
       }))
+      setCreateForm(null)
+      await load()
     } catch (err) {
       setError(err.message || 'Could not create tracking row.')
     }
   }
 
+  const updateHrQuick = async (row, selectedValues) => {
+    const hrOptions = buildHrOptions(row)
+    const selected = uniqueArray(selectedValues)
+    const selectedHrIds = Array.from(
+      new Set(
+        hrOptions
+          .filter((item) => selected.includes(item.name) && item.id)
+          .map((item) => Number(item.id))
+          .filter((id) => Number.isFinite(id)),
+      ),
+    )
+    try {
+      const updated = await updateTrackingRow(access, row.id, {
+        selected_hrs: selected,
+        selected_hr_ids: selectedHrIds,
+      })
+      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
+    } catch (err) {
+      setError(err.message || 'Could not update HR selection.')
+    }
+  }
+
+  const toggleFreeze = async (row) => {
+    try {
+      const updated = await updateTrackingRow(access, row.id, { is_freezed: !row.is_freezed })
+      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
+    } catch (err) {
+      setError(err.message || 'Could not update freeze state.')
+    }
+  }
+
   const openEditForm = (row) => {
+    const hrOptions = buildHrOptions(row)
     setEditForm({
       id: row.id,
+      company: row.company || '',
       company_name: row.company_name || '',
       job_id: row.job_id || '',
+      role: row.role || '',
+      job_url: row.job_url || '',
+      tailored_resume_file: row.tailored_resume_file || '',
+      tailored_resume_upload: null,
       mailed: Boolean(row.mailed),
       applied_date: toDateInput(row.applied_date),
       posting_date: toDateInput(row.posting_date),
       is_open: Boolean(row.is_open),
-      available_hrs: Array.isArray(row.available_hrs) ? row.available_hrs : [],
-      selected_hrs: Array.isArray(row.selected_hrs) ? row.selected_hrs : [],
+      hrOptions,
+      selected_hrs: uniqueArray(row.selected_hrs),
       got_replied: Boolean(row.got_replied),
     })
   }
 
   const saveEditForm = async () => {
     if (!editForm) return
-    const payload = {
+    const uniqueSelectedHrs = uniqueArray(editForm.selected_hrs)
+    const selectedHrIds = editForm.hrOptions
+      .filter((option) => uniqueSelectedHrs.includes(option.name) && option.id)
+      .map((option) => option.id)
+    const basePayload = {
+      company: editForm.company || null,
       company_name: editForm.company_name,
       job_id: editForm.job_id,
+      role: editForm.role,
+      job_url: editForm.job_url,
       mailed: editForm.mailed,
       applied_date: editForm.applied_date || null,
       posting_date: editForm.posting_date || null,
       is_open: editForm.is_open,
-      available_hrs: editForm.available_hrs,
-      selected_hrs: editForm.selected_hrs,
+      selected_hrs: uniqueSelectedHrs,
+      selected_hr_ids: selectedHrIds,
       got_replied: editForm.got_replied,
     }
-    setRows((prev) => prev.map((row) => (row.id === editForm.id ? { ...row, ...payload } : row)))
     try {
-      await updateTrackingRow(access, editForm.id, payload)
+      let payload = basePayload
+      if (editForm.tailored_resume_upload) {
+        payload = new FormData()
+        payload.append('company', String(editForm.company || ''))
+        payload.append('company_name', String(editForm.company_name || ''))
+        payload.append('job_id', String(editForm.job_id || ''))
+        payload.append('role', String(editForm.role || ''))
+        payload.append('job_url', String(editForm.job_url || ''))
+        payload.append('mailed', String(Boolean(editForm.mailed)))
+        payload.append('applied_date', String(editForm.applied_date || ''))
+        payload.append('posting_date', String(editForm.posting_date || ''))
+        payload.append('is_open', String(Boolean(editForm.is_open)))
+        payload.append('got_replied', String(Boolean(editForm.got_replied)))
+        uniqueSelectedHrs.forEach((name) => payload.append('selected_hrs', name))
+        selectedHrIds.forEach((id) => payload.append('selected_hr_ids', String(id)))
+        payload.append('tailored_resume_upload', editForm.tailored_resume_upload)
+      }
+      const updated = await updateTrackingRow(access, editForm.id, payload)
+      setRows((prev) => prev.map((row) => (row.id === editForm.id ? updated : row)))
       setEditForm(null)
     } catch (err) {
       setError(err.message || 'Could not save tracking row.')
@@ -193,10 +283,10 @@ function TrackingPage() {
   }
 
   const removeRow = async (rowId) => {
-    setRows((prev) => prev.filter((row) => row.id !== rowId))
-    setSelectedIds((prev) => prev.filter((id) => id !== rowId))
     try {
       await deleteTrackingRow(access, rowId)
+      setSelectedIds((prev) => prev.filter((id) => id !== rowId))
+      await load()
     } catch (err) {
       setError(err.message || 'Could not delete row.')
     }
@@ -204,17 +294,17 @@ function TrackingPage() {
 
   const removeSelected = async () => {
     const toDelete = [...selectedIds]
-    setRows((prev) => prev.filter((row) => !toDelete.includes(row.id)))
-    setSelectedIds([])
     await Promise.all(
       toDelete.map(async (id) => {
         try {
           await deleteTrackingRow(access, id)
         } catch {
-          // ignore individual failures; page refresh can recover
+          // no-op
         }
       }),
     )
+    setSelectedIds([])
+    await load()
   }
 
   const toggleSelect = (rowId, checked) => {
@@ -230,13 +320,8 @@ function TrackingPage() {
   }
 
   const setActionField = (rowId, key, value) => {
-    setActionByRow((prev) => {
-      const current = prev[String(rowId)] || {
-        actionType: 'fresh',
-        sendMode: 'now',
-        actionAt: '',
-        milestones: [],
-      }
+    setRowControls((prev) => {
+      const current = prev[String(rowId)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
       return {
         ...prev,
         [String(rowId)]: {
@@ -247,32 +332,51 @@ function TrackingPage() {
     })
   }
 
-  const applyAction = (rowId) => {
-    setActionByRow((prev) => {
-      const current = prev[String(rowId)] || { actionType: 'fresh', sendMode: 'now', actionAt: '', milestones: [] }
-      const canFollowUp = hasFreshMilestone(current)
-      const type = canFollowUp ? current.actionType : 'fresh'
-      if (type === 'followup' && !canFollowUp) return prev
-      if (current.sendMode === 'schedule' && !current.actionAt) return prev
-
-      const at = current.sendMode === 'now' ? new Date().toISOString() : current.actionAt
-      const nextMilestones = [
-        ...(current.milestones || []),
-        {
-          type,
-          mode: current.sendMode === 'now' ? 'sent' : 'scheduled',
-          at,
-        },
-      ].slice(-EMPTY_MILESTONE_DOTS)
-
-      return {
+  const applyAction = async (row) => {
+    if (row.is_freezed) return
+    setApplyStateByRow((prev) => ({
+      ...prev,
+      [String(row.id)]: { status: 'saving', message: 'Applying...' },
+    }))
+    const controls = rowControls[String(row.id)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
+    const canFollowUp = rowHasFreshMilestone(row)
+    const actionType = canFollowUp ? controls.actionType : 'fresh'
+    if (actionType === 'followup' && !canFollowUp) return
+    if (controls.sendMode === 'schedule' && !controls.actionAt) {
+      setError('Pick a date/time for scheduled action.')
+      setApplyStateByRow((prev) => ({
         ...prev,
-        [String(rowId)]: {
-          ...current,
-          milestones: nextMilestones,
+        [String(row.id)]: { status: 'error', message: 'Pick date/time' },
+      }))
+      return
+    }
+    try {
+      const updated = await updateTrackingRow(access, row.id, {
+        append_action: {
+          type: actionType,
+          send_mode: controls.sendMode,
+          action_at: controls.sendMode === 'schedule' ? controls.actionAt : null,
         },
-      }
-    })
+      })
+      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
+      setApplyStateByRow((prev) => ({
+        ...prev,
+        [String(row.id)]: { status: 'success', message: 'Applied' },
+      }))
+      setTimeout(() => {
+        setApplyStateByRow((prev) => {
+          const next = { ...prev }
+          if (next[String(row.id)]?.status === 'success') delete next[String(row.id)]
+          return next
+        })
+      }, 1400)
+    } catch (err) {
+      setError(err.message || 'Could not apply action.')
+      setApplyStateByRow((prev) => ({
+        ...prev,
+        [String(row.id)]: { status: 'error', message: 'Failed' },
+      }))
+    }
   }
 
   const filteredRows = useMemo(() => {
@@ -284,7 +388,7 @@ function TrackingPage() {
       if (filters.mailed === 'no' && row.mailed) return false
       if (filters.gotReplied === 'yes' && !row.got_replied) return false
       if (filters.gotReplied === 'no' && row.got_replied) return false
-      const actionType = lastActionType(actionByRow[String(row.id)])
+      const actionType = rowLastActionType(row)
       if (filters.lastAction !== 'all' && actionType !== filters.lastAction) return false
       return true
     })
@@ -294,27 +398,27 @@ function TrackingPage() {
       return filters.orderByApplied === 'asc' ? aTime - bTime : bTime - aTime
     })
     return out
-  }, [rows, filters, actionByRow])
+  }, [rows, filters])
 
   return (
     <main className="page page-wide page-plain mx-auto w-full">
       <div className="tracking-head">
         <div>
           <h1>Tracking</h1>
-          <p className="subtitle">DB-backed job tracking. Action, send mode, and milestones are local per row.</p>
+          <p className="subtitle">Compact tracking with HR dropdown, freeze control, and persisted wavy milestones.</p>
         </div>
         <div className="actions">
-          <button type="button" className="secondary" onClick={createRow}>Add Row</button>
+          <button type="button" className="secondary" onClick={openCreateForm}>Add Row</button>
           <button type="button" className="secondary" onClick={removeSelected}>Remove Selected</button>
         </div>
       </div>
 
-      <section className="tracking-filters">
+      <section className="tracking-filters filters-one-row">
         <label>Company Name<input value={filters.companyName} onChange={(event) => setFilters((prev) => ({ ...prev, companyName: event.target.value }))} /></label>
         <label>Job ID<input value={filters.jobId} onChange={(event) => setFilters((prev) => ({ ...prev, jobId: event.target.value }))} /></label>
         <label>Applied Date<input type="date" value={filters.appliedDate} onChange={(event) => setFilters((prev) => ({ ...prev, appliedDate: event.target.value }))} /></label>
         <label>Mailed<select value={filters.mailed} onChange={(event) => setFilters((prev) => ({ ...prev, mailed: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
-        <label>Got Replied<select value={filters.gotReplied} onChange={(event) => setFilters((prev) => ({ ...prev, gotReplied: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
+        <label>Replied (got_replied)<select value={filters.gotReplied} onChange={(event) => setFilters((prev) => ({ ...prev, gotReplied: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Last Action<select value={filters.lastAction} onChange={(event) => setFilters((prev) => ({ ...prev, lastAction: event.target.value }))}><option value="all">All</option><option value="fresh">Fresh</option><option value="followup">Follow Up</option></select></label>
         <label>Order By Applied<select value={filters.orderByApplied} onChange={(event) => setFilters((prev) => ({ ...prev, orderByApplied: event.target.value }))}><option value="desc">Newest</option><option value="asc">Oldest</option></select></label>
       </section>
@@ -322,32 +426,33 @@ function TrackingPage() {
       {error ? <p className="error">{error}</p> : null}
       {loading ? <p className="hint">Loading tracking rows...</p> : null}
 
-      <div className="tracking-table-wrap">
-        <table className="tracking-table">
+      <div className="tracking-table-wrap tracking-table-wrap-compact">
+        <table className="tracking-table tracking-table-compact">
           <thead>
             <tr>
               <th><input type="checkbox" checked={allSelected} onChange={(event) => toggleSelectAll(event.target.checked)} /></th>
-              <th>Company Name</th>
+              <th>Company</th>
               <th>Job ID</th>
+              <th>HR</th>
               <th>Mailed</th>
-              <th>Applied Date</th>
-              <th>Posting Date</th>
-              <th>Is Open</th>
-              <th>Available HRs</th>
-              <th>Got Replied</th>
+              <th>Replied</th>
               <th>Action</th>
-              <th>Time / Date</th>
+              <th>Time</th>
               <th>Send</th>
+              <th>Freeze</th>
+              <th>Apply</th>
               <th>Edit</th>
               <th>Remove</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.map((row) => {
-              const rowAction = actionByRow[String(row.id)] || { actionType: 'fresh', sendMode: 'now', actionAt: '', milestones: [] }
-              const canFollowUp = hasFreshMilestone(rowAction)
-              const milestones = rowAction.milestones || []
-              const availableHrs = hrMapByCompanyName[String(row.company_name || '').trim()] || (Array.isArray(row.available_hrs) ? row.available_hrs : [])
+              const controls = rowControls[String(row.id)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
+              const applyState = applyStateByRow[String(row.id)] || { status: '', message: '' }
+              const canFollowUp = rowHasFreshMilestone(row)
+              const milestones = Array.isArray(row.milestones) ? row.milestones : []
+              const availableHrOptions = buildHrOptions(row)
+              const selectedHrValues = uniqueArray(row.selected_hrs)
 
               return (
                 <Fragment key={`row-wrap-${row.id}`}>
@@ -355,55 +460,126 @@ function TrackingPage() {
                     <td><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={(event) => toggleSelect(row.id, event.target.checked)} /></td>
                     <td>{row.company_name || '-'}</td>
                     <td>{row.job_id || '-'}</td>
+                    <td>
+                      <div className="hr-multi-picker">
+                        <button
+                          type="button"
+                          className="secondary"
+                          disabled={row.is_freezed}
+                          onClick={() => setOpenHrPickerId((prev) => (prev === row.id ? null : row.id))}
+                        >
+                          {selectedHrValues.length ? `${selectedHrValues.length} selected` : 'Select HRs'}
+                        </button>
+                        {openHrPickerId === row.id ? (
+                          <div className="hr-multi-menu">
+                            {availableHrOptions.map((option) => {
+                              const isChecked = selectedHrValues.includes(option.name)
+                              return (
+                                <label key={option.id || option.name} className="hr-multi-item">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(event) => {
+                                      const next = event.target.checked
+                                        ? [...selectedHrValues, option.name]
+                                        : selectedHrValues.filter((value) => value !== option.name)
+                                      updateHrQuick(row, next)
+                                    }}
+                                  />
+                                  <span>{option.name}</span>
+                                </label>
+                              )
+                            })}
+                            {!availableHrOptions.length ? <p className="hint">No HR options</p> : null}
+                            <button type="button" className="secondary" onClick={() => setOpenHrPickerId(null)}>Close</button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </td>
                     <td>{row.mailed ? 'Yes' : 'No'}</td>
-                    <td>{toDateInput(row.applied_date) || '-'}</td>
-                    <td>{toDateInput(row.posting_date) || '-'}</td>
-                    <td>{row.is_open ? 'Yes' : 'No'}</td>
-                    <td>{availableHrs.length ? availableHrs.join(', ') : '-'}</td>
                     <td>{row.got_replied ? 'Yes' : 'No'}</td>
                     <td>
                       <select
-                        value={rowAction.actionType}
+                        value={controls.actionType}
                         onChange={(event) => setActionField(row.id, 'actionType', event.target.value)}
+                        disabled={row.is_freezed}
                       >
-                        <option value="fresh">Fresh Mail</option>
+                        <option value="fresh">Fresh</option>
                         <option value="followup" disabled={!canFollowUp}>Follow Up</option>
                       </select>
                     </td>
                     <td>
-                      <input
-                        type="datetime-local"
-                        value={rowAction.actionAt || ''}
-                        onChange={(event) => setActionField(row.id, 'actionAt', event.target.value)}
-                        disabled={rowAction.sendMode === 'now'}
-                      />
+                      {controls.sendMode === 'schedule' ? (
+                        <input
+                          type="datetime-local"
+                          value={controls.actionAt || ''}
+                          onChange={(event) => setActionField(row.id, 'actionAt', event.target.value)}
+                          disabled={row.is_freezed}
+                        />
+                      ) : (
+                        <span>Server now</span>
+                      )}
                     </td>
                     <td>
-                      <div className="tracking-send-cell">
-                        <select value={rowAction.sendMode} onChange={(event) => setActionField(row.id, 'sendMode', event.target.value)}>
-                          <option value="now">Send Now</option>
-                          <option value="schedule">Schedule Future</option>
-                        </select>
-                        <button type="button" onClick={() => applyAction(row.id)}>Apply</button>
+                      <select
+                        value={controls.sendMode}
+                        onChange={(event) => setActionField(row.id, 'sendMode', event.target.value)}
+                        disabled={row.is_freezed}
+                      >
+                        <option value="now">Now</option>
+                        <option value="schedule">Schedule</option>
+                      </select>
+                    </td>
+                    <td>
+                      <button type="button" className="secondary" onClick={() => toggleFreeze(row)}>
+                        {row.is_freezed ? 'Unfreeze' : 'Freeze'}
+                      </button>
+                    </td>
+                    <td>
+                      <div className="tracking-apply-cell">
+                        <button
+                          type="button"
+                          onClick={() => applyAction(row)}
+                          disabled={row.is_freezed || applyState.status === 'saving'}
+                        >
+                          {applyState.status === 'saving' ? 'Applying...' : 'Apply'}
+                        </button>
+                        {applyState.message ? (
+                          <span className={`tracking-apply-msg is-${applyState.status || 'idle'}`}>{applyState.message}</span>
+                        ) : null}
                       </div>
                     </td>
-                    <td><button type="button" className="secondary" onClick={() => openEditForm(row)}>Edit</button></td>
+                    <td><button type="button" className="secondary" onClick={() => openEditForm(row)} disabled={row.is_freezed}>Edit</button></td>
                     <td><button type="button" className="tracking-remove-inline" onClick={() => removeRow(row.id)}>Remove</button></td>
                   </tr>
                   <tr className="tracking-milestone-row">
                     <td />
-                    <td colSpan={13}>
-                      <div className="tracking-dot-line">
-                        {Array.from({ length: EMPTY_MILESTONE_DOTS }).map((_, index) => {
-                          const milestone = milestones[index]
-                          return (
-                            <span
-                              key={`${row.id}-dot-${index}`}
-                              className={`tracking-circle-dot ${milestone ? 'is-on' : ''}`}
-                              title={milestone ? `${milestone.type} | ${milestone.mode} | ${milestone.at}` : `Step ${index + 1}`}
-                            />
-                          )
-                        })}
+                    <td colSpan={12}>
+                      <div className="tracking-wave-wrap">
+                        <svg className="tracking-wave-svg" viewBox="0 0 1000 44" preserveAspectRatio="none" aria-hidden="true">
+                          <path
+                            d="M0 22 Q25 4 50 22 T100 22 T150 22 T200 22 T250 22 T300 22 T350 22 T400 22 T450 22 T500 22 T550 22 T600 22 T650 22 T700 22 T750 22 T800 22 T850 22 T900 22 T950 22 T1000 22"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.4"
+                          />
+                        </svg>
+                        <div className="tracking-wave-points">
+                          {Array.from({ length: EMPTY_MILESTONE_DOTS }).map((_, index) => {
+                            const milestone = milestones[index]
+                            return (
+                              <div
+                                key={`${row.id}-wave-${index}`}
+                                className="tracking-wave-point"
+                                style={{ left: `${(index / (EMPTY_MILESTONE_DOTS - 1)) * 100}%` }}
+                                title={milestone ? `${milestone.type} | ${milestone.mode} | ${milestone.at}` : `Step ${index + 1}`}
+                              >
+                                <span className={`tracking-wave-circle ${milestone ? 'is-on' : ''}`} />
+                                <span className="tracking-wave-label">{formatMilestoneLabel(milestone)}</span>
+                              </div>
+                            )
+                          })}
+                        </div>
                       </div>
                     </td>
                   </tr>
@@ -415,6 +591,33 @@ function TrackingPage() {
       </div>
 
       {!loading && !filteredRows.length ? <p className="hint">No rows found.</p> : null}
+      <div className="table-pagination">
+        <button type="button" className="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>Previous</button>
+        <span>Page {page} / {Math.max(1, totalPages)} ({totalCount})</span>
+        <button type="button" className="secondary" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>Next</button>
+      </div>
+
+      {createForm ? (
+        <div className="modal-overlay">
+          <div className="modal-panel">
+            <h2>Add Tracking Row</h2>
+            <label>Company Name*<input value={createForm.company_name} onChange={(event) => setCreateForm((prev) => ({ ...prev, company_name: event.target.value }))} /></label>
+            <label>Job ID*<input value={createForm.job_id} onChange={(event) => setCreateForm((prev) => ({ ...prev, job_id: event.target.value }))} /></label>
+            <label>Role*<input value={createForm.role} onChange={(event) => setCreateForm((prev) => ({ ...prev, role: event.target.value }))} /></label>
+            <label>Job URL<input value={createForm.job_url} onChange={(event) => setCreateForm((prev) => ({ ...prev, job_url: event.target.value }))} /></label>
+            <label>Upload Tailored Resume<input type="file" accept=".pdf,.doc,.docx" onChange={(event) => setCreateForm((prev) => ({ ...prev, tailored_resume_upload: event.target.files?.[0] || null }))} /></label>
+            <label>Mailed<select value={createForm.mailed ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, mailed: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
+            <label>Got Replied<select value={createForm.got_replied ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, got_replied: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
+            <label>Applied Date<input type="date" value={createForm.applied_date || ''} onChange={(event) => setCreateForm((prev) => ({ ...prev, applied_date: event.target.value }))} /></label>
+            <label>Posting Date<input type="date" value={createForm.posting_date || ''} onChange={(event) => setCreateForm((prev) => ({ ...prev, posting_date: event.target.value }))} /></label>
+            <label>Is Open<select value={createForm.is_open ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, is_open: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
+            <div className="actions">
+              <button type="button" onClick={createRow}>Create</button>
+              <button type="button" className="secondary" onClick={() => setCreateForm(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {editForm ? (
         <div className="modal-overlay">
@@ -422,11 +625,14 @@ function TrackingPage() {
             <h2>Edit Tracking Row</h2>
             <label>Company Name<input value={editForm.company_name} onChange={(event) => setEditForm((prev) => ({ ...prev, company_name: event.target.value }))} /></label>
             <label>Job ID<input value={editForm.job_id} onChange={(event) => setEditForm((prev) => ({ ...prev, job_id: event.target.value }))} /></label>
+            <label>Role<input value={editForm.role} onChange={(event) => setEditForm((prev) => ({ ...prev, role: event.target.value }))} /></label>
+            <label>Job URL<input value={editForm.job_url} onChange={(event) => setEditForm((prev) => ({ ...prev, job_url: event.target.value }))} /></label>
+            <label>Current Tailored Resume File<input value={editForm.tailored_resume_file || '-'} readOnly /></label>
+            <label>Upload New Tailored Resume<input type="file" accept=".pdf,.doc,.docx" onChange={(event) => setEditForm((prev) => ({ ...prev, tailored_resume_upload: event.target.files?.[0] || null }))} /></label>
             <label>Mailed<select value={editForm.mailed ? 'yes' : 'no'} onChange={(event) => setEditForm((prev) => ({ ...prev, mailed: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
             <label>Applied Date<input type="date" value={editForm.applied_date || ''} onChange={(event) => setEditForm((prev) => ({ ...prev, applied_date: event.target.value }))} /></label>
             <label>Posting Date<input type="date" value={editForm.posting_date || ''} onChange={(event) => setEditForm((prev) => ({ ...prev, posting_date: event.target.value }))} /></label>
             <label>Is Open<select value={editForm.is_open ? 'yes' : 'no'} onChange={(event) => setEditForm((prev) => ({ ...prev, is_open: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
-            <label>Available HRs (comma separated)<input value={editForm.available_hrs.join(', ')} onChange={(event) => setEditForm((prev) => ({ ...prev, available_hrs: event.target.value.split(',').map((x) => x.trim()).filter(Boolean) }))} /></label>
             <label>
               Selected HRs
               <select
@@ -437,8 +643,8 @@ function TrackingPage() {
                   setEditForm((prev) => ({ ...prev, selected_hrs: values }))
                 }}
               >
-                {editForm.available_hrs.map((hr) => (
-                  <option key={hr} value={hr}>{hr}</option>
+                {editForm.hrOptions.map((option) => (
+                  <option key={option.id || option.name} value={option.name}>{option.name}</option>
                 ))}
               </select>
             </label>

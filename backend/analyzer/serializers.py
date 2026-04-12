@@ -6,7 +6,7 @@ from .models import (
     Resume,
     ResumeAnalysis,
     TailoredJobRun,
-    ApplicationTracking,
+    MailTracking,
     Company,
     Employee,
     Job,
@@ -116,11 +116,78 @@ class TailoredJobRunSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ApplicationTrackingSerializer(serializers.ModelSerializer):
+class MailTrackingSerializer(serializers.ModelSerializer):
+    company_name = serializers.SerializerMethodField()
+    job_id = serializers.SerializerMethodField()
+    applied_date = serializers.SerializerMethodField()
+    posting_date = serializers.SerializerMethodField()
+    is_open = serializers.SerializerMethodField()
+    available_hrs = serializers.SerializerMethodField()
+    selected_hrs = serializers.SerializerMethodField()
+
+    def _compat_payload(self, obj):
+        payload = obj.mail_history
+        if isinstance(payload, dict):
+            return payload
+        return {}
+
+    def get_company_name(self, obj):
+        compat = self._compat_payload(obj)
+        if compat.get('company_name'):
+            return compat.get('company_name')
+        if getattr(obj, 'company', None):
+            return obj.company.name
+        return ''
+
+    def get_job_id(self, obj):
+        compat = self._compat_payload(obj)
+        if compat.get('job_id'):
+            return compat.get('job_id')
+        if getattr(obj, 'job', None):
+            return obj.job.job_id
+        return ''
+
+    def get_applied_date(self, obj):
+        compat = self._compat_payload(obj)
+        if compat.get('applied_date'):
+            return compat.get('applied_date')
+        if getattr(obj, 'job', None) and obj.job.applied_at:
+            return obj.job.applied_at.isoformat()
+        return None
+
+    def get_posting_date(self, obj):
+        compat = self._compat_payload(obj)
+        if compat.get('posting_date'):
+            return compat.get('posting_date')
+        if getattr(obj, 'job', None) and obj.job.date_of_posting:
+            return obj.job.date_of_posting.isoformat()
+        return None
+
+    def get_is_open(self, obj):
+        compat = self._compat_payload(obj)
+        if 'is_open' in compat:
+            return bool(compat.get('is_open'))
+        if getattr(obj, 'job', None):
+            return not bool(obj.job.is_closed)
+        return True
+
+    def get_available_hrs(self, obj):
+        compat = self._compat_payload(obj)
+        value = compat.get('available_hrs')
+        return value if isinstance(value, list) else []
+
+    def get_selected_hrs(self, obj):
+        compat = self._compat_payload(obj)
+        value = compat.get('selected_hrs')
+        return value if isinstance(value, list) else []
+
     class Meta:
-        model = ApplicationTracking
+        model = MailTracking
         fields = [
             'id',
+            'company',
+            'employee',
+            'job',
             'company_name',
             'job_id',
             'mailed',
@@ -135,9 +202,38 @@ class ApplicationTrackingSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def _extract_compat_fields(self, validated_data):
+        compat_keys = ['company_name', 'job_id', 'applied_date', 'posting_date', 'is_open', 'available_hrs', 'selected_hrs']
+        compat = {}
+        for key in compat_keys:
+            if key in self.initial_data:
+                compat[key] = self.initial_data.get(key)
+        return compat
+
+    def create(self, validated_data):
+        compat = self._extract_compat_fields(validated_data)
+        created = super().create(validated_data)
+        if compat:
+            created.mail_history = compat
+            created.save(update_fields=['mail_history', 'updated_at'])
+        return created
+
+    def update(self, instance, validated_data):
+        compat = self._extract_compat_fields(validated_data)
+        updated = super().update(instance, validated_data)
+        if compat:
+            existing = updated.mail_history if isinstance(updated.mail_history, dict) else {}
+            existing.update(compat)
+            updated.mail_history = existing
+            updated.save(update_fields=['mail_history', 'updated_at'])
+        return updated
+
 
 class EmployeeSerializer(serializers.ModelSerializer):
     company_name = serializers.SerializerMethodField()
+    # Backward-compatible API keys for existing frontend payload/response shape.
+    role = serializers.CharField(source='JobRole', required=False, allow_blank=True)
+    personalized_template_helpful = serializers.CharField(source='helpful', required=False, allow_blank=True)
 
     def get_company_name(self, obj):
         return obj.company.name if getattr(obj, 'company', None) else ''
@@ -149,10 +245,13 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'name',
             'company',
             'company_name',
+            'role',
             'department',
             'email',
+            'contact_number',
             'about',
             'personalized_template_helpful',
+            'personalized_template',
             'profile',
             'location',
             'created_at',
@@ -162,8 +261,6 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
 
 class CompanySerializer(serializers.ModelSerializer):
-    employees = EmployeeSerializer(many=True, read_only=True)
-
     class Meta:
         model = Company
         fields = [
@@ -172,11 +269,10 @@ class CompanySerializer(serializers.ModelSerializer):
             'mail_format',
             'career_url',
             'workday_domain_url',
-            'employees',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'employees', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 class JobSerializer(serializers.ModelSerializer):
@@ -192,6 +288,7 @@ class JobSerializer(serializers.ModelSerializer):
             'job_id',
             'role',
             'job_link',
+            'tailored_resume_file',
             'company',
             'company_name',
             'date_of_posting',
@@ -199,3 +296,7 @@ class JobSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'company_name', 'created_at', 'updated_at']
+
+
+# Backward-compatible alias used by existing views/endpoints.
+ApplicationTrackingSerializer = MailTrackingSerializer

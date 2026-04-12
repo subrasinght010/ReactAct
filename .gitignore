@@ -33,3 +33,7 @@ frontend/dist/
 # Editor / IDE
 .vscode/
 .idea/
+
+# Project-specific
+backend/tailored_resumes/
+backend/analyzer/migrations/

@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from rest_framework import status
@@ -12,16 +13,17 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
-from .models import JobRole, Resume, ResumeAnalysis, TailoredJobRun, ApplicationTracking, Company, Employee, Job
+from .models import JobRole, Resume, ResumeAnalysis, TailoredJobRun, MailTracking, Company, Employee, Job, Tracking, TrackingAction
 from .serializers import (
     JobRoleSerializer,
     ResumeAnalysisSerializer,
     ResumeSerializer,
     SignupSerializer,
     TailoredJobRunSerializer,
-    ApplicationTrackingSerializer,
+    MailTrackingSerializer,
     CompanySerializer,
     EmployeeSerializer,
     JobSerializer,
@@ -38,6 +40,34 @@ from .tailor import (
     sanitize_builder_data,
     tailor_resume_with_ai,
 )
+
+
+def _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100):
+    page_raw = request.query_params.get('page', '1')
+    page_size_raw = request.query_params.get('page_size', str(default_page_size))
+    try:
+        page = max(1, int(page_raw))
+    except Exception:
+        page = 1
+    try:
+        page_size = int(page_size_raw)
+    except Exception:
+        page_size = default_page_size
+    page_size = max(1, min(page_size, max_page_size))
+
+    total = queryset.count()
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    if page > total_pages:
+        page = total_pages
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return queryset[start:end], {
+        'count': total,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': total_pages,
+    }
 
 def _plain_text_from_html(value: str) -> str:
     import re
@@ -1345,42 +1375,489 @@ class TailoredJobRunListView(APIView):
 
 class ApplicationTrackingListCreateView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
+    def _to_bool(self, value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in {'true', '1', 'yes', 'y', 'on'}:
+            return True
+        if text in {'false', '0', 'no', 'n', 'off'}:
+            return False
+        return default
+
+    def _to_date(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw[:10]).date()
+        except Exception:
+            return None
+
+    def _to_datetime(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            return dt
+        except Exception:
+            return None
+
+    def _resolve_company(self, request, payload):
+        company_id = payload.get('company')
+        if company_id:
+            try:
+                return Company.objects.get(id=company_id, user=request.user)
+            except Company.DoesNotExist:
+                return None
+
+        company_name = str(payload.get('company_name') or '').strip()
+        if not company_name:
+            company_name = 'New Company'
+        company, _ = Company.objects.get_or_create(user=request.user, name=company_name)
+        return company
+
+    def _resolve_job(self, request, company, payload):
+        explicit_job_id = payload.get('job')
+        if explicit_job_id:
+            try:
+                return Job.objects.get(id=explicit_job_id, user=request.user)
+            except Job.DoesNotExist:
+                return None
+
+        job_code = str(payload.get('job_id') or '').strip()
+        if job_code:
+            job, _ = Job.objects.get_or_create(
+                user=request.user,
+                company=company,
+                job_id=job_code,
+                defaults={
+                    'role': str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
+                    'job_link': str(payload.get('job_url') or '').strip(),
+                },
+            )
+        else:
+            job = Job.objects.create(
+                user=request.user,
+                company=company,
+                job_id=f"JOB-{int(timezone.now().timestamp())}",
+                role=str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
+                job_link=str(payload.get('job_url') or '').strip(),
+            )
+
+        tailored_upload = request.FILES.get('tailored_resume_upload')
+        if tailored_upload:
+            job.tailored_resume_file = tailored_upload
+            job.save(update_fields=['tailored_resume_file', 'updated_at'])
+
+        applied = self._to_date(payload.get('applied_date'))
+        posting = self._to_date(payload.get('posting_date'))
+        is_open = self._to_bool(payload.get('is_open'), default=not bool(job.is_closed))
+        explicit_is_closed = payload.get('is_closed')
+        explicit_is_removed = payload.get('is_removed')
+        updates = []
+        if applied and job.applied_at != applied:
+            job.applied_at = applied
+            updates.append('applied_at')
+        if posting and job.date_of_posting != posting:
+            job.date_of_posting = posting
+            updates.append('date_of_posting')
+        next_closed = self._to_bool(explicit_is_closed, default=not is_open) if explicit_is_closed is not None else (not is_open)
+        if job.is_closed != next_closed:
+            job.is_closed = next_closed
+            updates.append('is_closed')
+        if explicit_is_removed is not None:
+            next_removed = self._to_bool(explicit_is_removed, default=job.is_removed)
+            if job.is_removed != next_removed:
+                job.is_removed = next_removed
+                updates.append('is_removed')
+        if updates:
+            updates.append('updated_at')
+            job.save(update_fields=updates)
+        return job
+
+    def _sync_selected_hrs(self, request, tracking, payload):
+        selected_ids = payload.get('selected_hr_ids')
+        selected_names = payload.get('selected_hrs')
+        if hasattr(request.data, 'getlist'):
+            id_list = [str(v or '').strip() for v in request.data.getlist('selected_hr_ids') if str(v or '').strip()]
+            name_list = [str(v or '').strip() for v in request.data.getlist('selected_hrs') if str(v or '').strip()]
+            if id_list:
+                selected_ids = id_list
+            if name_list:
+                selected_names = name_list
+        targets = Employee.objects.none()
+
+        if isinstance(selected_ids, str):
+            selected_ids = [x.strip() for x in selected_ids.split(',') if x.strip()]
+        if isinstance(selected_names, str):
+            selected_names = [x.strip() for x in selected_names.split(',') if x.strip()]
+
+        if isinstance(selected_ids, list) and selected_ids:
+            targets = Employee.objects.filter(user=request.user, id__in=selected_ids)
+        elif isinstance(selected_names, list) and selected_names and tracking.Job_id and tracking.Job and tracking.Job.company_id:
+            targets = Employee.objects.filter(
+                user=request.user,
+                company_id=tracking.Job.company_id,
+                name__in=[str(name or '').strip() for name in selected_names if str(name or '').strip()],
+            )
+        if selected_ids is not None or selected_names is not None:
+            tracking.selected_hrs.set(targets)
+
+    def _append_action(self, tracking, payload):
+        action = payload.get('append_action')
+        if not isinstance(action, dict):
+            return None
+
+        action_type = str(action.get('type') or '').strip().lower()
+        if action_type not in {'fresh', 'followup'}:
+            return 'Invalid action type.'
+        if action_type == 'followup' and not tracking.actions.filter(action_type='fresh').exists():
+            return 'Fresh mail must be done first before follow up.'
+
+        send_mode = str(action.get('send_mode') or 'now').strip().lower()
+        mapped_send_mode = 'sent' if send_mode == 'now' else 'scheduled'
+        action_at = self._to_datetime(action.get('action_at')) or timezone.now()
+
+        TrackingAction.objects.create(
+            tracking=tracking,
+            action_type=action_type,
+            send_mode=mapped_send_mode,
+            action_at=action_at,
+        )
+        tracking.action = 'followed_up' if action_type == 'followup' else 'fresh'
+        if action_type == 'fresh':
+            tracking.mailed = True
+        tracking.save(update_fields=['action', 'mailed', 'updated_at'])
+        return None
+
+    def _serialize_tracking_row(self, tracking, available_hr_map):
+        job = tracking.Job
+        company = job.company if job and job.company_id else None
+        mail_tracking = tracking.mail_tracking if tracking.mail_tracking_id else None
+        available = available_hr_map.get(company.id if company else None, [])
+        selected = list(tracking.selected_hrs.all())
+        milestones = [
+            {
+                'type': item.action_type,
+                'mode': item.send_mode,
+                'at': item.action_at.isoformat() if item.action_at else '',
+            }
+            for item in tracking.actions.all().order_by('created_at')[:10]
+        ]
+        return {
+            'id': tracking.id,
+            'company': company.id if company else None,
+            'company_name': company.name if company else '',
+            'job': job.id if job else None,
+            'job_id': job.job_id if job else '',
+            'role': job.role if job else '',
+            'job_url': job.job_link if job else '',
+            'tailored_resume_file': (job.tailored_resume_file.url if job and getattr(job, 'tailored_resume_file', None) else ''),
+            'is_closed': bool(job.is_closed) if job else False,
+            'is_removed': bool(job.is_removed) if job else False,
+            'mailed': bool(tracking.mailed),
+            'applied_date': job.applied_at.isoformat() if job and job.applied_at else None,
+            'posting_date': job.date_of_posting.isoformat() if job and job.date_of_posting else None,
+            'is_open': bool(tracking.is_open if tracking.is_open is not None else (not bool(job.is_closed) if job else True)),
+            'available_hrs': [emp.name for emp in available],
+            'available_hr_ids': [emp.id for emp in available],
+            'selected_hrs': [emp.name for emp in selected],
+            'selected_hr_ids': [emp.id for emp in selected],
+            'got_replied': bool(tracking.got_replied),
+            'is_freezed': bool(tracking.is_freezed),
+            'freezed_at': tracking.freezed_at.isoformat() if tracking.freezed_at else None,
+            'mail_tracking_id': mail_tracking.id if mail_tracking else None,
+            'maild_at': mail_tracking.maild_at.isoformat() if mail_tracking and mail_tracking.maild_at else None,
+            'replied_at': mail_tracking.replied_at.isoformat() if mail_tracking and mail_tracking.replied_at else None,
+            'milestones': milestones,
+            'created_at': tracking.created_at.isoformat() if tracking.created_at else '',
+            'updated_at': tracking.updated_at.isoformat() if tracking.updated_at else '',
+        }
 
     def get(self, request):
-        rows = ApplicationTracking.objects.filter(user=request.user).order_by('-applied_date', '-created_at')[:300]
-        return Response(ApplicationTrackingSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+        queryset = (
+            Tracking.objects.filter(user=request.user)
+            .select_related('Job__company')
+            .prefetch_related('selected_hrs', 'actions')
+            .order_by('-created_at')
+        )
+        rows, meta = _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100)
+        company_ids = {
+            row.Job.company_id
+            for row in rows
+            if row.Job_id and row.Job and row.Job.company_id
+        }
+        employees = Employee.objects.filter(user=request.user, company_id__in=company_ids).order_by('name')
+        available_hr_map = {}
+        for emp in employees:
+            available_hr_map.setdefault(emp.company_id, []).append(emp)
+
+        return Response(
+            {
+                **meta,
+                'results': [self._serialize_tracking_row(row, available_hr_map) for row in rows],
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
-        serializer = ApplicationTrackingSerializer(data=request.data)
-        if serializer.is_valid():
-            created = serializer.save(user=request.user)
-            return Response(ApplicationTrackingSerializer(created).data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        payload = request.data or {}
+        company = self._resolve_company(request, payload)
+        if not company:
+            return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        job = self._resolve_job(request, company, payload)
+        if not job:
+            return Response({'detail': 'Job not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        tracking = Tracking.objects.create(
+            user=request.user,
+            Job=job,
+            mailed=self._to_bool(payload.get('mailed'), default=False),
+            got_replied=self._to_bool(payload.get('got_replied'), default=False),
+            is_open=self._to_bool(payload.get('is_open'), default=True),
+            action='fresh',
+        )
+        self._sync_selected_hrs(request, tracking, payload)
+        action_error = self._append_action(tracking, payload)
+        if action_error:
+            return Response({'detail': action_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        available = Employee.objects.filter(user=request.user, company_id=company.id).order_by('name')
+        available_hr_map = {company.id: list(available)}
+        return Response(
+            self._serialize_tracking_row(
+                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions').select_related('Job__company').first(),
+                available_hr_map,
+            ),
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ApplicationTrackingDetailView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def _get_object(self, request, tracking_id):
-        return ApplicationTracking.objects.get(id=tracking_id, user=request.user)
+        return Tracking.objects.get(id=tracking_id, user=request.user)
+
+    def _to_bool(self, value, default=False):
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {'true', '1', 'yes', 'y', 'on'}:
+            return True
+        if text in {'false', '0', 'no', 'n', 'off'}:
+            return False
+        return default
+
+    def _to_date(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw[:10]).date()
+        except Exception:
+            return None
+
+    def _to_datetime(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(raw)
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            return dt
+        except Exception:
+            return None
+
+    def _serialize_tracking_row(self, row):
+        company = row.Job.company if row.Job_id and row.Job and row.Job.company_id else None
+        available = []
+        if company:
+            available = list(Employee.objects.filter(user=row.user, company_id=company.id).order_by('name'))
+        selected = list(row.selected_hrs.all())
+        milestones = [
+            {
+                'type': item.action_type,
+                'mode': item.send_mode,
+                'at': item.action_at.isoformat() if item.action_at else '',
+            }
+            for item in row.actions.all().order_by('created_at')[:10]
+        ]
+        return {
+            'id': row.id,
+            'company': company.id if company else None,
+            'company_name': company.name if company else '',
+            'job': row.Job.id if row.Job_id and row.Job else None,
+            'job_id': row.Job.job_id if row.Job_id and row.Job else '',
+            'role': row.Job.role if row.Job_id and row.Job else '',
+            'job_url': row.Job.job_link if row.Job_id and row.Job else '',
+            'tailored_resume_file': (row.Job.tailored_resume_file.url if row.Job_id and row.Job and getattr(row.Job, 'tailored_resume_file', None) else ''),
+            'is_closed': bool(row.Job.is_closed) if row.Job_id and row.Job else False,
+            'is_removed': bool(row.Job.is_removed) if row.Job_id and row.Job else False,
+            'mailed': bool(row.mailed),
+            'applied_date': row.Job.applied_at.isoformat() if row.Job_id and row.Job and row.Job.applied_at else None,
+            'posting_date': row.Job.date_of_posting.isoformat() if row.Job_id and row.Job and row.Job.date_of_posting else None,
+            'is_open': bool(row.is_open),
+            'available_hrs': [emp.name for emp in available],
+            'available_hr_ids': [emp.id for emp in available],
+            'selected_hrs': [emp.name for emp in selected],
+            'selected_hr_ids': [emp.id for emp in selected],
+            'got_replied': bool(row.got_replied),
+            'is_freezed': bool(row.is_freezed),
+            'freezed_at': row.freezed_at.isoformat() if row.freezed_at else None,
+            'mail_tracking_id': row.mail_tracking.id if row.mail_tracking_id else None,
+            'maild_at': row.mail_tracking.maild_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.maild_at else None,
+            'replied_at': row.mail_tracking.replied_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.replied_at else None,
+            'milestones': milestones,
+            'created_at': row.created_at.isoformat() if row.created_at else '',
+            'updated_at': row.updated_at.isoformat() if row.updated_at else '',
+        }
 
     def put(self, request, tracking_id):
         try:
             row = self._get_object(request, tracking_id)
-        except ApplicationTracking.DoesNotExist:
+        except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = ApplicationTrackingSerializer(row, data=request.data, partial=True)
-        if serializer.is_valid():
-            updated = serializer.save()
-            return Response(ApplicationTrackingSerializer(updated).data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        payload = request.data or {}
+        job = row.Job
+
+        company_id = payload.get('company')
+        company_name = str(payload.get('company_name') or '').strip()
+        company = job.company if job and job.company_id else None
+        if company_id:
+            try:
+                company = Company.objects.get(id=company_id, user=request.user)
+            except Company.DoesNotExist:
+                return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        elif company_name:
+            company, _ = Company.objects.get_or_create(user=request.user, name=company_name)
+
+        if job and company and job.company_id != company.id:
+            job.company = company
+        if job and 'job_id' in payload:
+            job.job_id = str(payload.get('job_id') or '').strip() or job.job_id
+        if job and 'role' in payload:
+            job.role = str(payload.get('role') or '').strip() or job.role
+        if job and 'job_url' in payload:
+            job.job_link = str(payload.get('job_url') or '').strip()
+        if job and 'tailored_resume_file' in payload:
+            job.tailored_resume_file = str(payload.get('tailored_resume_file') or '').strip()
+        if job and request.FILES.get('tailored_resume_upload'):
+            job.tailored_resume_file = request.FILES.get('tailored_resume_upload')
+        if job and 'applied_date' in payload:
+            job.applied_at = self._to_date(payload.get('applied_date'))
+        if job and 'posting_date' in payload:
+            job.date_of_posting = self._to_date(payload.get('posting_date'))
+        if job and 'is_open' in payload:
+            job.is_closed = not self._to_bool(payload.get('is_open'), default=True)
+        if job and 'is_closed' in payload:
+            job.is_closed = self._to_bool(payload.get('is_closed'), default=job.is_closed)
+        if job and 'is_removed' in payload:
+            job.is_removed = self._to_bool(payload.get('is_removed'), default=job.is_removed)
+        if job:
+            job.save()
+
+        if 'mailed' in payload:
+            row.mailed = self._to_bool(payload.get('mailed'), default=row.mailed)
+        if 'got_replied' in payload:
+            row.got_replied = self._to_bool(payload.get('got_replied'), default=row.got_replied)
+        if 'is_open' in payload:
+            row.is_open = self._to_bool(payload.get('is_open'), default=row.is_open)
+        if 'action' in payload:
+            action_text = str(payload.get('action') or '').strip()
+            if action_text in {'fresh', 'followed_up'}:
+                row.action = action_text
+        if 'schedule_time' in payload:
+            row.schedule_time = self._to_datetime(payload.get('schedule_time'))
+        if 'is_freezed' in payload:
+            next_freezed = self._to_bool(payload.get('is_freezed'), default=row.is_freezed)
+            row.is_freezed = next_freezed
+            row.freezed_at = timezone.now() if next_freezed else None
+        if any(key in payload for key in ['maild_at', 'replied_at']):
+            if not row.mail_tracking_id:
+                row.mail_tracking = MailTracking.objects.create(
+                    user=request.user,
+                    company=job.company if job and job.company_id else None,
+                    employee=None,
+                    job=job,
+                    mailed=row.mailed,
+                    got_replied=row.got_replied,
+                )
+            if 'maild_at' in payload:
+                row.mail_tracking.maild_at = self._to_datetime(payload.get('maild_at'))
+            if 'replied_at' in payload:
+                row.mail_tracking.replied_at = self._to_datetime(payload.get('replied_at'))
+            row.mail_tracking.mailed = row.mailed
+            row.mail_tracking.got_replied = row.got_replied
+            row.mail_tracking.save()
+        row.save()
+
+        selected_hr_ids = payload.get('selected_hr_ids')
+        selected_hrs = payload.get('selected_hrs')
+        if hasattr(request.data, 'getlist'):
+            id_list = [str(v or '').strip() for v in request.data.getlist('selected_hr_ids') if str(v or '').strip()]
+            name_list = [str(v or '').strip() for v in request.data.getlist('selected_hrs') if str(v or '').strip()]
+            if id_list:
+                selected_hr_ids = id_list
+            if name_list:
+                selected_hrs = name_list
+        if isinstance(selected_hr_ids, str):
+            selected_hr_ids = [x.strip() for x in selected_hr_ids.split(',') if x.strip()]
+        if isinstance(selected_hrs, str):
+            selected_hrs = [x.strip() for x in selected_hrs.split(',') if x.strip()]
+
+        if isinstance(selected_hr_ids, list):
+            selected = Employee.objects.filter(user=request.user, id__in=selected_hr_ids)
+            row.selected_hrs.set(selected)
+        elif isinstance(selected_hrs, list):
+            target_names = [str(name or '').strip() for name in selected_hrs if str(name or '').strip()]
+            company_id_ref = row.Job.company_id if row.Job_id and row.Job and row.Job.company_id else None
+            selected = Employee.objects.filter(user=request.user, company_id=company_id_ref, name__in=target_names)
+            row.selected_hrs.set(selected)
+
+        append_action = payload.get('append_action')
+        if isinstance(append_action, dict):
+            action_type = str(append_action.get('type') or '').strip().lower()
+            if action_type not in {'fresh', 'followup'}:
+                return Response({'detail': 'Invalid action type.'}, status=status.HTTP_400_BAD_REQUEST)
+            if action_type == 'followup' and not row.actions.filter(action_type='fresh').exists():
+                return Response({'detail': 'Fresh mail must be done first before follow up.'}, status=status.HTTP_400_BAD_REQUEST)
+            send_mode = str(append_action.get('send_mode') or 'now').strip().lower()
+            mode = 'sent' if send_mode == 'now' else 'scheduled'
+            action_at = self._to_datetime(append_action.get('action_at')) or timezone.now()
+            TrackingAction.objects.create(
+                tracking=row,
+                action_type=action_type,
+                send_mode=mode,
+                action_at=action_at,
+            )
+            row.action = 'followed_up' if action_type == 'followup' else 'fresh'
+            if action_type == 'fresh':
+                row.mailed = True
+            row.save(update_fields=['action', 'mailed', 'updated_at'])
+
+        fresh = Tracking.objects.filter(id=row.id).select_related('Job__company').prefetch_related('selected_hrs', 'actions').first()
+        return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
         try:
             row = self._get_object(request, tracking_id)
-        except ApplicationTracking.DoesNotExist:
+        except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -1391,8 +1868,15 @@ class CompanyListCreateView(APIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        rows = Company.objects.filter(user=request.user).order_by('name')
-        return Response(CompanySerializer(rows, many=True).data, status=status.HTTP_200_OK)
+        queryset = Company.objects.filter(user=request.user).order_by('name')
+        rows, meta = _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100)
+        return Response(
+            {
+                **meta,
+                'results': CompanySerializer(rows, many=True).data,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         serializer = CompanySerializer(data=request.data)
