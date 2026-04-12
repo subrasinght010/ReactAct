@@ -14,6 +14,7 @@ function TailoredResumePage() {
       referenceBuilderSessionKey="tailoredBuilderReferenceBuilder"
       referenceResumeIdSessionKey="tailoredBuilderReferenceResumeId"
       aiModelSessionKey="tailoredBuilderAiModel"
+      tailorModeSessionKey="tailoredBuilderTailorMode"
     />
   )
 }

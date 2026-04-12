@@ -209,3 +209,18 @@ export async function optimizeResumeQuality(accessToken, payload) {
   )
   return parseResponse(response)
 }
+
+export async function exportAtsPdfLocal(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/export-ats-pdf-local/`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}

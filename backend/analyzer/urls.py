@@ -13,6 +13,7 @@ from .views import (
     SignupView,
     TailorResumeView,
     OptimizeResumeQualityView,
+    ExportAtsPdfLocalView,
 )
 
 urlpatterns = [
@@ -29,4 +30,5 @@ urlpatterns = [
     path('run-analysis/', RunAnalysisView.as_view()),
     path('tailor-resume/', TailorResumeView.as_view()),
     path('optimize-resume-quality/', OptimizeResumeQualityView.as_view()),
+    path('export-ats-pdf-local/', ExportAtsPdfLocalView.as_view()),
 ]

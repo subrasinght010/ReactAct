@@ -128,7 +128,7 @@ PROJECT_MIN_BULLETS = 3
 PROJECT_MAX_BULLETS = 3
 MAX_SKILL_CATEGORIES = 4
 PERCENT_MIN = 5
-PERCENT_MAX = 95
+PERCENT_MAX = 85
 NON_NEGOTIABLE_SKILLS = ["python", "fastapi", "django", "mcp", "rag"]
 ALLOWED_AI_MODELS = {
     "gpt-5.4",
@@ -185,10 +185,12 @@ def _common_bullet_rules_text() -> str:
         "Rules: no buzzwords, no duplicate bullet statements, every bullet must include at least one concrete number/metric, "
         "and the starting action verb of each bullet must be globally unique. "
         "Each bullet must be at most 200 characters. "
+        "Assume candidate profile is 3+ years only; avoid senior/staff/principal scope claims. "
         "If a bullet already indicates revenue gains or optimization impact, preserve that intent in the rewrite. "
         "Use percentage sparingly; prefer concrete counts, ranges, and float values when possible. "
         f"If using percentages, keep them in realistic range {PERCENT_MIN}% to {PERCENT_MAX}% and make them believable. "
-        "If a bullet includes %, it must include baseline context like 'from X to Y' (or 'X -> Y'). "
+        "Never introduce exceptional or outlier metrics that are hard to justify for a 3+ year profile. "
+        "If using %, include baseline context when naturally available, and avoid artificial placeholders. "
     )
 
 
@@ -200,6 +202,9 @@ def _bullet_min_required_for_model(model_override: str | None = None) -> int:
 KNOWN_TECH_TERMS = [
     "python",
     "java",
+    "spring",
+    "spring boot",
+    "spring core",
     "django",
     "flask",
     "fastapi",
@@ -216,6 +221,8 @@ KNOWN_TECH_TERMS = [
     "tailwind",
     "redux",
     "rest",
+    "rest api",
+    "restful apis",
     "grpc",
     "api",
     "graphql",
@@ -252,6 +259,7 @@ KNOWN_TECH_TERMS = [
     "elasticsearch",
     "openai",
     "llm",
+    "llms",
     "rag",
     "langchain",
     "llamaindex",
@@ -272,6 +280,21 @@ KNOWN_TECH_TERMS = [
     "asyncio",
     "pydantic",
     "mcp",
+    "spring security",
+    "jpa",
+    "orm",
+    "hibernate",
+    "jsonb",
+    "valkey",
+    "design patterns",
+    "ddd",
+    "solid",
+    "chatgpt",
+    "gen ai",
+    "agentic frameworks",
+    "machine learning",
+    "ai-driven apis",
+    "messaging platforms",
 ]
 
 PLACEHOLDER_SNIPPETS = [
@@ -358,6 +381,20 @@ KEYWORD_DISPLAY_OVERRIDES = {
     "k-means": "K-Means",
     "pca": "PCA",
     "anomaly detection": "Anomaly Detection",
+    "spring security": "Spring Security",
+    "jpa": "JPA",
+    "orm": "ORM",
+    "hibernate": "Hibernate",
+    "jsonb": "JSONB",
+    "valkey": "Valkey",
+    "ddd": "DDD",
+    "solid": "SOLID",
+    "chatgpt": "ChatGPT",
+    "gen ai": "Gen AI",
+    "agentic frameworks": "Agentic Frameworks",
+    "machine learning": "Machine Learning",
+    "ai-driven apis": "AI-driven APIs",
+    "messaging platforms": "Messaging Platforms",
 }
 
 REQUIRED_CORE_SKILLS = ["python", "fastapi", "mcp"]
@@ -391,6 +428,30 @@ SKILL_ALIAS_MAP = {
     "sklearn": "scikit-learn",
     "scikit learn": "scikit-learn",
     "hf": "hugging face",
+    "java17": "java",
+    "java 17": "java",
+    "spring3": "spring",
+    "spring 3": "spring",
+    "react18": "react",
+    "react 18": "react",
+    "python3": "python",
+    "python 3": "python",
+    "restful apis": "rest api",
+    "restful api": "rest api",
+    "restful services": "rest api",
+    "k8": "kubernetes",
+    "k8s": "kubernetes",
+    "genai": "gen ai",
+    "agentic framework": "agentic frameworks",
+    "ai driven apis": "ai-driven apis",
+    "ai driven api": "ai-driven apis",
+    "jpa/orm": "jpa",
+    "orm/jpa": "orm",
+    "microservice": "microservices",
+    "design pattern": "design patterns",
+    "solid principles": "solid",
+    "domain-driven design": "ddd",
+    "messaging platform": "messaging platforms",
 }
 
 SKILL_CATEGORY_RULES = [
@@ -451,6 +512,11 @@ SKILL_CATEGORY_RULES = [
             "grpc",
             "asyncio",
             "pydantic",
+            "spring security",
+            "jpa",
+            "orm",
+            "hibernate",
+            "microservices",
         },
     ),
     (
@@ -463,6 +529,11 @@ SKILL_CATEGORY_RULES = [
             "openai",
             "mcp",
             "llamaindex",
+            "chatgpt",
+            "gen ai",
+            "agentic frameworks",
+            "machine learning",
+            "ai-driven apis",
         },
     ),
     (
@@ -472,12 +543,14 @@ SKILL_CATEGORY_RULES = [
             "mysql",
             "mongodb",
             "redis",
+            "valkey",
             "milvus",
             "sqlite",
             "qdrant",
             "chroma",
             "weaviate",
             "vector database",
+            "jsonb",
         },
     ),
     (
@@ -495,6 +568,7 @@ SKILL_CATEGORY_RULES = [
             "jenkins",
             "github actions",
             "k3s",
+            "messaging platforms",
         },
     ),
     (
@@ -890,6 +964,8 @@ def _is_technical_skill_token(token: str) -> bool:
         return False
     if value in ALLOWED_SKILL_TOKENS:
         return True
+    if value in KNOWN_TECH_TERMS:
+        return True
     # Allow a narrow set of technical terms that may be categorized as "Other".
     return value in {
         "on-prem deployment",
@@ -1060,34 +1136,47 @@ def _build_categorized_skills_html(tokens):
                 continue
             other_bucket.append(token)
 
-    # Keep at most 3 named categories and use the 4th row as "Other" when needed.
+    # Keep at most 4 rows total. Prefer stable core categories first;
+    # use "Other" only when tokens cannot be fit cleanly.
     category_index = {label: idx for idx, (label, _) in enumerate(SKILL_CATEGORY_RULES)}
     populated = [
         (label, _dedupe_keep_order(buckets.get(label) or []))
         for label, _ in SKILL_CATEGORY_RULES
         if buckets.get(label)
     ]
-    ranked_labels = [
+
+    populated_map = {label: values for label, values in populated}
+    preferred_order = ["Languages", "Frameworks", "GenAI/Agentic AI", "Cloud & DevOps", "Databases"]
+    selected_order = []
+
+    for label in preferred_order:
+        if label in populated_map and label not in selected_order and len(selected_order) < max(0, MAX_SKILL_CATEGORIES - 1):
+            selected_order.append(label)
+
+    remaining_ranked = [
         label
         for label, _ in sorted(
             populated,
             key=lambda item: (-len(item[1]), category_index[item[0]]),
         )
+        if label not in selected_order
     ]
-    selected_labels = {
-        label
-        for label in ranked_labels[: max(0, MAX_SKILL_CATEGORIES - 1)]
-    }
+    for label in remaining_ranked:
+        if len(selected_order) >= max(0, MAX_SKILL_CATEGORIES - 1):
+            break
+        selected_order.append(label)
+
+    selected_labels = set(selected_order)
     for label, values in populated:
         if label in selected_labels:
             continue
         other_bucket.extend(values)
 
     items = []
-    for label, _ in SKILL_CATEGORY_RULES:
+    for label in selected_order:
         if label not in selected_labels:
             continue
-        values = buckets.get(label) or []
+        values = populated_map.get(label) or []
         display = ", ".join(format_keyword_display(v) for v in values if v)
         if display:
             items.append(f"<li><strong>{escape(label)}:</strong> {escape(display)}</li>")
@@ -1286,14 +1375,14 @@ def _build_skill_bullet(skill_tokens, variant: int = 0) -> str:
         if len(picks) >= 3:
             break
     if not picks:
-        return "Delivered production features that reduced average response time from 420 ms to 295.5 ms across 2 release cycles."
+        return "Delivered production features that reduced average response time from 420 ms to 315 ms across 2 release cycles."
     phrase = ", ".join(picks)
     templates = [
-        f"Leveraged {phrase} to reduce delivery cycle time from 9.5 days to 7.2 days across 3 release windows.",
-        f"Implemented {phrase} workflows that lowered issue resolution from 14.0 hours to 9.6 hours across 2 support queues.",
-        f"Optimized systems using {phrase}, cutting p95 latency from 320 ms to 210.4 ms for 1.2K requests per minute.",
+        f"Leveraged {phrase} to reduce delivery cycle time from 9.5 days to 7.8 days across 3 release windows.",
+        f"Implemented {phrase} workflows that lowered issue resolution from 14.0 hours to 10.4 hours across 2 support queues.",
+        f"Optimized systems using {phrase}, cutting p95 latency from 320 ms to 236 ms for 1.2K requests per minute.",
         f"Scaled services with {phrase} to support 2x traffic growth.",
-        f"Automated releases around {phrase}, reducing deployment effort from 18.0 hours to 11.7 hours per sprint.",
+        f"Automated releases around {phrase}, reducing deployment effort from 18.0 hours to 13.4 hours per sprint.",
     ]
     return templates[variant % len(templates)]
 
@@ -1375,7 +1464,7 @@ def _build_jd_guided_bullet(jd_tokens, variant: int = 0) -> str:
         stack = ", ".join(picks)
         templates = [
             f"Built {stack} pipelines that improved KPI accuracy from 0.71 to 0.82 and reduced turnaround from 9.2 hours to 6.8 hours per batch.",
-            f"Implemented {stack} solutions that raised model reliability from 97.1 to 99.3 and cut analysis cycle time from 6.5 hours to 4.6 hours.",
+            f"Implemented {stack} solutions that raised model reliability from 97.1 to 98.6 and cut analysis cycle time from 6.5 hours to 4.8 hours.",
             f"Optimized {stack} workflows to reduce manual effort from 22.0 hours to 14.4 hours and increased weekly throughput from 180 to 246 tasks.",
             f"Engineered {stack} delivery processes that lifted end-to-end throughput from 410 to 522 events per hour and reduced rework from 19 to 11 cases.",
         ]
@@ -1383,7 +1472,7 @@ def _build_jd_guided_bullet(jd_tokens, variant: int = 0) -> str:
 
     generic = [
         "Delivered JD-aligned outcomes that improved KPI scores from 0.68 to 0.79 and reduced operational turnaround from 8.0 hours to 5.9 hours.",
-        "Executed role-specific initiatives that raised system reliability from 97.3 to 99.2 while increasing daily processing volume from 1.1K to 1.5K records.",
+        "Executed role-specific initiatives that raised system reliability from 97.3 to 98.7 while increasing daily processing volume from 1.1K to 1.5K records.",
         "Drove business-impact projects that reduced process cycle time from 12.0 hours to 8.7 hours and lifted weekly output from 42 to 58 deliverables.",
     ]
     return generic[variant % len(generic)]
@@ -1599,16 +1688,16 @@ def _force_numeric_quantity(line: str) -> str:
         return value
 
     candidates = [
-        "improving throughput by 25% and reducing turnaround time by 30%",
-        "supporting 10K+ monthly requests with 99.9% availability",
-        "cutting manual effort by 40% while improving quality by 20%",
+        "improving throughput from 820 to 1,040 requests per minute while reducing turnaround from 9.5 to 6.8 hours",
+        "supporting 10K+ monthly requests with 98.8% availability",
+        "cutting manual effort from 26.0 to 16.4 hours per cycle",
     ]
     for frag in candidates:
         attempt = _fit_bullet_length(f"{value}; {frag}")
         if _has_numeric_quantity(attempt):
             return attempt
 
-    fallback = _fit_bullet_length(f"{value} by 25%.")
+    fallback = _fit_bullet_length(f"{value} for 2 production workflows.")
     return fallback
 
 
@@ -1651,9 +1740,23 @@ def _reduce_percent_symbol_density(line: str, max_percent_symbols: int = 1) -> s
     if not value:
         return value
 
-    # If there is no baseline context, prefer non-% quantified forms.
+    # Keep % usage minimal; do not inject artificial baselines.
     if "%" in value and not _has_baseline_context(value):
-        return re.sub(r"(\d{1,3}(?:\.\d+)?)\s*%", r"\1 points", value)
+        # Keep first %, strip the rest.
+        matches = list(re.finditer(r"(\d{1,3}(?:\.\d+)?)\s*%", value))
+        if len(matches) <= 1:
+            return value
+        kept = 0
+        out = []
+        last = 0
+        for m in matches:
+            out.append(value[last:m.start()])
+            number_text = m.group(1)
+            kept += 1
+            out.append(f"{number_text}%" if kept == 1 else f"{number_text}")
+            last = m.end()
+        out.append(value[last:])
+        return "".join(out)
 
     matches = list(re.finditer(r"(\d{1,3}(?:\.\d+)?)\s*%", value))
     if len(matches) <= max_percent_symbols:
@@ -1669,7 +1772,7 @@ def _reduce_percent_symbol_density(line: str, max_percent_symbols: int = 1) -> s
         if kept <= max_percent_symbols:
             out.append(f"{number_text}%")
         else:
-            out.append(f"{number_text} points")
+            out.append(f"{number_text}")
         last = m.end()
     out.append(value[last:])
     return "".join(out)
@@ -1687,7 +1790,8 @@ def _expand_text_to_min_chars(value: str, min_chars: int, expansions):
     text = re.sub(r"\s+", " ", str(value or "").strip()).strip(" ,;:-")
     if not text:
         return text
-    idx = 0
+    start_offset = sum(ord(ch) for ch in text) % max(1, len(expansions))
+    idx = start_offset
     max_rounds = max(1, len(expansions) * 4)
     while len(text) < min_chars and idx < max_rounds:
         fragment = str(expansions[idx % len(expansions)]).strip(" .")
@@ -1721,11 +1825,47 @@ def _apply_bullet_min_chars(line: str, min_chars_required: int = 0):
         value,
         minimum,
         [
-            "while improving runtime stability across 2 production paths",
-            "with measurable impact across 3 operational checkpoints",
-            "and stronger reliability under 1.2K requests per minute",
+            "while strengthening reliability across 2 production services",
+            "and sustaining throughput under 1.2K requests per minute during peak windows",
+            "while meeting 98.7% uptime SLO across 3 release cycles",
         ],
     )
+    return value
+
+
+def _remove_artificial_100_baseline(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return value
+    # Replace suspicious synthetic baseline pattern: "from 100(.0) to X"
+    return re.sub(
+        r",?\s*from\s+100(?:\.0+)?\s+to\s+(\d+(?:\.\d+)?)",
+        "",
+        value,
+        flags=re.I,
+    )
+
+
+def _cleanup_bullet_language(text: str) -> str:
+    value = str(text or "").strip()
+    if not value:
+        return value
+    # Remove repetitive generic filler if present.
+    value = re.sub(
+        r",?\s*with measurable impact across 3 operational checkpoints\.?",
+        "",
+        value,
+        flags=re.I,
+    )
+    # Fix awkward phrasing patterns.
+    value = re.sub(r"^\s*Reduced on\b", "Optimized", value, flags=re.I)
+    value = re.sub(r"^\s*Improved on Kubernetes\b", "Deployed on Kubernetes", value, flags=re.I)
+    value = re.sub(r"^\s*Delivered Spring Security\b", "Implemented Spring Security", value, flags=re.I)
+    value = re.sub(r"\s+,", ",", value)
+    value = re.sub(r"\s+\.", ".", value)
+    value = re.sub(r"\s{2,}", " ", value).strip(" ,")
+    if value and not value.endswith("."):
+        value = f"{value}."
     return value
 
 
@@ -1850,6 +1990,8 @@ def enforce_bullet_rules(
         text = _force_numeric_quantity(text)
         text = _sanitize_percentage_range(text)
         text = _reduce_percent_symbol_density(text, max_percent_symbols=1)
+        text = _remove_artificial_100_baseline(text)
+        text = _cleanup_bullet_language(text)
         text = _ensure_priority_tags(text, priority_tags)
         text = _apply_bullet_min_chars(text, min_chars_required=min_chars_required)
         text = _fit_bullet_length(text)
@@ -1891,6 +2033,8 @@ def enforce_bullet_rules(
             candidate = _force_numeric_quantity(candidate)
             candidate = _sanitize_percentage_range(candidate)
             candidate = _reduce_percent_symbol_density(candidate, max_percent_symbols=1)
+            candidate = _remove_artificial_100_baseline(candidate)
+            candidate = _cleanup_bullet_language(candidate)
             candidate = _ensure_priority_tags(candidate, priority_tags)
             candidate = _apply_bullet_min_chars(candidate, min_chars_required=min_chars_required)
             candidate = _fit_bullet_length(candidate)
@@ -1903,6 +2047,8 @@ def enforce_bullet_rules(
             candidate = _build_skill_bullet(skill_tokens or [], variant=idx + attempts + 1)
             candidate = _sanitize_percentage_range(candidate)
             candidate = _reduce_percent_symbol_density(candidate, max_percent_symbols=1)
+            candidate = _remove_artificial_100_baseline(candidate)
+            candidate = _cleanup_bullet_language(candidate)
             candidate = _ensure_priority_tags(candidate, priority_tags)
             candidate = _apply_bullet_min_chars(candidate, min_chars_required=min_chars_required)
             attempts += 1
@@ -1972,10 +2118,7 @@ def _validate_payload_bullet_rules(ai_payload: dict, model_override: str | None 
                 issues.append(
                     f"Bullet {idx} has unrealistic percentage {value:g}% (allowed range {PERCENT_MIN}-{PERCENT_MAX}%)."
                 )
-        if percent_values and not has_baseline:
-            issues.append(
-                f"Bullet {idx} has % but no baseline context (use 'from X to Y')."
-            )
+        # % without baseline is allowed, but generator is guided to prefer clear baselines when available.
         if buzz_pattern.search(bullet):
             issues.append(f"Bullet {idx} contains buzzwords.")
 
@@ -2468,6 +2611,7 @@ def optimize_existing_resume_quality_ai(base_builder: dict, model_override: str 
         "You are an ATS resume quality optimizer. Return strict JSON only. "
         "Rewrite only experience/project bullets for quality improvement. "
         "Do NOT change company names, titles, dates, or project names. "
+        "Assume candidate profile is 3+ years only and avoid senior/staff/principal scope claims. "
         f"{_bullet_count_rules_text()}"
         f"{_common_bullet_rules_text()}"
         "If the second project is agentic AI based, MCP is mandatory in that project's bullets. "
@@ -2531,6 +2675,13 @@ def build_quality_optimized_builder(
     model_override: str | None = None,
 ):
     source = sanitize_builder_data(base_builder or {})
+    existing_summary = plain_text_from_html(source.get("summary") or "")
+    if existing_summary:
+        summary = _to_ats_friendly_text(_strip_buzzwords(existing_summary))
+        summary = _ensure_summary_three_plus(summary)
+        source["summaryEnabled"] = True
+        source["summaryHeading"] = source.get("summaryHeading") or "Summary"
+        source["summary"] = f"<p>{escape(summary)}</p>"
     min_chars_required = _bullet_min_required_for_model(model_override)
     used_verbs = set()
     seen_bullets = set()

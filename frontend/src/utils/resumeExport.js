@@ -22,18 +22,66 @@ function plainTextFromHtml(value) {
     .trim()
 }
 
-function htmlToBulletList(htmlValue) {
+function sanitizeInlineHtml(value) {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(`<div>${String(value || '')}</div>`, 'text/html')
+  const root = doc.body.firstElementChild
+  if (!root) return ''
+
+  const allowed = new Set(['MARK', 'STRONG', 'EM', 'B', 'I', 'U', 'A', 'BR', 'SPAN'])
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+  const nodes = []
+  let node = walker.nextNode()
+  while (node) {
+    nodes.push(node)
+    node = walker.nextNode()
+  }
+
+  nodes.forEach((el) => {
+    if (!allowed.has(el.tagName)) {
+      const parent = el.parentNode
+      while (el.firstChild) parent?.insertBefore(el.firstChild, el)
+      parent?.removeChild(el)
+      return
+    }
+    // Keep links safe and minimal.
+    if (el.tagName === 'A') {
+      const href = String(el.getAttribute('href') || '').trim()
+      const safe = /^https?:\/\//i.test(href) ? href : ''
+      el.setAttribute('href', safe)
+      el.removeAttribute('target')
+      el.removeAttribute('rel')
+    }
+    // Drop style/event attrs to avoid broken markup.
+    Array.from(el.attributes || []).forEach((attr) => {
+      const name = String(attr.name || '').toLowerCase()
+      if (name === 'href') return
+      el.removeAttribute(attr.name)
+    })
+  })
+
+  return root.innerHTML
+}
+
+function htmlToBulletList(htmlValue, options = {}) {
+  const preserveInline = Boolean(options.preserveInline)
   const raw = String(htmlValue || '')
   if (!raw.trim()) return ''
 
   const parser = new DOMParser()
   const doc = parser.parseFromString(raw, 'text/html')
-  const listItems = Array.from(doc.querySelectorAll('li'))
-    .map((li) => String(li.textContent || '').replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
+  const listItems = Array.from(doc.querySelectorAll('li')).map((li) => {
+    if (preserveInline) {
+      const html = sanitizeInlineHtml(li.innerHTML)
+      const text = String(li.textContent || '').replace(/\s+/g, ' ').trim()
+      return text ? { text, html } : null
+    }
+    const text = String(li.textContent || '').replace(/\s+/g, ' ').trim()
+    return text ? { text, html: '' } : null
+  }).filter(Boolean)
 
   if (listItems.length) {
-    return `<ul>${listItems.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`
+    return `<ul>${listItems.map((item) => `<li>${preserveInline ? item.html : escapeHtml(item.text)}</li>`).join('')}</ul>`
   }
 
   const text = plainTextFromHtml(raw)
@@ -102,6 +150,39 @@ function renderCustomSection(section, sectionClass) {
       <h2>${title}</h2>
       <div class="section-body">${content}</div>
     </section>
+  `
+}
+
+function renderExperienceItemPreserveInline(exp) {
+  const title = escapeHtml([exp.company, exp.title].filter(Boolean).join(' - '))
+  const dates = escapeHtml([exp.startDate, exp.isCurrent ? 'Present' : exp.endDate].filter(Boolean).join(' - '))
+  const bullets = htmlToBulletList(exp.highlights, { preserveInline: true })
+
+  return `
+    <div class="entry">
+      <div class="entry-head">
+        <span>${title}</span>
+        <span class="entry-dates">${dates}</span>
+      </div>
+      ${bullets}
+    </div>
+  `
+}
+
+function renderProjectItemPreserveInline(project) {
+  const name = escapeHtml(project.name || '')
+  const link = project.normalizedUrl
+    ? `<a class="entry-link project-link" href="${escapeHtml(project.normalizedUrl)}">link</a>`
+    : ''
+  const bullets = htmlToBulletList(project.highlights, { preserveInline: true })
+
+  return `
+    <div class="entry">
+      <div class="entry-head">
+        <span>${name}${link}</span>
+      </div>
+      ${bullets}
+    </div>
   `
 }
 
@@ -222,7 +303,6 @@ export function buildAtsPdfHtml(form) {
       font-weight: 700;
       text-align: center;
       letter-spacing: 0.02em;
-      text-transform: uppercase;
     }
 
     .contact {
@@ -388,6 +468,198 @@ export function buildAtsPdfHtml(form) {
   ${sections.join('')}
 </body>
 </html>`
+}
+
+function escapeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function buildHighlightRegex(words) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(words) ? words : [])
+        .map((w) => String(w || '').trim())
+        .filter(Boolean),
+    ),
+  )
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 120)
+
+  if (!normalized.length) return null
+  const pattern = normalized.map((w) => escapeRegex(w)).join('|')
+  return new RegExp(`\\b(${pattern})\\b`, 'gi')
+}
+
+function applyKeywordHighlightsToHtml(baseHtml, words) {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') return baseHtml
+  const regex = buildHighlightRegex(words)
+  if (!regex) return baseHtml
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(String(baseHtml || ''), 'text/html')
+  const skipTags = new Set(['SCRIPT', 'STYLE', 'MARK', 'A'])
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  const nodes = []
+  let current = walker.nextNode()
+  while (current) {
+    nodes.push(current)
+    current = walker.nextNode()
+  }
+
+  nodes.forEach((node) => {
+    const parentTag = node.parentElement?.tagName || ''
+    if (!node.nodeValue || skipTags.has(parentTag)) return
+    const source = String(node.nodeValue || '')
+    regex.lastIndex = 0
+    if (!regex.test(source)) return
+
+    regex.lastIndex = 0
+    const frag = doc.createDocumentFragment()
+    let last = 0
+    let match = regex.exec(source)
+    while (match) {
+      const start = match.index
+      const end = start + String(match[0]).length
+      if (start > last) {
+        frag.appendChild(doc.createTextNode(source.slice(last, start)))
+      }
+      const mark = doc.createElement('mark')
+      mark.className = 'kw-highlight'
+      mark.textContent = source.slice(start, end)
+      frag.appendChild(mark)
+      last = end
+      match = regex.exec(source)
+    }
+    if (last < source.length) {
+      frag.appendChild(doc.createTextNode(source.slice(last)))
+    }
+    node.parentNode?.replaceChild(frag, node)
+  })
+
+  const style = doc.createElement('style')
+  style.textContent = `
+    .kw-highlight {
+      background: #fff3a3 !important;
+      color: #111827 !important;
+      padding: 0 1px;
+      border-radius: 2px;
+    }
+  `
+  doc.head.appendChild(style)
+  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+}
+
+export function buildAtsPdfHtmlPreserveHighlights(form) {
+  const model = buildResumeViewModel(form, { forceEducationScoreWhenValue: true })
+  const sectionClass = model.sectionUnderline ? 'section has-underline' : 'section'
+  const bodyClass = 'compact'
+  const headerClass = model.sectionUnderline ? 'header' : 'header has-underline'
+  const linksHtml = model.links
+    .map((item) => `<a href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>`)
+    .join(' | ')
+
+  const getCustomByKey = (key) => {
+    if (!key.startsWith(model.customKeyPrefix)) return null
+    const id = key.slice(model.customKeyPrefix.length)
+    return model.customSections.find((section) => section.id === id) || null
+  }
+
+  const sections = []
+  model.orderedKeys.forEach((key) => {
+    if (key === 'summary') {
+      if (!model.summaryEnabled || !model.summaryHtml.trim()) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>${escapeHtml(model.summaryHeading || 'Summary')}</h2>
+          <div class="section-body">${model.summaryHtml}</div>
+        </section>
+      `)
+      return
+    }
+    if (key === 'skills') {
+      if (!model.skillsHtml.trim()) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Skills</h2>
+          <div class="section-body">${model.skillsHtml}</div>
+        </section>
+      `)
+      return
+    }
+    if (key === 'experience') {
+      if (!model.experiences.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Experience</h2>
+          ${model.experiences.map((exp) => renderExperienceItemPreserveInline(exp)).join('')}
+        </section>
+      `)
+      return
+    }
+    if (key === 'projects') {
+      if (!model.projects.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Projects</h2>
+          ${model.projects.map((project) => renderProjectItemPreserveInline(project)).join('')}
+        </section>
+      `)
+      return
+    }
+    if (key === 'education') {
+      if (!model.educations.length) return
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>Education</h2>
+          ${model.educations.map((edu) => renderEducationItem(edu)).join('')}
+        </section>
+      `)
+      return
+    }
+    if (key.startsWith(model.customKeyPrefix)) {
+      const custom = getCustomByKey(key)
+      if (!custom) return
+      const title = escapeHtml(custom.title || 'Custom section')
+      const content = htmlToBulletList(custom.content, { preserveInline: true }) || `<p>${escapeHtml(plainTextFromHtml(custom.content))}</p>`
+      sections.push(`
+        <section class="${sectionClass}">
+          <h2>${title}</h2>
+          <div class="section-body">${content}</div>
+        </section>
+      `)
+    }
+  })
+
+  const html = buildAtsPdfHtml(form)
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(html, 'text/html')
+  const body = doc.body
+  if (body) {
+    body.innerHTML = `
+      <header class="${headerClass}">
+        <h1>${escapeHtml(model.fullName || '')}</h1>
+        <div class="contact">${escapeHtml(model.contactLine)}</div>
+        ${linksHtml ? `<div class="plain-links">${linksHtml}</div>` : ''}
+      </header>
+      ${sections.join('')}
+    `
+  }
+  const style = doc.createElement('style')
+  style.textContent = `
+    mark, .kw-highlight {
+      background: #fff3a3 !important;
+      color: #111827 !important;
+      padding: 0 1px;
+      border-radius: 2px;
+    }
+  `
+  doc.head.appendChild(style)
+  return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+}
+
+export function buildAtsPdfHtmlWithHighlights(form, highlightWords = []) {
+  const baseHtml = buildAtsPdfHtml(form)
+  return applyKeywordHighlightsToHtml(baseHtml, highlightWords)
 }
 
 export function printAtsPdf(form) {

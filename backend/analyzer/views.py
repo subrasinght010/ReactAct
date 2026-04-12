@@ -1,6 +1,9 @@
 import json
 import os
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -79,6 +82,91 @@ def _builder_data_to_text(builder_data: dict) -> str:
             parts.append(" | ".join([p for p in [inst, program] if p]))
 
     return "\n".join([p for p in [p.strip() for p in parts] if p])
+
+
+def _sanitize_filename_stem(raw: str) -> str:
+    value = re.sub(r"\s+", " ", str(raw or "").strip())
+    value = re.sub(r"[^\w\s-]", "", value)
+    value = value.replace(" ", "").strip("._-")
+    return value or "resume"
+
+
+def _default_pdf_filename(builder_data: dict) -> str:
+    data = builder_data if isinstance(builder_data, dict) else {}
+    full_name = str(data.get("fullName") or "").strip()
+    parts = [re.sub(r"[^\w]", "", p).lower() for p in re.split(r"\s+", full_name) if p.strip()]
+    if not parts:
+        base = "resume"
+    elif len(parts) == 1:
+        base = parts[0]
+    else:
+        base = f"{parts[0]}{parts[-1]}"
+    stem = _sanitize_filename_stem(f"{base}_3yoe").lower()
+    return f"{stem}.pdf"
+
+
+def _pick_local_pdf_path(file_name: str) -> Path:
+    target_dir = Path.home() / "Desktop" / "Ats"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    stem = _sanitize_filename_stem(Path(str(file_name or "")).stem).lower()
+    if not stem:
+        stem = "resume"
+    # Always overwrite existing file as requested.
+    return target_dir / f"{stem}.pdf"
+
+
+def _available_browser_binaries():
+    candidates = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    ]
+    return [path for path in candidates if Path(path).exists()]
+
+
+def _render_pdf_from_html(html_text: str, output_pdf: Path):
+    browser_bins = _available_browser_binaries()
+    if not browser_bins:
+        return False, "Chrome/Brave not found on this machine."
+
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as tmp:
+        tmp.write(str(html_text or ""))
+        tmp_html_path = Path(tmp.name)
+
+    html_url = tmp_html_path.as_uri()
+    errors = []
+    try:
+        for browser_bin in browser_bins:
+            cmd = [
+                browser_bin,
+                "--headless=new",
+                "--disable-gpu",
+                "--no-sandbox",
+                "--no-pdf-header-footer",
+                f"--print-to-pdf={str(output_pdf)}",
+                html_url,
+            ]
+            try:
+                run = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=45,
+                    check=False,
+                )
+                if run.returncode == 0 and output_pdf.exists() and output_pdf.stat().st_size > 0:
+                    return True, ""
+                stderr = (run.stderr or "").strip()
+                stdout = (run.stdout or "").strip()
+                snippet = stderr or stdout or f"exit code {run.returncode}"
+                errors.append(f"{Path(browser_bin).name}: {snippet[:220]}")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{Path(browser_bin).name}: {exc}")
+        return False, "; ".join(errors) or "PDF generation failed."
+    finally:
+        try:
+            tmp_html_path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 PRESET_KEYWORDS = {
@@ -545,12 +633,35 @@ class TailorResumeView(APIView):
                 return f"Tailored - {line}"
         return fallback_title
 
+    def _apply_tailor_mode(self, base_builder, tailored_builder, tailor_mode: str):
+        base = sanitize_builder_data(base_builder or {})
+        tailored = sanitize_builder_data(tailored_builder or {})
+        mode = str(tailor_mode or 'partial').strip().lower()
+
+        if mode == 'complete':
+            return tailored
+
+        merged = dict(base)
+        merged['skills'] = tailored.get('skills') or base.get('skills', '')
+
+        if mode in {'summary_experience', 'almost_complete'}:
+            merged['summaryEnabled'] = bool(tailored.get('summaryEnabled', base.get('summaryEnabled')))
+            merged['summaryHeading'] = tailored.get('summaryHeading') or base.get('summaryHeading', 'Summary')
+            merged['summary'] = tailored.get('summary') or base.get('summary', '')
+            merged['experiences'] = tailored.get('experiences') or base.get('experiences', [])
+            merged['role'] = tailored.get('role') or base.get('role', '')
+
+        return sanitize_builder_data(merged)
+
     def post(self, request):
         jd_text = str(request.data.get('job_description') or '').strip()
         if len(jd_text) < 40:
             return Response({'detail': 'Please paste a fuller job description.'}, status=status.HTTP_400_BAD_REQUEST)
         job_role = str(request.data.get('job_role') or '').strip()
         force_rewrite = self._to_bool(request.data.get('force_rewrite'), default=False)
+        tailor_mode = str(request.data.get('tailor_mode') or 'partial').strip().lower()
+        if tailor_mode not in {'partial', 'summary_experience', 'almost_complete', 'complete'}:
+            tailor_mode = 'partial'
         ai_model = str(request.data.get('ai_model') or '').strip()
         if ai_model and ai_model not in ALLOWED_AI_MODELS:
             return Response({'detail': 'Invalid AI model selected.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -662,6 +773,7 @@ class TailorResumeView(APIView):
             jd_text=jd_text,
             model_override=ai_model or None,
         )
+        tailored_builder = self._apply_tailor_mode(base_builder, tailored_builder, tailor_mode)
         plain_text = builder_data_to_text(tailored_builder)
         title = self._tailored_title(jd_text, fallback_title=(base_builder.get('resumeTitle') or 'Tailored Resume'))
 
@@ -688,6 +800,7 @@ class TailorResumeView(APIView):
                     'used_ai_rewrite': bool(ai_used),
                     'keyword_note': keyword_note,
                     'rewrite_note': ai_note,
+                    'tailor_mode': tailor_mode,
                     'preview_only': True,
                 },
                 status=status.HTTP_200_OK,
@@ -713,6 +826,7 @@ class TailorResumeView(APIView):
                 'used_ai_rewrite': bool(ai_used),
                 'keyword_note': keyword_note,
                 'rewrite_note': ai_note,
+                'tailor_mode': tailor_mode,
                 'preview_only': False,
             },
             status=status.HTTP_201_CREATED,
@@ -787,6 +901,44 @@ class OptimizeResumeQualityView(APIView):
                 'mode': 'optimized_quality_preview',
                 'resume': preview_resume,
                 'preview_only': bool(preview_only),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ExportAtsPdfLocalView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def post(self, request):
+        builder_data = request.data.get("builder_data")
+        if isinstance(builder_data, str):
+            try:
+                builder_data = json.loads(builder_data)
+            except Exception:  # noqa: BLE001
+                builder_data = {}
+        if not isinstance(builder_data, dict):
+            builder_data = {}
+        builder_data = sanitize_builder_data(builder_data)
+
+        html_text = str(request.data.get("html") or "").strip()
+        if len(html_text) < 40:
+            return Response({"detail": "Missing ATS HTML payload for PDF export."}, status=status.HTTP_400_BAD_REQUEST)
+
+        file_name = _default_pdf_filename(builder_data)
+        output_path = _pick_local_pdf_path(file_name)
+
+        ok, note = _render_pdf_from_html(html_text, output_path)
+        if not ok:
+            return Response(
+                {"detail": f"Could not generate local PDF. {note}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "saved_path": str(output_path),
+                "file_name": output_path.name,
             },
             status=status.HTTP_200_OK,
         )

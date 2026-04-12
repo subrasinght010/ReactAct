@@ -5,6 +5,7 @@ import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
 import {
   createResume,
+  exportAtsPdfLocal,
   fetchResume,
   fetchResumes,
   optimizeResumeQuality,
@@ -12,7 +13,7 @@ import {
   tailorResume,
   updateResume,
 } from '../api'
-import { printAtsPdf } from '../utils/resumeExport'
+import { buildAtsPdfHtmlPreserveHighlights, printAtsPdf } from '../utils/resumeExport'
 import {
   DEFAULT_PAGE_MARGIN_IN,
   MIN_PAGE_MARGIN_IN,
@@ -38,6 +39,12 @@ const AI_MODEL_OPTIONS = [
   { label: 'GPT-5.2', value: 'gpt-5.2' },
   { label: 'GPT-5 Nano', value: 'gpt-5-nano' },
   { label: 'O1', value: 'o1' },
+]
+
+const TAILOR_MODE_OPTIONS = [
+  { label: 'Partial (Skills only)', value: 'partial' },
+  { label: 'Almost Complete (Summary + Experience)', value: 'summary_experience' },
+  { label: 'Complete (Summary + Experience + Projects)', value: 'complete' },
 ]
 
 function renderSummaryByStyle(text, style) {
@@ -585,6 +592,7 @@ function ResumeBuilderPage({
   referenceBuilderSessionKey = 'builderReferenceBuilder',
   referenceResumeIdSessionKey = 'builderReferenceResumeId',
   aiModelSessionKey = 'builderAiModel',
+  tailorModeSessionKey = 'builderTailorMode',
 }) {
   const navigate = useNavigate()
   const [form, setForm] = useState({
@@ -642,10 +650,12 @@ function ResumeBuilderPage({
   })
   const [resumeRecordId, setResumeRecordId] = useState(() => sessionStorage.getItem(resumeIdSessionKey))
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
+  const [pdfSaveState, setPdfSaveState] = useState({ saving: false, message: '' })
   const [importState, setImportState] = useState({ importing: false, message: '' })
   const [atsCheckState, setAtsCheckState] = useState(null)
   const [jobDescription, setJobDescription] = useState(() => sessionStorage.getItem(jdSessionKey) || '')
   const [aiModel, setAiModel] = useState(() => sessionStorage.getItem(aiModelSessionKey) || 'gpt-4o')
+  const [tailorMode, setTailorMode] = useState(() => sessionStorage.getItem(tailorModeSessionKey) || 'partial')
   const [tailorState, setTailorState] = useState({
     loading: false,
     mode: '',
@@ -704,6 +714,12 @@ function ResumeBuilderPage({
     const value = String(aiModel || '').trim() || 'gpt-4o'
     sessionStorage.setItem(aiModelSessionKey, value)
   }, [aiModel, aiModelSessionKey, showJdBox])
+
+  useEffect(() => {
+    if (!showJdBox) return
+    const value = String(tailorMode || '').trim() || 'partial'
+    sessionStorage.setItem(tailorModeSessionKey, value)
+  }, [showJdBox, tailorMode, tailorModeSessionKey])
 
   useEffect(() => {
     const raw = sessionStorage.getItem(importSessionKey)
@@ -1083,6 +1099,43 @@ function ResumeBuilderPage({
     })
   }
 
+  const saveAtsPdfLocal = async () => {
+    if (pdfSaveState.saving) return
+    const access = localStorage.getItem('access')
+    if (!access) {
+      navigate('/login')
+      return
+    }
+
+    try {
+      setPdfSaveState({ saving: true, message: '' })
+      const html = buildAtsPdfHtmlPreserveHighlights({
+        ...form,
+        pageMarginIn: normalizePageMarginIn(form.pageMarginIn),
+      })
+      const result = await exportAtsPdfLocal(access, {
+        builder_data: form,
+        html,
+      })
+      const path = String(result?.saved_path || '').trim()
+      setPdfSaveState({
+        saving: false,
+        message: path ? `Saved PDF: ${path}` : 'Saved PDF to Documents',
+      })
+    } catch (err) {
+      setPdfSaveState({
+        saving: false,
+        message: err.message || 'Local PDF save failed',
+      })
+    }
+  }
+
+  const openInMainBuilder = () => {
+    sessionStorage.setItem('builderImport', JSON.stringify(form))
+    sessionStorage.removeItem('builderResumeId')
+    navigate('/builder')
+  }
+
   const runAtsCheck = () => {
     const issues = collectAtsIssues(form)
     if (issues.length) {
@@ -1146,6 +1199,7 @@ function ResumeBuilderPage({
       formData.append('max_match', '0.8')
       formData.append('preview_only', 'true')
       formData.append('ai_model', String(aiModel || 'gpt-4o'))
+      formData.append('tailor_mode', String(tailorMode || 'partial'))
       if (enableTailorFlow) {
         formData.append('force_rewrite', 'true')
         if (String(tailorReferenceResumeId || '').trim()) {
@@ -1328,9 +1382,19 @@ function ResumeBuilderPage({
           {tailorState.loading && tailorState.mode === 'tailor' ? 'Tailoring...' : 'Tailor First'}
         </button>
       )}
+      {minimalTailorUi && (
+        <button type="button" className="secondary" onClick={openInMainBuilder}>
+          Edit In Builder
+        </button>
+      )}
       <button type="button" className="secondary" onClick={downloadAtsPdf}>
         ATS PDF
       </button>
+      {!enableTailorFlow && (
+        <button type="button" className="secondary" onClick={saveAtsPdfLocal} disabled={pdfSaveState.saving}>
+          {pdfSaveState.saving ? 'Saving PDF...' : 'Save ATS PDF Local'}
+        </button>
+      )}
       {includeHome && (
         <button type="button" className="secondary" onClick={() => navigate('/')}>
           Back Home
@@ -1367,6 +1431,18 @@ function ResumeBuilderPage({
                 onChange={(e) => setAiModel(e.target.value)}
               >
                 {AI_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <label htmlFor="tailor-mode-select" style={{ marginTop: 8 }}>Tailor Type</label>
+              <select
+                id="tailor-mode-select"
+                value={tailorMode}
+                onChange={(e) => setTailorMode(e.target.value)}
+              >
+                {TAILOR_MODE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
                   </option>
@@ -1447,6 +1523,7 @@ function ResumeBuilderPage({
           )}
 
           {saveState.message && <p className={saveState.message.startsWith('Saved') ? 'success' : 'error'}>{saveState.message}</p>}
+          {pdfSaveState.message && <p className={pdfSaveState.message.startsWith('Saved PDF') ? 'success' : 'error'}>{pdfSaveState.message}</p>}
           {(!minimalTailorUi || enableTailorFlow) && importState.message && (
             <p className={importState.message.startsWith('Imported') ? 'success' : 'error'}>
               {importState.message}
