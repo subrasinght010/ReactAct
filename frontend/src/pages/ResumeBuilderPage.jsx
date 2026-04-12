@@ -31,6 +31,15 @@ const FONT_FAMILY_OPTIONS = [
   { label: 'Tahoma', value: 'Tahoma, Geneva, sans-serif' },
 ]
 
+const AI_MODEL_OPTIONS = [
+  { label: 'GPT-4o (Default)', value: 'gpt-4o' },
+  { label: 'GPT-5.4', value: 'gpt-5.4' },
+  { label: 'GPT-5.4 Mini', value: 'gpt-5.4-mini' },
+  { label: 'GPT-5.2', value: 'gpt-5.2' },
+  { label: 'GPT-5 Nano', value: 'gpt-5-nano' },
+  { label: 'O1', value: 'o1' },
+]
+
 function renderSummaryByStyle(text, style) {
   // The editor stores sanitized HTML, so style is currently "auto".
   // Keep the option for future transformations.
@@ -92,6 +101,32 @@ function formToPlainText(form) {
   })
 
   return parts.join('\n')
+}
+
+function cloneBuilderData(value) {
+  try {
+    return JSON.parse(JSON.stringify(value || {}))
+  } catch {
+    return {}
+  }
+}
+
+function hasBuilderSubstance(builder) {
+  const data = builder && typeof builder === 'object' ? builder : {}
+  const hasTop = ['fullName', 'email', 'phone', 'location', 'summary', 'skills', 'role']
+    .some((k) => String(data[k] || '').trim())
+  const hasExp = Array.isArray(data.experiences) && data.experiences.some((exp) => {
+    const company = String(exp?.company || '').trim()
+    const title = String(exp?.title || '').trim()
+    const highlights = plainTextFromHtml(exp?.highlights || '')
+    return Boolean(company || title || highlights)
+  })
+  const hasProj = Array.isArray(data.projects) && data.projects.some((proj) => {
+    const name = String(proj?.name || '').trim()
+    const highlights = plainTextFromHtml(proj?.highlights || '')
+    return Boolean(name || highlights)
+  })
+  return hasTop || hasExp || hasProj
 }
 
 function collectAtsIssues(form) {
@@ -547,6 +582,9 @@ function ResumeBuilderPage({
   jdSessionKey = 'builderJdText',
   enableTailorFlow = false,
   minimalTailorUi = false,
+  referenceBuilderSessionKey = 'builderReferenceBuilder',
+  referenceResumeIdSessionKey = 'builderReferenceResumeId',
+  aiModelSessionKey = 'builderAiModel',
 }) {
   const navigate = useNavigate()
   const [form, setForm] = useState({
@@ -607,6 +645,7 @@ function ResumeBuilderPage({
   const [importState, setImportState] = useState({ importing: false, message: '' })
   const [atsCheckState, setAtsCheckState] = useState(null)
   const [jobDescription, setJobDescription] = useState(() => sessionStorage.getItem(jdSessionKey) || '')
+  const [aiModel, setAiModel] = useState(() => sessionStorage.getItem(aiModelSessionKey) || 'gpt-4o')
   const [tailorState, setTailorState] = useState({
     loading: false,
     mode: '',
@@ -615,7 +654,40 @@ function ResumeBuilderPage({
     keywords: [],
     matchScore: null,
   })
+  const [tailorReferenceBuilder, setTailorReferenceBuilder] = useState(() => {
+    if (!enableTailorFlow) return null
+    try {
+      const raw = sessionStorage.getItem(referenceBuilderSessionKey)
+      if (!raw) return null
+      const parsed = JSON.parse(raw)
+      return parsed && typeof parsed === 'object' ? parsed : null
+    } catch {
+      return null
+    }
+  })
+  const [tailorReferenceResumeId, setTailorReferenceResumeId] = useState(() => {
+    if (!enableTailorFlow) return ''
+    return sessionStorage.getItem(referenceResumeIdSessionKey) || ''
+  })
   const pdfInputRef = useRef(null)
+
+  useEffect(() => {
+    if (!enableTailorFlow) return
+    if (tailorReferenceBuilder && typeof tailorReferenceBuilder === 'object') {
+      sessionStorage.setItem(referenceBuilderSessionKey, JSON.stringify(tailorReferenceBuilder))
+    } else {
+      sessionStorage.removeItem(referenceBuilderSessionKey)
+    }
+  }, [enableTailorFlow, referenceBuilderSessionKey, tailorReferenceBuilder])
+
+  useEffect(() => {
+    if (!enableTailorFlow) return
+    if (String(tailorReferenceResumeId || '').trim()) {
+      sessionStorage.setItem(referenceResumeIdSessionKey, String(tailorReferenceResumeId))
+    } else {
+      sessionStorage.removeItem(referenceResumeIdSessionKey)
+    }
+  }, [enableTailorFlow, referenceResumeIdSessionKey, tailorReferenceResumeId])
 
   useEffect(() => {
     if (!showJdBox) return
@@ -626,6 +698,12 @@ function ResumeBuilderPage({
     }
     sessionStorage.removeItem(jdSessionKey)
   }, [jobDescription, jdSessionKey, showJdBox])
+
+  useEffect(() => {
+    if (!showJdBox) return
+    const value = String(aiModel || '').trim() || 'gpt-4o'
+    sessionStorage.setItem(aiModelSessionKey, value)
+  }, [aiModel, aiModelSessionKey, showJdBox])
 
   useEffect(() => {
     const raw = sessionStorage.getItem(importSessionKey)
@@ -639,6 +717,10 @@ function ResumeBuilderPage({
             pageMarginIn: normalizePageMarginIn(imported.pageMarginIn ?? prev.pageMarginIn),
             sectionUnderline: true,
           }))
+          if (enableTailorFlow && hasBuilderSubstance(imported) && !tailorReferenceBuilder) {
+            setTailorReferenceBuilder(cloneBuilderData(imported))
+            setTailorReferenceResumeId('')
+          }
         }
       } catch {
         // ignore
@@ -648,7 +730,7 @@ function ResumeBuilderPage({
 
     const id = sessionStorage.getItem(resumeIdSessionKey)
     if (id) setResumeRecordId(id)
-  }, [importSessionKey, resumeIdSessionKey])
+  }, [enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
 
   useEffect(() => {
     let cancelled = false
@@ -668,6 +750,10 @@ function ResumeBuilderPage({
       }))
       setResumeRecordId(String(full.id))
       sessionStorage.setItem(resumeIdSessionKey, String(full.id))
+      if (enableTailorFlow && !tailorReferenceBuilder && hasBuilderSubstance(full.builder_data || {})) {
+        setTailorReferenceBuilder(cloneBuilderData(full.builder_data || {}))
+        setTailorReferenceResumeId(String(full.id))
+      }
     }
 
     const hydrateDefaultResume = async () => {
@@ -708,7 +794,7 @@ function ResumeBuilderPage({
     return () => {
       cancelled = true
     }
-  }, [importSessionKey, resumeIdSessionKey])
+  }, [enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
 
   const updateField = (key, value) => {
     if (key === 'pageMarginIn') {
@@ -744,7 +830,16 @@ function ResumeBuilderPage({
         pageMarginIn: normalizePageMarginIn(parsed.pageMarginIn ?? prev.pageMarginIn),
         sectionUnderline: true,
       }))
-      setImportState({ importing: false, message: `Imported ${file.name}` })
+      if (enableTailorFlow) {
+        setTailorReferenceBuilder(cloneBuilderData(parsed))
+        setTailorReferenceResumeId('')
+      }
+      setImportState({
+        importing: false,
+        message: enableTailorFlow
+          ? `Imported ${file.name} and set as reference resume.`
+          : `Imported ${file.name}`,
+      })
     } catch (err) {
       setImportState({ importing: false, message: err.message || 'Import failed' })
     }
@@ -1020,6 +1115,19 @@ function ResumeBuilderPage({
       return
     }
 
+    const baseReferenceBuilder = enableTailorFlow ? tailorReferenceBuilder : form
+    if (enableTailorFlow && !hasBuilderSubstance(baseReferenceBuilder || {})) {
+      setTailorState({
+        loading: false,
+        mode: '',
+        message: '',
+        error: 'Upload reference resume once, then paste JD and run Tailor.',
+        keywords: [],
+        matchScore: null,
+      })
+      return
+    }
+
     try {
       setTailorState({
         loading: true,
@@ -1033,10 +1141,17 @@ function ResumeBuilderPage({
       const formData = new FormData()
       formData.append('job_description', jd)
       formData.append('job_role', String(form.role || '').trim())
-      formData.append('builder_data', JSON.stringify(form))
+      formData.append('builder_data', JSON.stringify(baseReferenceBuilder || form))
       formData.append('min_match', '0.7')
       formData.append('max_match', '0.8')
       formData.append('preview_only', 'true')
+      formData.append('ai_model', String(aiModel || 'gpt-4o'))
+      if (enableTailorFlow) {
+        formData.append('force_rewrite', 'true')
+        if (String(tailorReferenceResumeId || '').trim()) {
+          formData.append('reference_resume_id', String(tailorReferenceResumeId))
+        }
+      }
 
       const result = await tailorResume(access, formData)
 
@@ -1109,6 +1224,7 @@ function ResumeBuilderPage({
       const result = await optimizeResumeQuality(access, {
         builder_data: form,
         preview_only: true,
+        ai_model: String(aiModel || 'gpt-4o'),
       })
 
       const resume = result?.resume || {}
@@ -1244,6 +1360,18 @@ function ResumeBuilderPage({
           {showJdBox && (
             <div className="exp-card">
               <label htmlFor="job-description">Paste Job Description</label>
+              <label htmlFor="ai-model-select" style={{ marginTop: 8 }}>AI Model</label>
+              <select
+                id="ai-model-select"
+                value={aiModel}
+                onChange={(e) => setAiModel(e.target.value)}
+              >
+                {AI_MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
               <textarea
                 id="job-description"
                 rows={10}

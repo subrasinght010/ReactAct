@@ -11,6 +11,9 @@ function TailoredResumePage() {
       jdSessionKey="tailoredBuilderJdText"
       enableTailorFlow
       minimalTailorUi
+      referenceBuilderSessionKey="tailoredBuilderReferenceBuilder"
+      referenceResumeIdSessionKey="tailoredBuilderReferenceResumeId"
+      aiModelSessionKey="tailoredBuilderAiModel"
     />
   )
 }

@@ -17,6 +17,7 @@ from .serializers import (
     SignupSerializer,
 )
 from .tailor import (
+    ALLOWED_AI_MODELS,
     builder_has_substance,
     build_quality_optimized_builder,
     build_tailored_builder,
@@ -511,7 +512,12 @@ class TailorResumeView(APIView):
             keep_ids = keep_ids[:-1] + [default_id]
         Resume.objects.filter(user=user).exclude(id__in=keep_ids).delete()
 
-    def _pick_base_builder(self, request_builder, matched_resume, latest_resume):
+    def _pick_base_builder(self, request_builder, forced_resume, matched_resume, latest_resume):
+        if forced_resume and isinstance(forced_resume.builder_data, dict):
+            cleaned_forced = sanitize_builder_data(forced_resume.builder_data)
+            if builder_has_substance(cleaned_forced):
+                return cleaned_forced
+
         if isinstance(request_builder, dict):
             cleaned_request = sanitize_builder_data(request_builder)
             if builder_has_substance(cleaned_request):
@@ -544,6 +550,10 @@ class TailorResumeView(APIView):
         if len(jd_text) < 40:
             return Response({'detail': 'Please paste a fuller job description.'}, status=status.HTTP_400_BAD_REQUEST)
         job_role = str(request.data.get('job_role') or '').strip()
+        force_rewrite = self._to_bool(request.data.get('force_rewrite'), default=False)
+        ai_model = str(request.data.get('ai_model') or '').strip()
+        if ai_model and ai_model not in ALLOWED_AI_MODELS:
+            return Response({'detail': 'Invalid AI model selected.'}, status=status.HTTP_400_BAD_REQUEST)
 
         # Strict requirement: do not proceed without AI API configured.
         if not os.getenv('OPENAI_API_KEY', '').strip():
@@ -589,8 +599,15 @@ class TailorResumeView(APIView):
         if not isinstance(request_builder, dict):
             request_builder = {}
         request_builder = sanitize_builder_data(request_builder)
+        reference_resume = None
+        reference_resume_id = str(request.data.get('reference_resume_id') or '').strip()
+        if reference_resume_id:
+            try:
+                reference_resume = Resume.objects.get(id=int(reference_resume_id), user=request.user)
+            except Exception:  # noqa: BLE001
+                reference_resume = None
 
-        keywords, keyword_ai_used, keyword_note = extract_keywords_ai(jd_text)
+        keywords, keyword_ai_used, keyword_note = extract_keywords_ai(jd_text, model_override=ai_model or None)
         # Continue with heuristic fallback keywords when AI is temporarily unavailable.
         if critical_keywords:
             merged = []
@@ -609,7 +626,7 @@ class TailorResumeView(APIView):
         best = find_best_resume_match(keywords, resumes)
         latest_resume = resumes[0] if resumes else None
 
-        if best.resume and min_match <= best.score <= max_match:
+        if (not force_rewrite) and (reference_resume is None) and best.resume and min_match <= best.score <= max_match:
             payload = ResumeSerializer(best.resume).data
             return Response(
                 {
@@ -625,19 +642,26 @@ class TailorResumeView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        base_builder = self._pick_base_builder(request_builder, best.resume, latest_resume)
+        base_builder = self._pick_base_builder(request_builder, reference_resume, best.resume, latest_resume)
         ai_payload, ai_used, ai_note = tailor_resume_with_ai(
             base_builder,
             jd_text,
             keywords,
             job_role=job_role,
+            model_override=ai_model or None,
         )
         if not ai_used:
             return Response(
                 {'detail': f'AI rewrite failed. {ai_note or "Please try again."}'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        tailored_builder = build_tailored_builder(base_builder, ai_payload, keywords, jd_text=jd_text)
+        tailored_builder = build_tailored_builder(
+            base_builder,
+            ai_payload,
+            keywords,
+            jd_text=jd_text,
+            model_override=ai_model or None,
+        )
         plain_text = builder_data_to_text(tailored_builder)
         title = self._tailored_title(jd_text, fallback_title=(base_builder.get('resumeTitle') or 'Tailored Resume'))
 
@@ -713,6 +737,10 @@ class OptimizeResumeQualityView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        ai_model = str(request.data.get('ai_model') or '').strip()
+        if ai_model and ai_model not in ALLOWED_AI_MODELS:
+            return Response({'detail': 'Invalid AI model selected.'}, status=status.HTTP_400_BAD_REQUEST)
+
         request_builder = request.data.get('builder_data')
         if isinstance(request_builder, str):
             try:
@@ -725,13 +753,20 @@ class OptimizeResumeQualityView(APIView):
         if not builder_has_substance(request_builder):
             return Response({'detail': 'Upload or import a resume first.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        ai_payload, ai_used, ai_note = optimize_existing_resume_quality_ai(request_builder)
+        ai_payload, ai_used, ai_note = optimize_existing_resume_quality_ai(
+            request_builder,
+            model_override=ai_model or None,
+        )
         if not ai_used:
             return Response(
                 {'detail': f'AI quality optimization failed. {ai_note or "Please try again."}'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        optimized_builder = build_quality_optimized_builder(request_builder, ai_payload)
+        optimized_builder = build_quality_optimized_builder(
+            request_builder,
+            ai_payload,
+            model_override=ai_model or None,
+        )
         plain_text = builder_data_to_text(optimized_builder)
         title = str(optimized_builder.get('resumeTitle') or 'Optimized Resume').strip() or 'Optimized Resume'
         preview_only = self._to_bool(request.data.get('preview_only'), default=True)
