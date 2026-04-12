@@ -178,6 +178,9 @@ class Job(TimeStampedModel):
         related_name='jobs',
     )
     date_of_posting = models.DateField(blank=True, null=True)
+    applied_at  = models.DateField(blank=True, null=True)
+    is_closed = models.BooleanField(default=False)
+    is_removed = models.BooleanField(default=False)
     class Meta:
         ordering = ['-date_of_posting', '-created_at']
 
@@ -185,7 +188,7 @@ class Job(TimeStampedModel):
         return f'{self.role} ({self.company.name})'
 
 
-class Tracking(TimeStampedModel):
+class MailTracking(TimeStampedModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tracking')
     company = models.ForeignKey(
         Company,
@@ -209,8 +212,10 @@ class Tracking(TimeStampedModel):
         related_name='tracking_rows',
     )
     mailed = models.BooleanField(default=False)
-    applied_date = models.DateField(blank=True, null=True)
-    is_open = models.BooleanField(default=True)
+    got_replied = models.BooleanField(default=False)
+    mail_history = models.JSONField(default=list, blank=True)
+    maild_at = models.DateTimeField(blank=True, null=True)
+    replied_at = models.DateTimeField(blank=True, null=True)
     got_replied = models.BooleanField(default=False)
     class Meta:
         ordering = ['-applied_date', '-created_at']
@@ -220,17 +225,35 @@ class Tracking(TimeStampedModel):
         return f'Tracking ({company_name})'
 
 
-class ApplicationTracking(TimeStampedModel):
+class Tracking(TimeStampedModel):
+    actions_choices = [
+        ('fresh', 'Fresh'),
+        ('followed_up', 'Followed Up'),
+    ]
+    Job = models.ForeignKey(
+        Job,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='application_tracking_rows',
+    )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tracking_rows')
-    company_name = models.CharField(max_length=180)
-    job_id = models.CharField(max_length=120, blank=True)
-    mailed = models.BooleanField(default=False)
-    applied_date = models.DateField(blank=True, null=True)
-    posting_date = models.DateField(blank=True, null=True)
-    is_open = models.BooleanField(default=True)
-    available_hrs = models.JSONField(default=list, blank=True)
-    selected_hrs = models.JSONField(default=list, blank=True)
-    got_replied = models.BooleanField(default=False)
+    schedule_time = models.DateTimeField(blank=True, null=True)
+    selected_hrs = models.ManyToManyField(Employee, blank=True, related_name='selected_in_tracking_rows')
+    action = models.CharField(
+        max_length=20,
+        choices=actions_choices,
+        default='fresh',
+    )
+    is_freezed = models.BooleanField(default=False)
+    freezed_at = models.DateTimeField(blank=True, null=True)
+    mail_tracking = models.ForeignKey(
+        MailTracking,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='tracking_rows',
+    )
     class Meta:
         ordering = ['-applied_date', '-created_at']
 
