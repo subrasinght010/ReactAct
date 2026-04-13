@@ -1,131 +1,51 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Resume Tailor</title>
-    <link rel="stylesheet" href="popup.css" />
-  </head>
-  <body>
-    <main class="app">
-      <header class="brand">
-        <div class="brand-left">
-          <img src="assets/icon64.png" alt="Logo" />
-          <div>
-            <h1>Resume Tailor + AutoFill</h1>
-            <p>No-auth local mode</p>
-          </div>
-        </div>
-      </header>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Save Job</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main class="app">
 
-      <section class="card" id="apiSection">
-        <label>API Base URL</label>
-        <input id="apiBase" value="http://127.0.0.1:8000/api" />
-      </section>
+    <section class="card">
+      <label>API Base URL</label>
+      <input id="apiBase" value="http://127.0.0.1:8000/api" />
+    </section>
 
-      <section class="card" id="linkedinSection">
-        <div class="li-section-head">
-          <h2>LinkedIn Profile</h2>
-          <span class="li-badge" id="liBadge">Not detected</span>
-        </div>
+    <section class="card">
+      <h2>Job Details</h2>
 
-        <div class="li-profile-box" id="liProfileBox">
-          <div class="li-profile-top">
-            <div class="li-avatar" id="liAvatar">?</div>
-            <div class="li-profile-meta">
-              <div class="li-field-row">
-                <span class="li-dot" id="dot-name"></span>
-                <span class="li-field-label">Name</span>
-                <span class="li-field-value" id="liName">—</span>
-              </div>
-              <div class="li-field-row">
-                <span class="li-dot" id="dot-role"></span>
-                <span class="li-field-label">Role</span>
-                <span class="li-field-value" id="liRole">—</span>
-              </div>
-              <div class="li-field-row">
-                <span class="li-dot" id="dot-location"></span>
-                <span class="li-field-label">Location</span>
-                <span class="li-field-value" id="liLocation">—</span>
-              </div>
-            </div>
-          </div>
+      <label>Company</label>
+      <input id="companyName" />
 
-          <div class="li-divider"></div>
+      <label>Job Title</label>
+      <input id="jobTitle" />
 
-          <div class="li-field-row">
-            <span class="li-dot" id="dot-companyName"></span>
-            <span class="li-field-label">Company</span>
-            <span class="li-field-value" id="liCompany">—</span>
-          </div>
-          <div class="li-field-row li-field-row--link">
-            <span class="li-dot" id="dot-companyProfileUrl"></span>
-            <span class="li-field-label">Co. Page</span>
-            <a class="li-field-link" id="liCompanyUrl" href="#" target="_blank">—</a>
-          </div>
-          <div class="li-field-row li-field-row--link">
-            <span class="li-dot" id="dot-linkedinUrl"></span>
-            <span class="li-field-label">Profile URL</span>
-            <a class="li-field-link" id="liUrl" href="#" target="_blank">—</a>
-          </div>
+      <label>Job ID</label>
+      <input id="jobId" />
 
-          <div class="li-divider"></div>
+      <label>Location</label>
+      <input id="location" />
 
-          <div class="li-field-row li-field-row--about">
-            <span class="li-dot" id="dot-about"></span>
-            <span class="li-field-label">About</span>
-            <p class="li-about" id="liAbout">—</p>
-          </div>
+      <label>Posted Date</label>
+      <input id="postedDate" />
 
-          <div class="li-dept-row">
-            <span class="li-field-label">Dept.</span>
-            <span class="li-dept-pill" id="liDept">—</span>
-          </div>
-        </div>
+      <label>Job URL</label>
+      <input id="jobUrl" />
 
-        <div class="row">
-          <button id="fetchLinkedInBtn" type="button">↻ Fetch Profile</button>
-          <button id="sendLinkedInBtn" type="button" class="btn-send" disabled>Send to Backend ↗</button>
-        </div>
-      </section>
+      <button id="fetchJdBtn">Fetch from Page</button>
 
-      <section class="card" id="tailorSection">
-        <h2>Tailor Resume</h2>
-        <label>Company</label>
-        <input id="companyName" placeholder="e.g. Walmart" />
-        <label>Job Title</label>
-        <input id="jobTitle" placeholder="e.g. Web Engineer" />
-        <label>Job ID</label>
-        <input id="jobId" placeholder="Optional" />
-        <label>Job URL</label>
-        <input id="jobUrl" placeholder="Optional" />
-        <div class="row">
-          <button id="fetchJdBtn" type="button">Fetch JD from Page</button>
-          <button id="tailorBtn" type="button">Tailor Resume</button>
-        </div>
-        <label>Reference Resume PDF</label>
-        <input id="resumeFile" type="file" accept="application/pdf,.pdf" />
-        <label>Job Description</label>
-        <textarea id="jdText" rows="8" placeholder="Paste JD here"></textarea>
-      </section>
+      <label>Job Description</label>
+      <textarea id="jdText"></textarea>
 
-      <section class="card" id="autofillSection">
-        <h2>AutoFill Form</h2>
-        <label>Predefined Answers (JSON)</label>
-        <textarea id="predefinedAnswers" rows="8" placeholder='{"notice period":"30 days","current ctc":"15 LPA"}'></textarea>
-        <label class="check">
-          <input id="useAi" type="checkbox" checked />
-          Use AI for unanswered questions
-        </label>
-        <div class="row">
-          <button id="scanQuestionsBtn" type="button">Scan Questions</button>
-          <button id="autofillBtn" type="button">AutoFill Form</button>
-        </div>
-        <textarea id="questionsOut" rows="5" readonly placeholder="Detected questions"></textarea>
-      </section>
+      <button id="saveJobBtn">Save Job</button>
+    </section>
 
-      <p id="status" class="status"></p>
-    </main>
-    <script src="popup.js"></script>
-  </body>
+    <p id="status"></p>
+
+  </main>
+
+  <script src="popup.js"></script>
+</body>
 </html>

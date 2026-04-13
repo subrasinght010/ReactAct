@@ -6,6 +6,7 @@ import ProfilePage from './pages/ProfilePage'
 import RegisterPage from './pages/RegisterPage'
 import CompanyPage from './pages/CompanyPage'
 import TrackingPage from './pages/TrackingPage'
+import JobsPage from './pages/JobsPage'
 import ResumeBuilderPage from './pages/ResumeBuilderPage'
 import ResumePreviewPage from './pages/ResumePreviewPage'
 import TailoredResumePage from './pages/TailoredResumePage'
@@ -52,6 +53,7 @@ function AppLayout() {
             <Route path="/profile" element={<RequireAuth><ProfilePage /></RequireAuth>} />
             <Route path="/companies" element={<RequireAuth><CompanyPage /></RequireAuth>} />
             <Route path="/tracking" element={<RequireAuth><TrackingPage /></RequireAuth>} />
+            <Route path="/jobs" element={<RequireAuth><JobsPage /></RequireAuth>} />
             <Route path="/builder" element={<RequireAuth><ResumeBuilderPage /></RequireAuth>} />
             <Route path="/tailored-builder" element={<RequireAuth><TailoredResumePage /></RequireAuth>} />
             <Route path="/preview/:resumeId" element={<RequireAuth><ResumePreviewPage /></RequireAuth>} />

@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
+from .company_utils import normalize_company_name, resolve_company_for_job
 from .models import JobRole, Resume, ResumeAnalysis, TailoredJobRun, MailTracking, Company, Employee, Job, Tracking, TrackingAction
 from .serializers import (
     JobRoleSerializer,
@@ -1980,48 +1981,136 @@ class EmployeeDetailView(APIView):
 
 class JobListCreateView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
+
+    _JOB_ORDERING = {
+        'date_of_posting': 'date_of_posting',
+        '-date_of_posting': '-date_of_posting',
+        'applied_at': 'applied_at',
+        '-applied_at': '-applied_at',
+        'created_at': 'created_at',
+        '-created_at': '-created_at',
+        'role': 'role',
+        '-role': '-role',
+        'job_id': 'job_id',
+        '-job_id': '-job_id',
+        'company_name': 'company__name',
+        '-company_name': '-company__name',
+    }
 
     def get(self, request):
-        company_id = request.query_params.get('company_id')
-        rows = Job.objects.filter(user=request.user)
-        if company_id:
-            rows = rows.filter(company_id=company_id)
-        rows = rows.order_by('-date_of_posting', '-created_at')
-        return Response(JobSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+        rows = Job.objects.filter(user=request.user).select_related('company')
+
+        company_id = (request.query_params.get('company_id') or '').strip()
+        if company_id.isdigit():
+            rows = rows.filter(company_id=int(company_id))
+
+        company_name = (request.query_params.get('company_name') or '').strip()
+        if company_name:
+            rows = rows.filter(company__name__icontains=company_name)
+
+        job_id_q = (request.query_params.get('job_id') or '').strip()
+        if job_id_q:
+            rows = rows.filter(job_id__icontains=job_id_q)
+
+        role_q = (request.query_params.get('role') or '').strip()
+        if role_q:
+            rows = rows.filter(role__icontains=role_q)
+
+        posting_date = (request.query_params.get('posting_date') or '').strip()
+        if posting_date:
+            rows = rows.filter(date_of_posting=posting_date)
+
+        applied_date = (request.query_params.get('applied_date') or '').strip()
+        if applied_date:
+            rows = rows.filter(applied_at=applied_date)
+
+        applied_filter = (request.query_params.get('applied') or '').strip().lower()
+        if applied_filter == 'yes':
+            rows = rows.filter(applied_at__isnull=False)
+        elif applied_filter == 'no':
+            rows = rows.filter(applied_at__isnull=True)
+
+        ordering_key = (request.query_params.get('ordering') or '-date_of_posting').strip()
+        order_expr = self._JOB_ORDERING.get(ordering_key, '-date_of_posting')
+        rows = rows.order_by(order_expr, '-id')
+
+        paginated, meta = _paginate_queryset(rows, request, default_page_size=10, max_page_size=100)
+        ser = JobSerializer(paginated, many=True, context={'request': request})
+        return Response({**meta, 'results': ser.data}, status=status.HTTP_200_OK)
 
     def post(self, request):
-        payload = dict(request.data or {})
-        company_id = payload.get('company')
-        if not company_id:
-            return Response({'company': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data.copy()
+        if hasattr(data, '_mutable'):
+            data._mutable = True
+        company_id = data.get('company')
+        new_company_name = data.get('new_company_name')
         try:
-            company = Company.objects.get(id=company_id, user=request.user)
+            company = resolve_company_for_job(
+                request.user,
+                company_id=company_id,
+                new_company_name=new_company_name,
+            )
         except Company.DoesNotExist:
             return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
-        serializer = JobSerializer(data=payload)
+        except ValueError as exc:
+            return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        data['company'] = company.id
+        data.pop('new_company_name', None)
+        serializer = JobSerializer(data=data, context={'request': request})
         if serializer.is_valid():
             created = serializer.save(user=request.user, company=company)
-            return Response(JobSerializer(created).data, status=status.HTTP_201_CREATED)
+            return Response(
+                JobSerializer(created, context={'request': request}).data,
+                status=status.HTTP_201_CREATED,
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class JobDetailView(APIView):
     permission_classes = [IsAuthenticated]
-    parser_classes = [JSONParser]
+    parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def _get_object(self, request, job_id):
         return Job.objects.get(id=job_id, user=request.user)
+
+    def get(self, request, job_id):
+        try:
+            row = self._get_object(request, job_id)
+        except Job.DoesNotExist:
+            return Response({'detail': 'Job not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(JobSerializer(row, context={'request': request}).data, status=status.HTTP_200_OK)
 
     def put(self, request, job_id):
         try:
             row = self._get_object(request, job_id)
         except Job.DoesNotExist:
             return Response({'detail': 'Job not found.'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = JobSerializer(row, data=request.data, partial=True)
+        data = request.data.copy()
+        if hasattr(data, '_mutable'):
+            data._mutable = True
+        if 'company' in data or 'new_company_name' in data:
+            cid = data.get('company')
+            newn = data.get('new_company_name')
+            norm_new = normalize_company_name(newn) if newn is not None else ''
+            has_company_id = cid is not None and str(cid).strip() != ''
+            if norm_new or has_company_id:
+                try:
+                    company = resolve_company_for_job(
+                        request.user,
+                        company_id=cid if has_company_id else None,
+                        new_company_name=newn,
+                    )
+                    data['company'] = company.id
+                except Company.DoesNotExist:
+                    return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
+                except ValueError as exc:
+                    return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+            data.pop('new_company_name', None)
+        serializer = JobSerializer(row, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated = serializer.save()
-            return Response(JobSerializer(updated).data, status=status.HTTP_200_OK)
+            return Response(JobSerializer(updated, context={'request': request}).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, job_id):

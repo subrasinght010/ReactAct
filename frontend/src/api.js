@@ -392,3 +392,74 @@ export async function deleteEmployee(accessToken, employeeId) {
   if (response.status === 204) return { ok: true }
   return parseResponse(response)
 }
+
+export async function fetchJobs(accessToken, params = {}) {
+  const search = new URLSearchParams()
+  const keys = [
+    'page',
+    'page_size',
+    'company_id',
+    'company_name',
+    'posting_date',
+    'applied_date',
+    'job_id',
+    'role',
+    'applied',
+    'ordering',
+  ]
+  for (const key of keys) {
+    const value = params[key]
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      search.set(key, String(value))
+    }
+  }
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const response = await authFetch(`${API_BASE_URL}/jobs/${suffix}`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function createJob(accessToken, payload) {
+  const isFormData = payload instanceof FormData
+  const response = await authFetch(
+    `${API_BASE_URL}/jobs/`,
+    {
+      method: 'POST',
+      ...(isFormData
+        ? { body: payload }
+        : {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+          }),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function updateJob(accessToken, jobPk, payload) {
+  const isFormData = payload instanceof FormData
+  const response = await authFetch(
+    `${API_BASE_URL}/jobs/${jobPk}/`,
+    {
+      method: 'PUT',
+      ...(isFormData
+        ? { body: payload }
+        : {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload || {}),
+          }),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function deleteJob(accessToken, jobPk) {
+  const response = await authFetch(
+    `${API_BASE_URL}/jobs/${jobPk}/`,
+    { method: 'DELETE' },
+    accessToken,
+  )
+  if (response.status === 204) return { ok: true }
+  return parseResponse(response)
+}

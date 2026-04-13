@@ -115,6 +115,7 @@ class Company(TimeStampedModel):
     mail_format = models.CharField(max_length=180, blank=True)
     career_url = models.URLField(blank=True, max_length=1000)
     workday_domain_url = models.URLField(blank=True, max_length=1000)
+    linkedin_url = models.URLField(blank=True, max_length=1000)
 
     class Meta:
         ordering = ['name']
@@ -174,11 +175,13 @@ class Job(TimeStampedModel):
     role = models.CharField(max_length=180)
     job_link = models.URLField(blank=True, max_length=1000)
     tailored_resume_file = models.FileField(upload_to='tailored_resumes/', blank=True, null=True)
+    tailored_resume_builder_data = models.JSONField(default=dict, blank=True)
     company = models.ForeignKey(
         Company,
         on_delete=models.CASCADE,
         related_name='jobs',
     )
+    jd_text = models.TextField(blank=True)
     date_of_posting = models.DateField(blank=True, null=True)
     applied_at  = models.DateField(blank=True, null=True)
     is_closed = models.BooleanField(default=False)

@@ -277,9 +277,31 @@ class CompanySerializer(serializers.ModelSerializer):
 
 class JobSerializer(serializers.ModelSerializer):
     company_name = serializers.SerializerMethodField()
+    tailored_resume_file_url = serializers.SerializerMethodField()
+    has_tailored_resume = serializers.SerializerMethodField()
+    applied = serializers.SerializerMethodField()
+    tailored_resume_file = serializers.FileField(write_only=True, required=False, allow_null=True)
 
     def get_company_name(self, obj):
         return obj.company.name if getattr(obj, 'company', None) else ''
+
+    def get_tailored_resume_file_url(self, obj):
+        if not getattr(obj, 'tailored_resume_file', None) or not obj.tailored_resume_file:
+            return ''
+        request = self.context.get('request')
+        try:
+            url = obj.tailored_resume_file.url
+        except ValueError:
+            return ''
+        if request:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_has_tailored_resume(self, obj):
+        return bool(getattr(obj, 'tailored_resume_file', None) and obj.tailored_resume_file)
+
+    def get_applied(self, obj):
+        return obj.applied_at is not None
 
     class Meta:
         model = Job
@@ -289,13 +311,28 @@ class JobSerializer(serializers.ModelSerializer):
             'role',
             'job_link',
             'tailored_resume_file',
+            'tailored_resume_file_url',
+            'has_tailored_resume',
             'company',
             'company_name',
+            'jd_text',
             'date_of_posting',
+            'applied_at',
+            'applied',
+            'is_closed',
+            'is_removed',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'company_name', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id',
+            'company_name',
+            'tailored_resume_file_url',
+            'has_tailored_resume',
+            'applied',
+            'created_at',
+            'updated_at',
+        ]
 
 
 # Backward-compatible alias used by existing views/endpoints.
