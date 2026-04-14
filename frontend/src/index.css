@@ -833,6 +833,35 @@
     @apply mt-3 flex items-center justify-center gap-3 text-sm text-slate-600 dark:text-slate-300;
   }
 
+  .profile-milestone-wrap {
+    @apply mt-3 flex min-w-0 items-start gap-0 overflow-x-auto pb-2;
+  }
+
+  .profile-milestone-node {
+    @apply relative flex min-w-[72px] flex-col items-center;
+  }
+
+  .profile-milestone-dot {
+    @apply z-10 h-4 w-4 rounded-full border border-slate-400 bg-white;
+  }
+
+  .profile-milestone-dot.is-active {
+    @apply border-emerald-600 bg-emerald-500;
+  }
+
+  .profile-milestone-line {
+    @apply absolute left-1/2 top-2 h-[2px] w-[72px] bg-slate-300;
+    transform: translateX(8px);
+  }
+
+  .profile-milestone-line.is-active {
+    @apply bg-emerald-500;
+  }
+
+  .profile-milestone-label {
+    @apply mt-2 text-center text-[10px] text-slate-600;
+  }
+
   .modal-overlay {
     @apply fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4;
   }
