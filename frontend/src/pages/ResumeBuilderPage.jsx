@@ -676,6 +676,10 @@ function ResumeBuilderPage({
     loading: false,
     jobs: [],
   })
+  const [saveModal, setSaveModal] = useState({
+    open: false,
+    name: '',
+  })
   const [tailorReferenceBuilder, setTailorReferenceBuilder] = useState(() => {
     if (!enableTailorFlow) return null
     try {
@@ -1394,12 +1398,21 @@ function ResumeBuilderPage({
     }
   }
 
-  const saveWithRenamePrompt = async () => {
+  const openSaveModal = () => {
     const suggested = String(autoTitle || '').trim() || 'My Resume'
-    const nextName = window.prompt('Rename resume title (optional):', suggested)
-    if (nextName === null) return
-    const value = String(nextName || '').trim() || suggested
-    await saveResumeToAccount({ titleOverride: value, forceCreate: false })
+    setSaveModal({
+      open: true,
+      name: suggested,
+    })
+  }
+
+  const saveFromModal = async () => {
+    const suggested = String(autoTitle || '').trim() || 'My Resume'
+    const value = String(saveModal.name || '').trim() || suggested
+    const saved = await saveResumeToAccount({ titleOverride: value, forceCreate: false })
+    if (saved) {
+      setSaveModal((prev) => ({ ...prev, open: false }))
+    }
   }
 
   const openSaveToTailored = async () => {
@@ -1460,7 +1473,7 @@ function ResumeBuilderPage({
         </button>
       )}
       {showSaveButton && (
-        <button type="button" onClick={saveWithRenamePrompt} disabled={saveState.saving}>
+        <button type="button" onClick={openSaveModal} disabled={saveState.saving}>
           {saveState.saving ? 'Saving...' : 'Save'}
         </button>
       )}
@@ -2174,6 +2187,30 @@ function ResumeBuilderPage({
                 {saveState.saving ? 'Saving...' : 'Save To Tailored'}
               </button>
               <button type="button" className="secondary" onClick={() => setTailoredModal((prev) => ({ ...prev, open: false }))}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {saveModal.open ? (
+        <div className="modal-overlay" onClick={() => setSaveModal((prev) => ({ ...prev, open: false }))}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <h2>Save Resume</h2>
+            <label>
+              Resume Name
+              <input
+                value={saveModal.name}
+                onChange={(e) => setSaveModal((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Enter resume name"
+              />
+            </label>
+            <div className="actions">
+              <button type="button" onClick={saveFromModal} disabled={saveState.saving}>
+                {saveState.saving ? 'Saving...' : 'Save'}
+              </button>
+              <button type="button" className="secondary" onClick={() => setSaveModal((prev) => ({ ...prev, open: false }))}>
                 Cancel
               </button>
             </div>

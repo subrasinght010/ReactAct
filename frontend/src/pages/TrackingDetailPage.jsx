@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { fetchTrackingRow } from '../api'
+import { SingleSelectDropdown } from '../components/SearchableDropdown'
 
 function formatTemplateType(value) {
   const raw = String(value || '').trim()
@@ -108,12 +109,16 @@ function TrackingDetailPage() {
             <div className="flex justify-end">
               <label className="min-w-[280px]">
                 Select Employee
-                <select value={selectedEmployeeId} onChange={(event) => setSelectedEmployeeId(event.target.value)}>
-                  <option value="">All selected employees</option>
-                  {employeeOptions.map((item) => (
-                    <option key={item.id} value={item.id}>{item.name || `Employee #${item.id}`}</option>
-                  ))}
-                </select>
+                <SingleSelectDropdown
+                  value={selectedEmployeeId}
+                  placeholder="All selected employees"
+                  clearLabel="All selected employees"
+                  options={employeeOptions.map((item) => ({
+                    value: String(item.id),
+                    label: String(item.name || `Employee #${item.id}`),
+                  }))}
+                  onChange={(nextValue) => setSelectedEmployeeId(nextValue)}
+                />
               </label>
             </div>
           </section>

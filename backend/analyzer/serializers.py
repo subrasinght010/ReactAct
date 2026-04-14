@@ -324,11 +324,21 @@ ApplicationTrackingSerializer = MailTrackingSerializer
 
 class UserProfileSerializer(serializers.ModelSerializer):
     location_name = serializers.SerializerMethodField()
+    preferred_location_refs = serializers.PrimaryKeyRelatedField(
+        source='preferred_locations',
+        many=True,
+        queryset=Location.objects.all(),
+        required=False,
+    )
+    preferred_location_names = serializers.SerializerMethodField()
 
     def get_location_name(self, obj):
         if getattr(obj, 'location_ref_id', None) and getattr(obj, 'location_ref', None):
             return obj.location_ref.name
         return str(getattr(obj, 'location', '') or '')
+
+    def get_preferred_location_names(self, obj):
+        return [str(item.name or '') for item in obj.preferred_locations.all().order_by('name')]
 
     class Meta:
         model = UserProfile
@@ -342,9 +352,16 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'portfolio_url',
             'current_employer',
             'years_of_experience',
+            'address_line_1',
+            'address_line_2',
+            'state',
+            'country',
+            'country_code',
             'location',
             'location_ref',
             'location_name',
+            'preferred_location_refs',
+            'preferred_location_names',
             'summary',
             'created_at',
             'updated_at',
@@ -357,13 +374,14 @@ class AchievementSerializer(serializers.ModelSerializer):
         model = Achievement
         fields = [
             'id',
+            'profile',
             'name',
             'achievement',
             'skills',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'profile', 'created_at', 'updated_at']
 
 
 class InterviewSerializer(serializers.ModelSerializer):

@@ -856,6 +856,8 @@ class ProfileInfoView(APIView):
         profile = self._get_or_create(request)
         payload = dict(request.data or {})
         location_ref_raw = str(payload.get('location_ref') or '').strip()
+        if 'location_ref' in payload and not location_ref_raw:
+            payload['location_ref'] = None
         if location_ref_raw:
             try:
                 location = Location.objects.get(id=location_ref_raw)
@@ -863,6 +865,15 @@ class ProfileInfoView(APIView):
                 payload['location'] = location.name
             except Location.DoesNotExist:
                 return Response({'detail': 'Location not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        preferred_location_refs = payload.get('preferred_location_refs')
+        if preferred_location_refs is None and hasattr(request.data, 'getlist'):
+            raw_list = [str(v or '').strip() for v in request.data.getlist('preferred_location_refs') if str(v or '').strip()]
+            if raw_list:
+                preferred_location_refs = raw_list
+        if isinstance(preferred_location_refs, str):
+            preferred_location_refs = [item.strip() for item in preferred_location_refs.split(',') if item.strip()]
+        if preferred_location_refs is not None:
+            payload['preferred_location_refs'] = preferred_location_refs
         serializer = UserProfileSerializer(profile, data=payload, partial=True)
         if serializer.is_valid():
             updated = serializer.save()
@@ -881,7 +892,14 @@ class AchievementListCreateView(APIView):
     def post(self, request):
         serializer = AchievementSerializer(data=request.data)
         if serializer.is_valid():
-            created = serializer.save(user=request.user)
+            profile, _ = UserProfile.objects.get_or_create(
+                user=request.user,
+                defaults={
+                    'full_name': request.user.username,
+                    'email': request.user.email or '',
+                },
+            )
+            created = serializer.save(user=request.user, profile=profile)
             return Response(AchievementSerializer(created).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

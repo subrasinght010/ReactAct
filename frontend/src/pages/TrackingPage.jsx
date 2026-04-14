@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useId, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ResumeSheet from '../components/ResumeSheet'
+import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
 
 import {
   createTrackingRow,
@@ -102,38 +103,6 @@ const TEMPLATE_CHOICES = [
   { value: 'job_inquire', label: 'Job Inquire' },
   { value: 'custom', label: 'Custom' },
 ]
-
-function SearchableDatalistSelect({ value, onChange, options, placeholder, disabled = false }) {
-  const listId = useId()
-  const [text, setText] = useState('')
-
-  useEffect(() => {
-    const found = (options || []).find((opt) => String(opt.value) === String(value || ''))
-    setText(found ? String(found.label || '') : '')
-  }, [options, value])
-
-  return (
-    <>
-      <input
-        list={listId}
-        value={text}
-        disabled={disabled}
-        placeholder={placeholder}
-        onChange={(event) => {
-          const nextText = event.target.value
-          setText(nextText)
-          const matched = (options || []).find((opt) => String(opt.label || '').toLowerCase() === nextText.toLowerCase())
-          onChange(matched ? String(matched.value) : '')
-        }}
-      />
-      <datalist id={listId}>
-        {(options || []).map((opt) => (
-          <option key={String(opt.value)} value={String(opt.label || '')} />
-        ))}
-      </datalist>
-    </>
-  )
-}
 
 function TrackingPage() {
   const access = localStorage.getItem('access') || ''
@@ -249,7 +218,7 @@ function TrackingPage() {
       department: '',
       template_name: '',
       template_subject: '',
-      template_choice: 'cold_applied',
+      template_choice: '',
       has_attachment: false,
       resume_id: '',
       tailored_resume_id: '',
@@ -697,7 +666,7 @@ function TrackingPage() {
             <h2>Add Tracking</h2>
             <label>
               Company (dropdown)
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={createForm.company || ''}
                 placeholder="Select company"
                 options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
@@ -709,7 +678,7 @@ function TrackingPage() {
             </label>
             <label>
               Department
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={createForm.department || ''}
                 placeholder="Select department"
                 options={Array.from(new Set(employeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
@@ -717,19 +686,19 @@ function TrackingPage() {
               />
             </label>
             <label>
-              Employee (dropdown)
-              <SearchableDatalistSelect
-                value={(createForm.selected_hr_ids || [])[0] || ''}
-                placeholder="Select employee"
+              Employee (multi-select)
+              <MultiSelectDropdown
+                values={Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids : []}
+                placeholder="Select employee(s)"
                 options={employeeOptions
                   .filter((emp) => !createForm.department || String(emp.department || '') === String(createForm.department || ''))
                   .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
-                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: nextValue ? [nextValue] : [] }))}
+                onChange={(nextValues) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))}
               />
             </label>
             <label>
               Job (dropdown)
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={createForm.job || ''}
                 placeholder="Select job"
                 options={jobOptions.map((job) => ({ value: String(job.id), label: `${job.job_id || ''} - ${job.role || ''}` }))}
@@ -751,13 +720,13 @@ function TrackingPage() {
             </label>
             <label>
               Template
-              <SearchableDatalistSelect
-                value={createForm.template_choice || 'cold_applied'}
+              <SingleSelectDropdown
+                value={createForm.template_choice || ''}
                 placeholder="Select template"
                 options={TEMPLATE_CHOICES}
                 onChange={(nextValue) => setCreateForm((prev) => ({
                   ...prev,
-                  template_choice: nextValue || 'cold_applied',
+                  template_choice: nextValue || '',
                   template_subject: nextValue === 'custom' ? prev.template_subject : '',
                   template_name: nextValue === 'custom' ? prev.template_name : '',
                 }))}
@@ -807,7 +776,7 @@ function TrackingPage() {
               <>
                 <label>
                   Resume
-                  <SearchableDatalistSelect
+                  <SingleSelectDropdown
                     value={createForm.resume_id || ''}
                     placeholder="Select resume"
                     disabled={Boolean(createForm.tailored_resume_id)}
@@ -824,7 +793,7 @@ function TrackingPage() {
                 {createTailoredOptions.length ? (
                   <label>
                     Tailored Resume
-                    <SearchableDatalistSelect
+                    <SingleSelectDropdown
                       value={createForm.tailored_resume_id || ''}
                       placeholder="Select tailored resume"
                       disabled={Boolean(createForm.resume_id)}
@@ -864,7 +833,7 @@ function TrackingPage() {
             <h2>Edit Tracking Row</h2>
             <label>
               Company (dropdown)
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={editForm.company || ''}
                 placeholder="Select company"
                 options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
@@ -876,7 +845,7 @@ function TrackingPage() {
             </label>
             <label>
               Department
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={editForm.department || ''}
                 placeholder="Select department"
                 options={Array.from(new Set(employeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
@@ -884,22 +853,21 @@ function TrackingPage() {
               />
             </label>
             <label>
-              Employee (dropdown)
-              <SearchableDatalistSelect
-                value={(editForm.selected_hr_ids || [])[0] || ''}
-                placeholder="Select employee"
+              Employee (multi-select)
+              <MultiSelectDropdown
+                values={Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids : []}
+                placeholder="Select employee(s)"
                 options={employeeOptions
                   .filter((emp) => !editForm.department || String(emp.department || '') === String(editForm.department || ''))
                   .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
-                onChange={(value) => {
-                  const nextValue = String(value || '').trim()
-                  setEditForm((prev) => ({ ...prev, selected_hr_ids: nextValue ? [nextValue] : [] }))
+                onChange={(nextValues) => {
+                  setEditForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))
                 }}
               />
             </label>
             <label>
               Job (dropdown)
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={editForm.job || ''}
                 placeholder="Select job"
                 options={jobOptions.map((job) => ({ value: String(job.id), label: `${job.job_id || ''} - ${job.role || ''}` }))}
@@ -928,7 +896,7 @@ function TrackingPage() {
             </label>
             <label>
               Template
-              <SearchableDatalistSelect
+              <SingleSelectDropdown
                 value={editForm.template_choice || 'cold_applied'}
                 placeholder="Select template"
                 options={TEMPLATE_CHOICES}
@@ -984,7 +952,7 @@ function TrackingPage() {
               <>
                 <label>
                   Resume
-                  <SearchableDatalistSelect
+                  <SingleSelectDropdown
                     value={editForm.resume_id || ''}
                     placeholder="Select resume"
                     disabled={Boolean(editForm.tailored_resume_id)}
@@ -1001,7 +969,7 @@ function TrackingPage() {
                 {editTailoredOptions.length ? (
                   <label>
                     Tailored Resume
-                    <SearchableDatalistSelect
+                    <SingleSelectDropdown
                       value={editForm.tailored_resume_id || ''}
                       placeholder="Select tailored resume"
                       disabled={Boolean(editForm.resume_id)}

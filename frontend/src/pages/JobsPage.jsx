@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import ResumeSheet from '../components/ResumeSheet'
+import { SingleSelectDropdown } from '../components/SearchableDropdown'
 
 import { createJob, deleteJob, fetchCompanies, fetchJobs, updateJob } from '../api'
 
@@ -468,15 +469,12 @@ function JobsPage() {
             <h2>{jobForm.editingId ? 'Edit job' : 'Add job'}</h2>
             <label>
               Company (existing)
-              <select
+              <SingleSelectDropdown
                 value={jobForm.company}
-                onChange={(e) => setJobForm((prev) => ({ ...prev, company: e.target.value }))}
-              >
-                <option value="">— Select —</option>
-                {companyOptions.map((c) => (
-                  <option key={c.id} value={String(c.id)}>{c.name}</option>
-                ))}
-              </select>
+                placeholder="Select company"
+                options={companyOptions.map((c) => ({ value: String(c.id), label: String(c.name || '') }))}
+                onChange={(nextValue) => setJobForm((prev) => ({ ...prev, company: nextValue }))}
+              />
             </label>
             <p className="hint jobs-form-hint">If the company is missing, type a name below. Extra spaces are removed; matching names reuse one company.</p>
             <label>

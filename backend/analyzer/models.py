@@ -353,6 +353,11 @@ class UserProfile(BaseModel):
     portfolio_url = models.URLField(blank=True, max_length=1000)
     current_employer = models.CharField(max_length=180, blank=True)
     years_of_experience = models.CharField(max_length=60, blank=True)
+    address_line_1 = models.CharField(max_length=220, blank=True)
+    address_line_2 = models.CharField(max_length=220, blank=True)
+    state = models.CharField(max_length=120, blank=True)
+    country = models.CharField(max_length=120, blank=True)
+    country_code = models.CharField(max_length=16, blank=True)
     location = models.CharField(max_length=180, blank=True)
     location_ref = models.ForeignKey(
         Location,
@@ -360,6 +365,11 @@ class UserProfile(BaseModel):
         blank=True,
         null=True,
         related_name='profiles',
+    )
+    preferred_locations = models.ManyToManyField(
+        Location,
+        blank=True,
+        related_name='preferred_by_profiles',
     )
     summary = models.TextField(blank=True)
 
@@ -372,6 +382,13 @@ class UserProfile(BaseModel):
 
 class Achievement(BaseModel):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='achievements')
+    profile = models.ForeignKey(
+        UserProfile,
+        on_delete=models.CASCADE,
+        related_name='achievements',
+        blank=True,
+        null=True,
+    )
     name = models.CharField(max_length=220)
     achievement = models.TextField(blank=True)
     skills = models.TextField(blank=True)

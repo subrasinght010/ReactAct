@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { SingleSelectDropdown } from '../components/SearchableDropdown'
 
 import {
   createCompany,
@@ -439,12 +440,12 @@ function CompanyPage() {
             <h2>{employeeForm.id ? 'Edit HR' : 'Add HR'}</h2>
             <label>
               Company
-              <select value={employeeForm.company} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, company: event.target.value }))}>
-                <option value="">Select company</option>
-                {companies.map((company) => (
-                  <option key={company.id} value={company.id}>{company.name}</option>
-                ))}
-              </select>
+              <SingleSelectDropdown
+                value={employeeForm.company}
+                placeholder="Select company"
+                options={companies.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
+                onChange={(nextValue) => setEmployeeForm((prev) => ({ ...prev, company: nextValue }))}
+              />
             </label>
             <label>Name<input value={employeeForm.name} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, name: event.target.value }))} /></label>
             <label>Role<input value={employeeForm.department} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, department: event.target.value }))} /></label>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ResumeSheet from '../components/ResumeSheet'
+import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
 
 import {
   createAchievement,
@@ -29,7 +30,14 @@ const EMPTY_PROFILE = {
   portfolio_url: '',
   current_employer: '',
   years_of_experience: '',
+  address_line_1: '',
+  address_line_2: '',
+  state: '',
+  country: '',
+  country_code: '',
   location: '',
+  location_ref: '',
+  preferred_location_refs: [],
   summary: '',
 }
 
@@ -91,7 +99,13 @@ function profileRows(profile) {
     ['Portfolio', profile.portfolio_url],
     ['Current Employer', profile.current_employer],
     ['Years of Experience', profile.years_of_experience],
+    ['Address Line 1', profile.address_line_1],
+    ['Address Line 2', profile.address_line_2],
+    ['State', profile.state],
+    ['Country', profile.country],
+    ['Country Code', profile.country_code],
     ['Location', profile.location],
+    ['Preferred Locations', Array.isArray(profile.preferred_location_names) ? profile.preferred_location_names.join(', ') : ''],
     ['Summary', profile.summary],
   ]
   return rows.filter(([, value]) => String(value || '').trim())
@@ -254,6 +268,10 @@ function ProfilePage() {
         fetchLocations(access),
       ])
       const nextProfile = { ...EMPTY_PROFILE, ...(info || {}) }
+      nextProfile.location_ref = nextProfile.location_ref ? String(nextProfile.location_ref) : ''
+      nextProfile.preferred_location_refs = Array.isArray(nextProfile.preferred_location_refs)
+        ? nextProfile.preferred_location_refs.map((v) => String(v))
+        : []
       if (!String(nextProfile.full_name || '').trim()) {
         nextProfile.full_name = String(profileBase?.username || '')
       }
@@ -492,7 +510,39 @@ function ProfilePage() {
               <label>Full Name<input value={profileForm.full_name} onChange={(e) => setProfileForm((p) => ({ ...p, full_name: e.target.value }))} /></label>
               <label>Email<input value={profileForm.email} onChange={(e) => setProfileForm((p) => ({ ...p, email: e.target.value }))} /></label>
               <label>Contact Number<input value={profileForm.contact_number} onChange={(e) => setProfileForm((p) => ({ ...p, contact_number: e.target.value }))} /></label>
+              <label>Address Line 1<input value={profileForm.address_line_1} onChange={(e) => setProfileForm((p) => ({ ...p, address_line_1: e.target.value }))} /></label>
+              <label>Address Line 2<input value={profileForm.address_line_2} onChange={(e) => setProfileForm((p) => ({ ...p, address_line_2: e.target.value }))} /></label>
+              <label>State<input value={profileForm.state} onChange={(e) => setProfileForm((p) => ({ ...p, state: e.target.value }))} /></label>
+              <label>Country<input value={profileForm.country} onChange={(e) => setProfileForm((p) => ({ ...p, country: e.target.value }))} /></label>
+              <label>Country Code<input value={profileForm.country_code} onChange={(e) => setProfileForm((p) => ({ ...p, country_code: e.target.value }))} placeholder="+91" /></label>
               <label>Location<input value={profileForm.location} onChange={(e) => setProfileForm((p) => ({ ...p, location: e.target.value }))} /></label>
+              <label>Location Ref
+                <SingleSelectDropdown
+                  value={profileForm.location_ref || ''}
+                  placeholder="Select location"
+                  options={locationOptions.map((location) => ({ value: String(location.id), label: String(location.name || '') }))}
+                  onChange={(nextValue) => {
+                    const selected = locationOptions.find((item) => String(item.id) === String(nextValue || ''))
+                    setProfileForm((p) => ({
+                      ...p,
+                      location_ref: nextValue || '',
+                      location: selected?.name || p.location,
+                    }))
+                  }}
+                />
+              </label>
+              <label className="md:col-span-2">Preferred Locations
+                <MultiSelectDropdown
+                  values={Array.isArray(profileForm.preferred_location_refs) ? profileForm.preferred_location_refs : []}
+                  placeholder="Select preferred locations"
+                  searchPlaceholder="Search location"
+                  options={locationOptions.map((location) => ({ value: String(location.id), label: String(location.name || '') }))}
+                  onChange={(nextValues) => setProfileForm((p) => ({
+                    ...p,
+                    preferred_location_refs: Array.isArray(nextValues) ? nextValues : [],
+                  }))}
+                />
+              </label>
               <label>Current Employer<input value={profileForm.current_employer} onChange={(e) => setProfileForm((p) => ({ ...p, current_employer: e.target.value }))} /></label>
               <label>Years of Experience<input value={profileForm.years_of_experience} onChange={(e) => setProfileForm((p) => ({ ...p, years_of_experience: e.target.value }))} /></label>
               <label>LinkedIn URL<input value={profileForm.linkedin_url} onChange={(e) => setProfileForm((p) => ({ ...p, linkedin_url: e.target.value }))} /></label>
@@ -555,10 +605,15 @@ function ProfilePage() {
           <>
             <div className="grid gap-3 md:grid-cols-2">
               <label>Select Job
-                <select
+                <SingleSelectDropdown
                   value={interviewForm.job}
+                  placeholder="Select job"
+                  options={jobOptions.map((job) => ({
+                    value: String(job.id),
+                    label: `${job.job_id || '-'} | ${job.company_name || '-'} | ${job.role || '-'}`,
+                  }))}
                   onChange={(e) => {
-                    const selectedId = String(e.target.value || '')
+                    const selectedId = String(e || '')
                     const selectedJob = jobOptions.find((item) => String(item.id) === selectedId)
                     setInterviewForm((p) => ({
                       ...p,
@@ -568,25 +623,18 @@ function ProfilePage() {
                       job_code: selectedJob?.job_id || p.job_code,
                     }))
                   }}
-                >
-                  <option value="">Select job</option>
-                  {jobOptions.map((job) => (
-                    <option key={job.id} value={job.id}>
-                      {`${job.job_id || '-'} | ${job.company_name || '-'} | ${job.role || '-'}`}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label>Company<input value={interviewForm.company_name} onChange={(e) => setInterviewForm((p) => ({ ...p, company_name: e.target.value }))} /></label>
               <label>Job Role<input value={interviewForm.job_role} onChange={(e) => setInterviewForm((p) => ({ ...p, job_role: e.target.value }))} /></label>
               <label>Job ID<input value={interviewForm.job_code} onChange={(e) => setInterviewForm((p) => ({ ...p, job_code: e.target.value }))} /></label>
               <label>Location
-                <select value={interviewForm.location_ref} onChange={(e) => setInterviewForm((p) => ({ ...p, location_ref: e.target.value }))}>
-                  <option value="">Select location</option>
-                  {locationOptions.map((location) => (
-                    <option key={location.id} value={location.id}>{location.name}</option>
-                  ))}
-                </select>
+                <SingleSelectDropdown
+                  value={interviewForm.location_ref}
+                  placeholder="Select location"
+                  options={locationOptions.map((location) => ({ value: String(location.id), label: String(location.name || '') }))}
+                  onChange={(nextValue) => setInterviewForm((p) => ({ ...p, location_ref: nextValue }))}
+                />
               </label>
               <label>Interview At<input type="datetime-local" value={interviewForm.interview_at} onChange={(e) => setInterviewForm((p) => ({ ...p, interview_at: e.target.value }))} /></label>
               <label className="md:col-span-2">Notes<textarea rows={3} value={interviewForm.notes} onChange={(e) => setInterviewForm((p) => ({ ...p, notes: e.target.value }))} /></label>
@@ -625,11 +673,12 @@ function ProfilePage() {
                 </div>
                 <div className="grid gap-2 md:grid-cols-2">
                   <label>Other Stage
-                    <select
+                    <SingleSelectDropdown
                       value={otherStageValueDraft}
+                      placeholder="Select stage"
                       disabled={savingInterviewId === row.id || String(row.action || 'active').toLowerCase() !== 'active'}
-                      onChange={(e) => {
-                        const nextStage = e.target.value
+                      options={OTHER_INTERVIEW_STAGES.map((item) => ({ value: item.value, label: item.label }))}
+                      onChange={(nextStage) => {
                         if (!nextStage) return
                         setRowOtherStageDraft((prev) => ({ ...prev, [row.id]: nextStage }))
                         inlineUpdateInterview(row, { stage: nextStage })
@@ -644,20 +693,27 @@ function ProfilePage() {
                           return next
                         })
                       }}
-                    >
-                      <option value="">Select stage</option>
-                      {OTHER_INTERVIEW_STAGES.map((item) => (
-                        <option key={`row-${row.id}-${item.value}`} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
+                    />
                   </label>
                   <label>Round Stage
-                    <select
+                    <SingleSelectDropdown
                       value={roundStageValueDraft}
+                      placeholder="Select round"
                       disabled={savingInterviewId === row.id || String(row.action || 'active').toLowerCase() !== 'active'}
-                      onChange={(e) => {
-                        const nextStage = e.target.value
+                      options={Array.from({ length: 8 }, (_, idx) => {
+                        const targetRound = idx + 1
+                        const currentSelectedRound = roundValue(roundStageValueDraft || `round_${nextRound}`)
+                        const isDisabled = isRoundSelectionDisabled(targetRound, rememberedRound, currentSelectedRound)
+                        return {
+                          value: `round_${targetRound}`,
+                          label: `Round ${targetRound}${isDisabled ? ' (Locked)' : ''}`,
+                        }
+                      })}
+                      onChange={(nextStage) => {
                         if (!nextStage) return
+                        const targetRound = roundValue(nextStage)
+                        const currentSelectedRound = roundValue(roundStageValueDraft || `round_${nextRound}`)
+                        if (isRoundSelectionDisabled(targetRound, rememberedRound, currentSelectedRound)) return
                         setRowRoundStageDraft((prev) => ({ ...prev, [row.id]: nextStage }))
                         inlineUpdateInterview(row, { stage: nextStage })
                         setRowRoundStageDraft((prev) => {
@@ -671,32 +727,18 @@ function ProfilePage() {
                           return next
                         })
                       }}
-                    >
-                      <option value="">Select round</option>
-                      {Array.from({ length: 8 }, (_, idx) => {
-                        const targetRound = idx + 1
-                        const currentSelectedRound = roundValue(roundStageValueDraft || `round_${nextRound}`)
-                        const isDisabled = isRoundSelectionDisabled(targetRound, rememberedRound, currentSelectedRound)
-                        return (
-                          <option key={`row-${row.id}-round-${targetRound}`} value={`round_${targetRound}`} disabled={isDisabled}>
-                            {`Round ${targetRound}`}
-                          </option>
-                        )
-                      })}
-                    </select>
+                    />
                   </label>
                 </div>
                 <div className="grid gap-2 md:grid-cols-2">
                   <label>Action
-                    <select
+                    <SingleSelectDropdown
                       value={row.action || 'active'}
+                      placeholder="Select action"
                       disabled={savingInterviewId === row.id}
-                      onChange={(e) => inlineUpdateInterview(row, { action: e.target.value })}
-                    >
-                      {INTERVIEW_ACTIONS.map((item) => (
-                        <option key={item.value} value={item.value}>{item.label}</option>
-                      ))}
-                    </select>
+                      options={INTERVIEW_ACTIONS.map((item) => ({ value: item.value, label: item.label }))}
+                      onChange={(nextValue) => inlineUpdateInterview(row, { action: nextValue || 'active' })}
+                    />
                   </label>
                 </div>
                 {row.location_name ? <p className="hint">Location: {row.location_name}</p> : null}
