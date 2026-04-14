@@ -175,6 +175,30 @@ export async function fetchResumes(accessToken) {
   return parseResponse(response)
 }
 
+export async function fetchTailoredResumes(accessToken, params = {}) {
+  const search = new URLSearchParams()
+  if (params.job_id) search.set('job_id', String(params.job_id))
+  if (params.q) search.set('q', String(params.q))
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  const response = await authFetch(`${API_BASE_URL}/tailored-resumes/${suffix}`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function createTailoredResume(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/tailored-resumes/`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
 export async function fetchResume(accessToken, resumeId) {
   const response = await authFetch(`${API_BASE_URL}/resumes/${resumeId}/`, {}, accessToken)
   return parseResponse(response)
@@ -192,6 +216,116 @@ export async function updateResume(accessToken, resumeId, payload) {
     },
     accessToken,
   )
+  return parseResponse(response)
+}
+
+export async function deleteResume(accessToken, resumeId) {
+  const response = await authFetch(
+    `${API_BASE_URL}/resumes/${resumeId}/`,
+    { method: 'DELETE' },
+    accessToken,
+  )
+  if (response.status === 204) return { ok: true }
+  return parseResponse(response)
+}
+
+export async function fetchProfileInfo(accessToken) {
+  const response = await authFetch(`${API_BASE_URL}/profile-info/`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function updateProfileInfo(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/profile-info/`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function fetchAchievements(accessToken) {
+  const response = await authFetch(`${API_BASE_URL}/achievements/`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function createAchievement(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/achievements/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function updateAchievement(accessToken, achievementId, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/achievements/${achievementId}/`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function deleteAchievement(accessToken, achievementId) {
+  const response = await authFetch(
+    `${API_BASE_URL}/achievements/${achievementId}/`,
+    { method: 'DELETE' },
+    accessToken,
+  )
+  if (response.status === 204) return { ok: true }
+  return parseResponse(response)
+}
+
+export async function fetchInterviews(accessToken) {
+  const response = await authFetch(`${API_BASE_URL}/interviews/`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function createInterview(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/interviews/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function updateInterview(accessToken, interviewId, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/interviews/${interviewId}/`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function deleteInterview(accessToken, interviewId) {
+  const response = await authFetch(
+    `${API_BASE_URL}/interviews/${interviewId}/`,
+    { method: 'DELETE' },
+    accessToken,
+  )
+  if (response.status === 204) return { ok: true }
   return parseResponse(response)
 }
 
@@ -294,15 +428,22 @@ export async function updateTrackingRow(accessToken, trackingId, payload) {
   return parseResponse(response)
 }
 
-export async function deleteTrackingRow(accessToken, trackingId) {
+export async function deleteTrackingRow(accessToken, trackingId, options = {}) {
+  const hard = Boolean(options?.hard)
+  const suffix = hard ? '?delete_mode=hard' : ''
   const response = await authFetch(
-    `${API_BASE_URL}/tracking/${trackingId}/`,
+    `${API_BASE_URL}/tracking/${trackingId}/${suffix}`,
     {
       method: 'DELETE',
     },
     accessToken,
   )
   if (response.status === 204) return { ok: true }
+  return parseResponse(response)
+}
+
+export async function fetchTrackingRow(accessToken, trackingId) {
+  const response = await authFetch(`${API_BASE_URL}/tracking/${trackingId}/`, {}, accessToken)
   return parseResponse(response)
 }
 
@@ -454,9 +595,11 @@ export async function updateJob(accessToken, jobPk, payload) {
   return parseResponse(response)
 }
 
-export async function deleteJob(accessToken, jobPk) {
+export async function deleteJob(accessToken, jobPk, options = {}) {
+  const hard = Boolean(options?.hard)
+  const suffix = hard ? '?delete_mode=hard' : ''
   const response = await authFetch(
-    `${API_BASE_URL}/jobs/${jobPk}/`,
+    `${API_BASE_URL}/jobs/${jobPk}/${suffix}`,
     { method: 'DELETE' },
     accessToken,
   )

@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -17,17 +18,18 @@ from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
 from .company_utils import normalize_company_name, resolve_company_for_job
-from .models import JobRole, Resume, ResumeAnalysis, TailoredJobRun, MailTracking, Company, Employee, Job, Tracking, TrackingAction
+from .models import Resume, TailoredResume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, Achievement, Interview
 from .serializers import (
-    JobRoleSerializer,
-    ResumeAnalysisSerializer,
     ResumeSerializer,
+    TailoredResumeSerializer,
     SignupSerializer,
-    TailoredJobRunSerializer,
     MailTrackingSerializer,
     CompanySerializer,
     EmployeeSerializer,
     JobSerializer,
+    UserProfileSerializer,
+    AchievementSerializer,
+    InterviewSerializer,
 )
 from .tailor import (
     ALLOWED_AI_MODELS,
@@ -809,13 +811,162 @@ class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        profile, _ = UserProfile.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'full_name': request.user.username,
+                'email': request.user.email or '',
+            },
+        )
         return Response(
             {
                 'id': request.user.id,
                 'username': request.user.username,
                 'email': request.user.email,
+                'profile': UserProfileSerializer(profile).data,
             }
         )
+
+
+class ProfileInfoView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _get_or_create(self, request):
+        profile, _ = UserProfile.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'full_name': request.user.username,
+                'email': request.user.email or '',
+            },
+        )
+        if not profile.full_name:
+            profile.full_name = request.user.username
+        if not profile.email:
+            profile.email = request.user.email or ''
+        profile.save(update_fields=['full_name', 'email', 'updated_at'])
+        return profile
+
+    def get(self, request):
+        profile = self._get_or_create(request)
+        return Response(UserProfileSerializer(profile).data, status=status.HTTP_200_OK)
+
+    def put(self, request):
+        profile = self._get_or_create(request)
+        serializer = UserProfileSerializer(profile, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated = serializer.save()
+            return Response(UserProfileSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AchievementListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def get(self, request):
+        rows = Achievement.objects.filter(user=request.user).order_by('-created_at')
+        return Response(AchievementSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = AchievementSerializer(data=request.data)
+        if serializer.is_valid():
+            created = serializer.save(user=request.user)
+            return Response(AchievementSerializer(created).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AchievementDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _get_object(self, request, achievement_id):
+        return Achievement.objects.get(id=achievement_id, user=request.user)
+
+    def put(self, request, achievement_id):
+        try:
+            row = self._get_object(request, achievement_id)
+        except Achievement.DoesNotExist:
+            return Response({'detail': 'Achievement not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = AchievementSerializer(row, data=request.data, partial=True)
+        if serializer.is_valid():
+            updated = serializer.save()
+            return Response(AchievementSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, achievement_id):
+        try:
+            row = self._get_object(request, achievement_id)
+        except Achievement.DoesNotExist:
+            return Response({'detail': 'Achievement not found.'}, status=status.HTTP_404_NOT_FOUND)
+        row.hard_delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class InterviewListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _has_duplicate(self, request, company_name, job_role, exclude_id=None):
+        company_key = str(company_name or '').strip().lower()
+        job_key = str(job_role or '').strip().lower()
+        if not company_key or not job_key:
+            return False
+        rows = Interview.objects.filter(user=request.user, company_key=company_key, job_role_key=job_key)
+        if exclude_id:
+            rows = rows.exclude(id=exclude_id)
+        return rows.exists()
+
+    def get(self, request):
+        rows = Interview.objects.filter(user=request.user).order_by('-updated_at', '-created_at')
+        return Response(InterviewSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        payload = dict(request.data or {})
+        company_name = str(payload.get('company_name') or '').strip()
+        job_role = str(payload.get('job_role') or '').strip()
+        if self._has_duplicate(request, company_name, job_role):
+            return Response({'detail': 'Interview with same company and job already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = InterviewSerializer(data=payload)
+        if serializer.is_valid():
+            created = serializer.save(user=request.user)
+            return Response(InterviewSerializer(created).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class InterviewDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
+
+    def _get_object(self, request, interview_id):
+        return Interview.objects.get(id=interview_id, user=request.user)
+
+    def put(self, request, interview_id):
+        try:
+            row = self._get_object(request, interview_id)
+        except Interview.DoesNotExist:
+            return Response({'detail': 'Interview not found.'}, status=status.HTTP_404_NOT_FOUND)
+        payload = dict(request.data or {})
+        company_name = payload.get('company_name', row.company_name)
+        job_role = payload.get('job_role', row.job_role)
+        company_key = str(company_name or '').strip().lower()
+        job_key = str(job_role or '').strip().lower()
+        duplicate = Interview.objects.filter(user=request.user, company_key=company_key, job_role_key=job_key).exclude(id=row.id).exists()
+        if duplicate:
+            return Response({'detail': 'Interview with same company and job already exists.'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = InterviewSerializer(row, data=payload, partial=True)
+        if serializer.is_valid():
+            updated = serializer.save()
+            return Response(InterviewSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, interview_id):
+        try:
+            row = self._get_object(request, interview_id)
+        except Interview.DoesNotExist:
+            return Response({'detail': 'Interview not found.'}, status=status.HTTP_404_NOT_FOUND)
+        row.hard_delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ProfileConfigView(APIView):
@@ -828,22 +979,6 @@ class ProfileConfigView(APIView):
     def put(self, request):
         saved = _set_user_profile_config(request.user, request.data if isinstance(request.data, dict) else {})
         return Response(saved)
-
-
-class JobRoleListCreateView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        roles = JobRole.objects.filter(user=request.user)
-        serializer = JobRoleSerializer(roles, many=True)
-        return Response(serializer.data)
-
-    def post(self, request):
-        serializer = JobRoleSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save(user=request.user)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ResumeListCreateView(APIView):
@@ -936,16 +1071,59 @@ class ResumeDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class ResumeAnalysisListView(APIView):
+class TailoredResumeListCreateView(APIView):
     permission_classes = [IsAuthenticated]
+    parser_classes = [JSONParser]
 
     def get(self, request):
-        analyses = ResumeAnalysis.objects.filter(user=request.user)
-        resume_id = request.query_params.get('resume_id')
-        if resume_id:
-            analyses = analyses.filter(resume_id=resume_id)
-        serializer = ResumeAnalysisSerializer(analyses, many=True)
-        return Response(serializer.data)
+        rows = (
+            TailoredResume.objects
+            .filter(Q(job__user=request.user) | Q(resume__user=request.user))
+            .select_related('job', 'resume')
+            .order_by('-updated_at', '-created_at')
+        )
+        job_id = str(request.query_params.get('job_id') or '').strip()
+        if job_id:
+            rows = rows.filter(job_id=job_id)
+        q = str(request.query_params.get('q') or '').strip()
+        if q:
+            rows = rows.filter(Q(name__icontains=q) | Q(job__job_id__icontains=q) | Q(job__role__icontains=q))
+        return Response(TailoredResumeSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        payload = dict(request.data or {})
+        name = str(payload.get('name') or '').strip() or 'Tailored Resume'
+        builder_data = payload.get('builder_data') or {}
+        if isinstance(builder_data, str):
+            try:
+                builder_data = json.loads(builder_data)
+            except Exception:
+                builder_data = {}
+        if not isinstance(builder_data, dict):
+            return Response({'builder_data': ['Invalid payload.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        job = None
+        resume = None
+        raw_job = str(payload.get('job') or '').strip()
+        raw_resume = str(payload.get('resume') or '').strip()
+        if raw_job:
+            try:
+                job = Job.objects.get(id=raw_job, user=request.user)
+            except Job.DoesNotExist:
+                return Response({'job': ['Job not found.']}, status=status.HTTP_400_BAD_REQUEST)
+        if raw_resume:
+            try:
+                resume = Resume.objects.get(id=raw_resume, user=request.user)
+            except Resume.DoesNotExist:
+                return Response({'resume': ['Resume not found.']}, status=status.HTTP_400_BAD_REQUEST)
+
+        created = TailoredResume.objects.create(
+            job=job,
+            resume=resume,
+            name=name,
+            builder_data=sanitize_builder_data(builder_data),
+        )
+        return Response(TailoredResumeSerializer(created).data, status=status.HTTP_201_CREATED)
 
 
 class TailorResumeView(APIView):
@@ -1204,17 +1382,6 @@ class TailorResumeView(APIView):
             builder_data=tailored_builder,
             status='optimized',
         )
-        TailoredJobRun.objects.create(
-            user=request.user,
-            resume=created,
-            company_name=company_name,
-            job_title=job_title or job_role,
-            job_id=job_id,
-            job_url=job_url,
-            jd_text=jd_text,
-            match_score=float(round(best.score, 4)),
-            keywords=keywords,
-        )
         self._enforce_resume_limit(request.user)
 
         return Response(
@@ -1366,14 +1533,6 @@ class AutofillAnswersView(APIView):
         return Response({"answers": answers}, status=status.HTTP_200_OK)
 
 
-class TailoredJobRunListView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        runs = TailoredJobRun.objects.filter(user=request.user).order_by('-created_at')[:50]
-        return Response(TailoredJobRunSerializer(runs, many=True).data, status=status.HTTP_200_OK)
-
-
 class ApplicationTrackingListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
@@ -1413,6 +1572,30 @@ class ApplicationTrackingListCreateView(APIView):
         except Exception:
             return None
 
+    def _extract_template_fields(self, payload):
+        allowed = {'cold_applied', 'referral', 'job_inquire', 'custom'}
+        choice = str(payload.get('template_choice') or '').strip().lower()
+        subject = str(payload.get('template_subject') or payload.get('custom_subject') or '').strip()
+        message = str(payload.get('template_message') or '').strip()
+        legacy = str(payload.get('template_name') or '').strip()
+
+        if choice and choice not in allowed:
+            choice = ''
+        if not choice:
+            if legacy in allowed:
+                choice = legacy
+            elif legacy:
+                choice = 'custom'
+                message = message or legacy
+        if choice == 'custom' and not message and legacy and legacy not in allowed:
+            message = legacy
+        if not choice:
+            choice = 'cold_applied'
+        if choice != 'custom':
+            subject = ''
+            message = ''
+        return choice, subject, message
+
     def _resolve_company(self, request, payload):
         company_id = payload.get('company')
         if company_id:
@@ -1431,21 +1614,26 @@ class ApplicationTrackingListCreateView(APIView):
         explicit_job_id = payload.get('job')
         if explicit_job_id:
             try:
-                return Job.objects.get(id=explicit_job_id, user=request.user)
+                return Job.objects.get(id=explicit_job_id, user=request.user, is_removed=False)
             except Job.DoesNotExist:
                 return None
 
         job_code = str(payload.get('job_id') or '').strip()
         if job_code:
-            job, _ = Job.objects.get_or_create(
+            job = Job.objects.filter(
                 user=request.user,
                 company=company,
-                job_id=job_code,
-                defaults={
-                    'role': str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
-                    'job_link': str(payload.get('job_url') or '').strip(),
-                },
-            )
+                job_id__iexact=job_code,
+                is_removed=False,
+            ).first()
+            if not job:
+                job = Job.objects.create(
+                    user=request.user,
+                    company=company,
+                    job_id=job_code,
+                    role=str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
+                    job_link=str(payload.get('job_url') or '').strip(),
+                )
         else:
             job = Job.objects.create(
                 user=request.user,
@@ -1454,11 +1642,6 @@ class ApplicationTrackingListCreateView(APIView):
                 role=str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
                 job_link=str(payload.get('job_url') or '').strip(),
             )
-
-        tailored_upload = request.FILES.get('tailored_resume_upload')
-        if tailored_upload:
-            job.tailored_resume_file = tailored_upload
-            job.save(update_fields=['tailored_resume_file', 'updated_at'])
 
         applied = self._to_date(payload.get('applied_date'))
         posting = self._to_date(payload.get('posting_date'))
@@ -1486,6 +1669,16 @@ class ApplicationTrackingListCreateView(APIView):
             job.save(update_fields=updates)
         return job
 
+    def _resolve_resume(self, request, payload):
+        resume_id = payload.get('resume')
+        raw = str(resume_id or '').strip()
+        if not raw:
+            return None
+        try:
+            return Resume.objects.get(id=raw, user=request.user)
+        except Resume.DoesNotExist:
+            return None
+
     def _sync_selected_hrs(self, request, tracking, payload):
         selected_ids = payload.get('selected_hr_ids')
         selected_names = payload.get('selected_hrs')
@@ -1505,10 +1698,10 @@ class ApplicationTrackingListCreateView(APIView):
 
         if isinstance(selected_ids, list) and selected_ids:
             targets = Employee.objects.filter(user=request.user, id__in=selected_ids)
-        elif isinstance(selected_names, list) and selected_names and tracking.Job_id and tracking.Job and tracking.Job.company_id:
+        elif isinstance(selected_names, list) and selected_names and tracking.job_id and tracking.job and tracking.job.company_id:
             targets = Employee.objects.filter(
                 user=request.user,
-                company_id=tracking.Job.company_id,
+                company_id=tracking.job.company_id,
                 name__in=[str(name or '').strip() for name in selected_names if str(name or '').strip()],
             )
         if selected_ids is not None or selected_names is not None:
@@ -1535,18 +1728,65 @@ class ApplicationTrackingListCreateView(APIView):
             send_mode=mapped_send_mode,
             action_at=action_at,
         )
-        tracking.action = 'followed_up' if action_type == 'followup' else 'fresh'
+        tracking.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
         if action_type == 'fresh':
             tracking.mailed = True
-        tracking.save(update_fields=['action', 'mailed', 'updated_at'])
+        tracking.save(update_fields=['mail_type', 'mailed', 'updated_at'])
         return None
 
     def _serialize_tracking_row(self, tracking, available_hr_map):
-        job = tracking.Job
+        job = tracking.job
+        resume = tracking.resume
+        tailored_resume = tracking.tailored_resume
         company = job.company if job and job.company_id else None
         mail_tracking = tracking.mail_tracking if tracking.mail_tracking_id else None
         available = available_hr_map.get(company.id if company else None, [])
         selected = list(tracking.selected_hrs.all())
+        tailored_rows = []
+        oldest_tailored = None
+        if job:
+            related_tailored = list(job.tailored_resumes.all().order_by('created_at', 'id'))
+            tailored_rows = [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+                    'created_at': item.created_at.isoformat() if item.created_at else None,
+                }
+                for item in related_tailored
+            ]
+            if related_tailored:
+                oldest = related_tailored[0]
+                oldest_tailored = {
+                    'id': oldest.id,
+                    'name': str(oldest.name or '').strip() or f'Tailored Resume #{oldest.id}',
+                    'created_at': oldest.created_at.isoformat() if oldest.created_at else None,
+                    'builder_data': oldest.builder_data or {},
+                }
+        resume_preview = None
+        if resume:
+            resume_builder = resume.builder_data or {}
+            resume_file_url = ''
+            if getattr(resume, 'file', None):
+                try:
+                    resume_file_url = resume.file.url
+                except Exception:
+                    resume_file_url = ''
+            if builder_has_substance(resume_builder) or resume_file_url:
+                resume_preview = {
+                    'id': resume.id,
+                    'title': str(resume.title or '').strip() or f'Resume #{resume.id}',
+                    'builder_data': resume_builder,
+                    'file_url': resume_file_url,
+                }
+        tailored_resume_preview = None
+        if tailored_resume:
+            tailored_builder = tailored_resume.builder_data or {}
+            if builder_has_substance(tailored_builder):
+                tailored_resume_preview = {
+                    'id': tailored_resume.id,
+                    'title': str(tailored_resume.name or '').strip() or f'Tailored Resume #{tailored_resume.id}',
+                    'builder_data': tailored_builder,
+                }
         milestones = [
             {
                 'type': item.action_type,
@@ -1555,6 +1795,9 @@ class ApplicationTrackingListCreateView(APIView):
             }
             for item in tracking.actions.all().order_by('created_at')[:10]
         ]
+        template_choice = str(tracking.template_choice or 'cold_applied').strip() or 'cold_applied'
+        template_subject = str(tracking.template_subject or '')
+        template_message = str(tracking.template_message or '')
         return {
             'id': tracking.id,
             'company': company.id if company else None,
@@ -1563,22 +1806,36 @@ class ApplicationTrackingListCreateView(APIView):
             'job_id': job.job_id if job else '',
             'role': job.role if job else '',
             'job_url': job.job_link if job else '',
-            'tailored_resume_file': (job.tailored_resume_file.url if job and getattr(job, 'tailored_resume_file', None) else ''),
+            'tailored_resumes': tailored_rows,
+            'oldest_tailored_resume': oldest_tailored,
+            'resume_preview': resume_preview,
+            'tailored_resume_preview': tailored_resume_preview,
+            'tailored_resume': tailored_resume.id if tailored_resume else None,
+            'tailored_resume_name': str(tailored_resume.name or '').strip() if tailored_resume else '',
             'is_closed': bool(job.is_closed) if job else False,
             'is_removed': bool(job.is_removed) if job else False,
             'mailed': bool(tracking.mailed),
             'applied_date': job.applied_at.isoformat() if job and job.applied_at else None,
             'posting_date': job.date_of_posting.isoformat() if job and job.date_of_posting else None,
-            'is_open': bool(tracking.is_open if tracking.is_open is not None else (not bool(job.is_closed) if job else True)),
+            'is_open': bool(not bool(job.is_closed) if job else True),
             'available_hrs': [emp.name for emp in available],
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
-            'got_replied': bool(tracking.got_replied),
+            'template_choice': template_choice,
+            'template_subject': template_subject,
+            'template_message': template_message,
+            'template_name': (template_message if template_choice == 'custom' else template_choice),
+            'mail_type': str(tracking.mail_type or 'fresh'),
+            'action': str(tracking.mail_type or 'fresh'),
+            'got_replied': bool(mail_tracking.got_replied) if mail_tracking else False,
+            'needs_tailored': False,
+            'tailoring_scope': '',
             'is_freezed': bool(tracking.is_freezed),
             'freezed_at': tracking.freezed_at.isoformat() if tracking.freezed_at else None,
             'mail_tracking_id': mail_tracking.id if mail_tracking else None,
-            'maild_at': mail_tracking.maild_at.isoformat() if mail_tracking and mail_tracking.maild_at else None,
+            'maild_at': mail_tracking.mailed_at.isoformat() if mail_tracking and mail_tracking.mailed_at else None,
+            'mailed_at': mail_tracking.mailed_at.isoformat() if mail_tracking and mail_tracking.mailed_at else None,
             'replied_at': mail_tracking.replied_at.isoformat() if mail_tracking and mail_tracking.replied_at else None,
             'milestones': milestones,
             'created_at': tracking.created_at.isoformat() if tracking.created_at else '',
@@ -1587,16 +1844,16 @@ class ApplicationTrackingListCreateView(APIView):
 
     def get(self, request):
         queryset = (
-            Tracking.objects.filter(user=request.user)
-            .select_related('Job__company')
-            .prefetch_related('selected_hrs', 'actions')
+            Tracking.objects.filter(user=request.user, is_removed=False)
+            .select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking')
+            .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
             .order_by('-created_at')
         )
         rows, meta = _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100)
         company_ids = {
-            row.Job.company_id
+            row.job.company_id
             for row in rows
-            if row.Job_id and row.Job and row.Job.company_id
+            if row.job_id and row.job and row.job.company_id
         }
         employees = Employee.objects.filter(user=request.user, company_id__in=company_ids).order_by('name')
         available_hr_map = {}
@@ -1613,21 +1870,35 @@ class ApplicationTrackingListCreateView(APIView):
 
     def post(self, request):
         payload = request.data or {}
+        template_choice, template_subject, template_message = self._extract_template_fields(payload)
         company = self._resolve_company(request, payload)
         if not company:
             return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
         job = self._resolve_job(request, company, payload)
         if not job:
             return Response({'detail': 'Job not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        resume = self._resolve_resume(request, payload)
+        if payload.get('resume') not in [None, '', 'null'] and not resume:
+            return Response({'detail': 'Resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
 
         tracking = Tracking.objects.create(
             user=request.user,
-            Job=job,
+            job=job,
+            resume=resume,
+            template_choice=template_choice,
+            template_subject=template_subject,
+            template_message=template_message,
             mailed=self._to_bool(payload.get('mailed'), default=False),
-            got_replied=self._to_bool(payload.get('got_replied'), default=False),
-            is_open=self._to_bool(payload.get('is_open'), default=True),
-            action='fresh',
+            mail_type='fresh',
         )
+        tailored_resume_id = str(payload.get('tailored_resume') or '').strip()
+        if tailored_resume_id:
+            tailored = TailoredResume.objects.filter(id=tailored_resume_id, job=job).first() if job else TailoredResume.objects.filter(id=tailored_resume_id).first()
+            if not tailored and job:
+                job_tailored = job.tailored_resumes.all().order_by('created_at', 'id')
+                tailored = job_tailored.first()
+            tracking.tailored_resume = tailored
+            tracking.save(update_fields=['tailored_resume', 'updated_at'])
         self._sync_selected_hrs(request, tracking, payload)
         action_error = self._append_action(tracking, payload)
         if action_error:
@@ -1637,7 +1908,7 @@ class ApplicationTrackingListCreateView(APIView):
         available_hr_map = {company.id: list(available)}
         return Response(
             self._serialize_tracking_row(
-                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions').select_related('Job__company').first(),
+                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking').first(),
                 available_hr_map,
             ),
             status=status.HTTP_201_CREATED,
@@ -1649,7 +1920,15 @@ class ApplicationTrackingDetailView(APIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def _get_object(self, request, tracking_id):
+        return Tracking.objects.get(id=tracking_id, user=request.user, is_removed=False)
+
+    def _get_object_any(self, request, tracking_id):
         return Tracking.objects.get(id=tracking_id, user=request.user)
+
+    def _is_hard_delete(self, request):
+        mode = str(request.query_params.get('delete_mode') or '').strip().lower()
+        hard = str(request.query_params.get('hard') or '').strip().lower()
+        return mode == 'hard' or hard in {'1', 'true', 'yes', 'y'}
 
     def _to_bool(self, value, default=False):
         if value is None:
@@ -1684,12 +1963,83 @@ class ApplicationTrackingDetailView(APIView):
         except Exception:
             return None
 
+    def _extract_template_fields(self, payload):
+        allowed = {'cold_applied', 'referral', 'job_inquire', 'custom'}
+        choice = str(payload.get('template_choice') or '').strip().lower()
+        subject = str(payload.get('template_subject') or payload.get('custom_subject') or '').strip()
+        message = str(payload.get('template_message') or '').strip()
+        legacy = str(payload.get('template_name') or '').strip()
+
+        if choice and choice not in allowed:
+            choice = ''
+        if not choice:
+            if legacy in allowed:
+                choice = legacy
+            elif legacy:
+                choice = 'custom'
+                message = message or legacy
+        if choice == 'custom' and not message and legacy and legacy not in allowed:
+            message = legacy
+        if not choice:
+            choice = 'cold_applied'
+        if choice != 'custom':
+            subject = ''
+            message = ''
+        return choice, subject, message
+
     def _serialize_tracking_row(self, row):
-        company = row.Job.company if row.Job_id and row.Job and row.Job.company_id else None
+        company = row.job.company if row.job_id and row.job and row.job.company_id else None
+        resume = row.resume if row.resume_id else None
+        tailored_resume = row.tailored_resume if getattr(row, 'tailored_resume_id', None) else None
         available = []
         if company:
             available = list(Employee.objects.filter(user=row.user, company_id=company.id).order_by('name'))
         selected = list(row.selected_hrs.all())
+        tailored_rows = []
+        oldest_tailored = None
+        if row.job_id and row.job:
+            related_tailored = list(row.job.tailored_resumes.all().order_by('created_at', 'id'))
+            tailored_rows = [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+                    'created_at': item.created_at.isoformat() if item.created_at else None,
+                }
+                for item in related_tailored
+            ]
+            if related_tailored:
+                oldest = related_tailored[0]
+                oldest_tailored = {
+                    'id': oldest.id,
+                    'name': str(oldest.name or '').strip() or f'Tailored Resume #{oldest.id}',
+                    'created_at': oldest.created_at.isoformat() if oldest.created_at else None,
+                    'builder_data': oldest.builder_data or {},
+                }
+        resume_preview = None
+        if resume:
+            resume_builder = resume.builder_data or {}
+            resume_file_url = ''
+            if getattr(resume, 'file', None):
+                try:
+                    resume_file_url = resume.file.url
+                except Exception:
+                    resume_file_url = ''
+            if builder_has_substance(resume_builder) or resume_file_url:
+                resume_preview = {
+                    'id': resume.id,
+                    'title': str(resume.title or '').strip() or f'Resume #{resume.id}',
+                    'builder_data': resume_builder,
+                    'file_url': resume_file_url,
+                }
+        tailored_resume_preview = None
+        if tailored_resume:
+            tailored_builder = tailored_resume.builder_data or {}
+            if builder_has_substance(tailored_builder):
+                tailored_resume_preview = {
+                    'id': tailored_resume.id,
+                    'title': str(tailored_resume.name or '').strip() or f'Tailored Resume #{tailored_resume.id}',
+                    'builder_data': tailored_builder,
+                }
         milestones = [
             {
                 'type': item.action_type,
@@ -1698,35 +2048,110 @@ class ApplicationTrackingDetailView(APIView):
             }
             for item in row.actions.all().order_by('created_at')[:10]
         ]
+        selected_employees = [
+            {
+                'id': emp.id,
+                'name': str(emp.name or '').strip(),
+                'email': str(emp.email or '').strip(),
+                'department': str(emp.department or '').strip(),
+                'role': str(emp.JobRole or '').strip(),
+                'contact_number': str(emp.contact_number or '').strip(),
+            }
+            for emp in selected
+        ]
+        events_query = Q(tracking=row)
+        if row.mail_tracking_id:
+            events_query = events_query | Q(tracking__isnull=True, mail_tracking_id=row.mail_tracking_id)
+        event_rows = (
+            MailTrackingEvent.objects
+            .filter(events_query)
+            .select_related('employee')
+            .order_by('created_at')
+        )
+        mail_events = []
+        for item in event_rows:
+            payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+            subject = str(payload.get('subject') or payload.get('mail_subject') or payload.get('generated_subject') or '').strip()
+            message = str(payload.get('body') or payload.get('mail_body') or payload.get('generated_body') or payload.get('message') or '').strip()
+            receiver = str(payload.get('to_email') or payload.get('recipient_email') or payload.get('receiver') or '').strip()
+            mail_events.append(
+                {
+                    'id': item.id,
+                    'employee_id': item.employee_id,
+                    'employee_name': str(item.employee.name or '').strip() if item.employee_id and item.employee else '',
+                    'mail_type': str(item.mail_type or '').strip(),
+                    'send_mode': str(item.send_mode or '').strip(),
+                    'action_at': item.action_at.isoformat() if item.action_at else '',
+                    'got_replied': bool(item.got_replied),
+                    'notes': str(item.notes or '').strip(),
+                    'subject': subject,
+                    'message': message,
+                    'to_email': receiver,
+                }
+            )
+        template_choice = str(row.template_choice or 'cold_applied').strip() or 'cold_applied'
+        template_subject = str(row.template_subject or '')
+        template_message = str(row.template_message or '')
         return {
             'id': row.id,
             'company': company.id if company else None,
             'company_name': company.name if company else '',
-            'job': row.Job.id if row.Job_id and row.Job else None,
-            'job_id': row.Job.job_id if row.Job_id and row.Job else '',
-            'role': row.Job.role if row.Job_id and row.Job else '',
-            'job_url': row.Job.job_link if row.Job_id and row.Job else '',
-            'tailored_resume_file': (row.Job.tailored_resume_file.url if row.Job_id and row.Job and getattr(row.Job, 'tailored_resume_file', None) else ''),
-            'is_closed': bool(row.Job.is_closed) if row.Job_id and row.Job else False,
-            'is_removed': bool(row.Job.is_removed) if row.Job_id and row.Job else False,
+            'job': row.job.id if row.job_id and row.job else None,
+            'job_id': row.job.job_id if row.job_id and row.job else '',
+            'role': row.job.role if row.job_id and row.job else '',
+            'job_url': row.job.job_link if row.job_id and row.job else '',
+            'tailored_resumes': tailored_rows,
+            'oldest_tailored_resume': oldest_tailored,
+            'resume_preview': resume_preview,
+            'tailored_resume_preview': tailored_resume_preview,
+            'tailored_resume': tailored_resume.id if tailored_resume else None,
+            'tailored_resume_name': str(tailored_resume.name or '').strip() if tailored_resume else '',
+            'is_closed': bool(row.job.is_closed) if row.job_id and row.job else False,
+            'is_removed': bool(row.job.is_removed) if row.job_id and row.job else False,
             'mailed': bool(row.mailed),
-            'applied_date': row.Job.applied_at.isoformat() if row.Job_id and row.Job and row.Job.applied_at else None,
-            'posting_date': row.Job.date_of_posting.isoformat() if row.Job_id and row.Job and row.Job.date_of_posting else None,
-            'is_open': bool(row.is_open),
+            'applied_date': row.job.applied_at.isoformat() if row.job_id and row.job and row.job.applied_at else None,
+            'posting_date': row.job.date_of_posting.isoformat() if row.job_id and row.job and row.job.date_of_posting else None,
+            'is_open': bool(not row.job.is_closed) if row.job_id and row.job else True,
             'available_hrs': [emp.name for emp in available],
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
-            'got_replied': bool(row.got_replied),
+            'selected_employees': selected_employees,
+            'template_choice': template_choice,
+            'template_subject': template_subject,
+            'template_message': template_message,
+            'template_name': (template_message if template_choice == 'custom' else template_choice),
+            'mail_events': mail_events,
+            'mail_type': str(row.mail_type or 'fresh'),
+            'action': str(row.mail_type or 'fresh'),
+            'got_replied': bool(row.mail_tracking.got_replied) if row.mail_tracking_id and row.mail_tracking else False,
+            'needs_tailored': False,
+            'tailoring_scope': '',
             'is_freezed': bool(row.is_freezed),
             'freezed_at': row.freezed_at.isoformat() if row.freezed_at else None,
             'mail_tracking_id': row.mail_tracking.id if row.mail_tracking_id else None,
-            'maild_at': row.mail_tracking.maild_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.maild_at else None,
+            'maild_at': row.mail_tracking.mailed_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.mailed_at else None,
+            'mailed_at': row.mail_tracking.mailed_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.mailed_at else None,
             'replied_at': row.mail_tracking.replied_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.replied_at else None,
             'milestones': milestones,
             'created_at': row.created_at.isoformat() if row.created_at else '',
             'updated_at': row.updated_at.isoformat() if row.updated_at else '',
         }
+
+    def get(self, request, tracking_id):
+        try:
+            row = (
+                Tracking.objects
+                .filter(id=tracking_id, user=request.user, is_removed=False)
+                .select_related('job__company', 'mail_tracking', 'resume', 'tailored_resume')
+                .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
+                .first()
+            )
+            if not row:
+                raise Tracking.DoesNotExist
+        except Tracking.DoesNotExist:
+            return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(self._serialize_tracking_row(row), status=status.HTTP_200_OK)
 
     def put(self, request, tracking_id):
         try:
@@ -1735,7 +2160,7 @@ class ApplicationTrackingDetailView(APIView):
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         payload = request.data or {}
-        job = row.Job
+        job = row.job
 
         company_id = payload.get('company')
         company_name = str(payload.get('company_name') or '').strip()
@@ -1756,10 +2181,6 @@ class ApplicationTrackingDetailView(APIView):
             job.role = str(payload.get('role') or '').strip() or job.role
         if job and 'job_url' in payload:
             job.job_link = str(payload.get('job_url') or '').strip()
-        if job and 'tailored_resume_file' in payload:
-            job.tailored_resume_file = str(payload.get('tailored_resume_file') or '').strip()
-        if job and request.FILES.get('tailored_resume_upload'):
-            job.tailored_resume_file = request.FILES.get('tailored_resume_upload')
         if job and 'applied_date' in payload:
             job.applied_at = self._to_date(payload.get('applied_date'))
         if job and 'posting_date' in payload:
@@ -1775,36 +2196,58 @@ class ApplicationTrackingDetailView(APIView):
 
         if 'mailed' in payload:
             row.mailed = self._to_bool(payload.get('mailed'), default=row.mailed)
-        if 'got_replied' in payload:
-            row.got_replied = self._to_bool(payload.get('got_replied'), default=row.got_replied)
-        if 'is_open' in payload:
-            row.is_open = self._to_bool(payload.get('is_open'), default=row.is_open)
-        if 'action' in payload:
-            action_text = str(payload.get('action') or '').strip()
+        if 'resume' in payload:
+            raw_resume_id = str(payload.get('resume') or '').strip()
+            if not raw_resume_id:
+                row.resume = None
+            else:
+                try:
+                    row.resume = Resume.objects.get(id=raw_resume_id, user=request.user)
+                except Resume.DoesNotExist:
+                    return Response({'detail': 'Resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        if 'tailored_resume' in payload:
+            raw_tailored_id = str(payload.get('tailored_resume') or '').strip()
+            if not raw_tailored_id:
+                row.tailored_resume = None
+            else:
+                tailored = TailoredResume.objects.filter(id=raw_tailored_id, job=row.job).first() if row.job_id and row.job else TailoredResume.objects.filter(id=raw_tailored_id).first()
+                if not tailored and row.job_id and row.job:
+                    tailored = row.job.tailored_resumes.all().order_by('created_at', 'id').first()
+                if not tailored:
+                    return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                row.tailored_resume = tailored
+        if any(key in payload for key in ['template_choice', 'template_subject', 'custom_subject', 'template_message', 'template_name']):
+            template_choice, template_subject, template_message = self._extract_template_fields(payload)
+            row.template_choice = template_choice
+            row.template_subject = template_subject
+            row.template_message = template_message
+        if 'mail_type' in payload or 'action' in payload:
+            action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
             if action_text in {'fresh', 'followed_up'}:
-                row.action = action_text
+                row.mail_type = action_text
         if 'schedule_time' in payload:
             row.schedule_time = self._to_datetime(payload.get('schedule_time'))
         if 'is_freezed' in payload:
             next_freezed = self._to_bool(payload.get('is_freezed'), default=row.is_freezed)
             row.is_freezed = next_freezed
             row.freezed_at = timezone.now() if next_freezed else None
-        if any(key in payload for key in ['maild_at', 'replied_at']):
+        if any(key in payload for key in ['maild_at', 'mailed_at', 'replied_at', 'got_replied', 'mailed']):
             if not row.mail_tracking_id:
                 row.mail_tracking = MailTracking.objects.create(
                     user=request.user,
-                    company=job.company if job and job.company_id else None,
                     employee=None,
                     job=job,
                     mailed=row.mailed,
-                    got_replied=row.got_replied,
+                    got_replied=self._to_bool(payload.get('got_replied'), default=False),
                 )
-            if 'maild_at' in payload:
-                row.mail_tracking.maild_at = self._to_datetime(payload.get('maild_at'))
+            mailed_at_payload = payload.get('mailed_at', payload.get('maild_at'))
+            if mailed_at_payload is not None:
+                row.mail_tracking.mailed_at = self._to_datetime(mailed_at_payload)
             if 'replied_at' in payload:
                 row.mail_tracking.replied_at = self._to_datetime(payload.get('replied_at'))
             row.mail_tracking.mailed = row.mailed
-            row.mail_tracking.got_replied = row.got_replied
+            if 'got_replied' in payload:
+                row.mail_tracking.got_replied = self._to_bool(payload.get('got_replied'), default=row.mail_tracking.got_replied)
             row.mail_tracking.save()
         row.save()
 
@@ -1827,7 +2270,7 @@ class ApplicationTrackingDetailView(APIView):
             row.selected_hrs.set(selected)
         elif isinstance(selected_hrs, list):
             target_names = [str(name or '').strip() for name in selected_hrs if str(name or '').strip()]
-            company_id_ref = row.Job.company_id if row.Job_id and row.Job and row.Job.company_id else None
+            company_id_ref = row.job.company_id if row.job_id and row.job and row.job.company_id else None
             selected = Employee.objects.filter(user=request.user, company_id=company_id_ref, name__in=target_names)
             row.selected_hrs.set(selected)
 
@@ -1847,21 +2290,28 @@ class ApplicationTrackingDetailView(APIView):
                 send_mode=mode,
                 action_at=action_at,
             )
-            row.action = 'followed_up' if action_type == 'followup' else 'fresh'
+            row.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
             if action_type == 'fresh':
                 row.mailed = True
-            row.save(update_fields=['action', 'mailed', 'updated_at'])
+            row.save(update_fields=['mail_type', 'mailed', 'updated_at'])
 
-        fresh = Tracking.objects.filter(id=row.id).select_related('Job__company').prefetch_related('selected_hrs', 'actions').first()
+        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking').prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').first()
         return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
         try:
-            row = self._get_object(request, tracking_id)
+            row = self._get_object_any(request, tracking_id)
         except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
-        row.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        if self._is_hard_delete(request):
+            row.hard_delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        row.is_removed = True
+        row.is_freezed = True
+        row.removed_at = timezone.now()
+        row.freezed_at = row.freezed_at or row.removed_at
+        row.save(update_fields=['is_removed', 'is_freezed', 'removed_at', 'freezed_at', 'updated_at'])
+        return Response({'status': 'soft_deleted', 'id': row.id}, status=status.HTTP_200_OK)
 
 
 class CompanyListCreateView(APIView):
@@ -1999,7 +2449,10 @@ class JobListCreateView(APIView):
     }
 
     def get(self, request):
-        rows = Job.objects.filter(user=request.user).select_related('company')
+        include_removed = str(request.query_params.get('include_removed') or '').strip().lower() in {'1', 'true', 'yes', 'y'}
+        rows = Job.objects.filter(user=request.user).select_related('company').prefetch_related('tailored_resumes')
+        if not include_removed:
+            rows = rows.filter(is_removed=False)
 
         company_id = (request.query_params.get('company_id') or '').strip()
         if company_id.isdigit():
@@ -2055,7 +2508,19 @@ class JobListCreateView(APIView):
             return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
         except ValueError as exc:
             return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        job_id_value = str(data.get('job_id') or '').strip()
+        if not job_id_value:
+            return Response({'job_id': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
+        exists = Job.objects.filter(
+            user=request.user,
+            company=company,
+            job_id__iexact=job_id_value,
+            is_removed=False,
+        ).exists()
+        if exists:
+            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
         data['company'] = company.id
+        data['job_id'] = job_id_value
         data.pop('new_company_name', None)
         serializer = JobSerializer(data=data, context={'request': request})
         if serializer.is_valid():
@@ -2072,7 +2537,15 @@ class JobDetailView(APIView):
     parser_classes = [JSONParser, FormParser, MultiPartParser]
 
     def _get_object(self, request, job_id):
+        return Job.objects.get(id=job_id, user=request.user, is_removed=False)
+
+    def _get_object_any(self, request, job_id):
         return Job.objects.get(id=job_id, user=request.user)
+
+    def _is_hard_delete(self, request):
+        mode = str(request.query_params.get('delete_mode') or '').strip().lower()
+        hard = str(request.query_params.get('hard') or '').strip().lower()
+        return mode == 'hard' or hard in {'1', 'true', 'yes', 'y'}
 
     def get(self, request, job_id):
         try:
@@ -2089,6 +2562,7 @@ class JobDetailView(APIView):
         data = request.data.copy()
         if hasattr(data, '_mutable'):
             data._mutable = True
+        target_company = row.company
         if 'company' in data or 'new_company_name' in data:
             cid = data.get('company')
             newn = data.get('new_company_name')
@@ -2102,11 +2576,24 @@ class JobDetailView(APIView):
                         new_company_name=newn,
                     )
                     data['company'] = company.id
+                    target_company = company
                 except Company.DoesNotExist:
                     return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
                 except ValueError as exc:
                     return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
             data.pop('new_company_name', None)
+        target_job_id = str(data.get('job_id') if 'job_id' in data else row.job_id).strip()
+        if not target_job_id:
+            return Response({'job_id': ['This field may not be blank.']}, status=status.HTTP_400_BAD_REQUEST)
+        duplicate = Job.objects.filter(
+            user=request.user,
+            company=target_company,
+            job_id__iexact=target_job_id,
+            is_removed=False,
+        ).exclude(id=row.id).exists()
+        if duplicate:
+            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
+        data['job_id'] = target_job_id
         serializer = JobSerializer(row, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated = serializer.save()
@@ -2115,214 +2602,13 @@ class JobDetailView(APIView):
 
     def delete(self, request, job_id):
         try:
-            row = self._get_object(request, job_id)
+            row = self._get_object_any(request, job_id)
         except Job.DoesNotExist:
             return Response({'detail': 'Job not found.'}, status=status.HTTP_404_NOT_FOUND)
-        row.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class RunAnalysisView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def _structure_score(self, resume: Resume):
-        """
-        Checks experience/projects structure:
-        - Every experience/project should have bullet points.
-        - At least 3 bullets per experience/project.
-        - Bullet length ideally 50-100 chars (penalize <50 and >100).
-        - Prefer quantified bullets (numbers).
-        Returns (structure_score_0_100, feedback_notes)
-        """
-        builder = resume.builder_data or {}
-        experiences = builder.get("experiences") or []
-        projects = builder.get("projects") or []
-
-        exp_scores = []
-        exp_notes = []
-        for exp in experiences:
-            company = str(exp.get("company") or "").strip() or "Experience"
-            bullets = _extract_bullets_from_html(exp.get("highlights") or "")
-            score, meta = _score_bullets(bullets)
-            exp_scores.append(score)
-            if meta["count"] < 3:
-                exp_notes.append(f"{company}: only {meta['count']} bullets (need 3+).")
-            if meta["length_score"] < 70:
-                exp_notes.append(f"{company}: bullets are too short/long (aim 50-100 chars).")
-            if meta["numbers_score"] < 40:
-                exp_notes.append(f"{company}: add more numbers (%, time, users, revenue, latency).")
-
-        proj_scores = []
-        proj_notes = []
-        for proj in projects:
-            name = str(proj.get("name") or "").strip() or "Project"
-            bullets = _extract_bullets_from_html(proj.get("highlights") or "")
-            score, meta = _score_bullets(bullets)
-            proj_scores.append(score)
-            if meta["count"] < 3:
-                proj_notes.append(f"{name}: only {meta['count']} bullets (need 3+).")
-            if meta["length_score"] < 70:
-                proj_notes.append(f"{name}: bullets are too short/long (aim 50-100 chars).")
-
-        exp_score = round(sum(exp_scores) / len(exp_scores)) if exp_scores else 0
-        proj_score = round(sum(proj_scores) / len(proj_scores)) if proj_scores else 0
-        structure = round(exp_score * 0.7 + proj_score * 0.3)
-
-        notes = []
-        if not experiences:
-            notes.append("No experiences found. Add experience entries with 3+ bullets each.")
-        if experiences and exp_score < 70:
-            notes.append("Experience bullets need improvement (3+ bullets each, 50-100 chars, add numbers).")
-        if projects and proj_score < 70:
-            notes.append("Project bullets need improvement (3+ bullets each, 50-100 chars).")
-        if exp_notes:
-            notes.extend(exp_notes[:6])
-        if proj_notes:
-            notes.extend(proj_notes[:6])
-        return structure, " ".join(notes).strip()
-
-    def _length_score(self, resume: Resume) -> int:
-        text = str(resume.original_text or "").strip()
-        length = len(text)
-        if length >= 800:
-            return 100
-        if length >= 600:
-            return 85
-        if length >= 450:
-            return 70
-        if length >= 300:
-            return 55
-        return 35
-
-    def post(self, request):
-        resume_id = request.data.get('resume_id')
-        job_role_id = request.data.get('job_role_id')
-        extra_keywords = request.data.get('keywords')
-        profiles = request.data.get('profiles') or request.data.get('keyword_profiles') or []
-        profile_keywords = request.data.get('profile_keywords') or request.data.get('profileKeywords') or None
-
-        if not resume_id:
-            return Response(
-                {'detail': 'resume_id is required.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            resume = Resume.objects.get(id=resume_id, user=request.user)
-        except Resume.DoesNotExist:
-            return Response({'detail': 'Resume not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        job_role = None
-        if job_role_id:
-            try:
-                job_role = JobRole.objects.get(id=job_role_id, user=request.user)
-            except JobRole.DoesNotExist:
-                return Response({'detail': 'Job role not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        resume_text = (resume.original_text or '').lower()
-
-        # Normalize profiles to list[str]
-        if isinstance(profiles, str):
-            profiles = [p.strip().lower() for p in profiles.split(",") if p.strip()]
-        elif isinstance(profiles, list):
-            profiles = [str(p).strip().lower() for p in profiles if str(p).strip()]
-        else:
-            profiles = []
-
-        # Optional per-request overrides from UI.
-        overrides = {}
-        if isinstance(profile_keywords, dict):
-            for key, val in profile_keywords.items():
-                k = str(key).strip().lower()
-                if k not in PRESET_KEYWORDS:
-                    continue
-                if isinstance(val, str):
-                    overrides[k] = [x.strip().lower() for x in val.split(",") if x.strip()]
-                elif isinstance(val, list):
-                    overrides[k] = [str(x).strip().lower() for x in val if str(x).strip()]
-
-        selected_any = bool(profiles) or bool(extra_keywords) or bool(job_role)
-
-        # Keyword mode (user selected presets/custom keywords/job role)
-        keywords = []
-        if job_role:
-            keywords.extend([str(k).strip().lower() for k in (job_role.required_keywords or []) if str(k).strip()])
-
-        for p in profiles:
-            if p in PRESET_KEYWORDS:
-                keywords.extend(overrides.get(p) or PRESET_KEYWORDS[p])
-
-        # Only include custom keywords if explicitly requested via "custom" profile,
-        # or if no profiles are provided but keywords are.
-        allow_custom = (not profiles and bool(extra_keywords)) or ("custom" in profiles)
-        if allow_custom and extra_keywords:
-            if isinstance(extra_keywords, str):
-                extra = [k.strip().lower() for k in extra_keywords.split(",") if k.strip()]
-            elif isinstance(extra_keywords, list):
-                extra = [str(k).strip().lower() for k in extra_keywords if str(k).strip()]
-            else:
-                extra = []
-            keywords.extend(extra)
-
-        # De-dup while preserving order
-        seen = set()
-        deduped = []
-        for kw in keywords:
-            if kw in seen:
-                continue
-            seen.add(kw)
-            deduped.append(kw)
-        keywords = deduped
-
-        structure_score, structure_note = self._structure_score(resume)
-        mandatory_mult, mandatory_note = _mandatory_sections_multiplier(resume)
-        link_adj, link_note = _link_adjustment(resume)
-
-        if not selected_any or not keywords:
-            # Basic mode: no keyword profiles selected
-            length_score = self._length_score(resume)
-            ats_score = round(length_score * 0.3 + structure_score * 0.7)
-            matched_keywords, missing_keywords, keyword_score = [], [], 0
-            feedback = (
-                f"Basic checks used. Length score: {length_score}. Structure score: {structure_score}. "
-                f"{structure_note} Aim for ~800+ characters and 3+ bullets per experience/project with 50-100 chars each."
-            ).strip()
-        else:
-            matched_keywords = [kw for kw in keywords if kw in resume_text]
-            missing_keywords = [kw for kw in keywords if kw not in matched_keywords]
-            keyword_score = round((len(matched_keywords) / len(keywords)) * 100) if keywords else 0
-            ats_score = round(keyword_score * 0.6 + structure_score * 0.4)
-            feedback = (
-                f"Keyword score: {keyword_score}%. Structure score: {structure_score}. "
-                f"Matched {len(matched_keywords)} of {len(keywords)} keywords. "
-                f"{structure_note} Add missing keywords with measurable achievements."
-            ).strip()
-
-        # Apply link adjustment before mandatory section penalty.
-        ats_score = max(0, min(100, int(ats_score) + int(link_adj)))
-        feedback = f"{feedback} {link_note}".strip()
-
-        if mandatory_mult < 1:
-            ats_score = round(ats_score * mandatory_mult)
-            if mandatory_note:
-                feedback = f"{feedback} {mandatory_note} ATS reduced due to missing sections."
-
-        analysis = ResumeAnalysis.objects.create(
-            user=request.user,
-            resume=resume,
-            resume_title=(resume.title or ''),
-            job_role=job_role,
-            ats_score=ats_score,
-            keyword_score=keyword_score,
-            matched_keywords=matched_keywords,
-            missing_keywords=missing_keywords,
-            ai_feedback=feedback,
-        )
-
-        if ats_score >= 75:
-            resume.status = 'optimized'
-            resume.optimized_text = resume.original_text
-            resume.save(update_fields=['status', 'optimized_text', 'updated_at'])
-
-        serializer = ResumeAnalysisSerializer(analysis)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        if self._is_hard_delete(request):
+            row.hard_delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        row.is_removed = True
+        row.is_closed = True
+        row.save(update_fields=['is_removed', 'is_closed', 'updated_at'])
+        return Response({'status': 'soft_deleted', 'id': row.id}, status=status.HTTP_200_OK)

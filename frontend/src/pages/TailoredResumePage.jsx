@@ -15,7 +15,7 @@ function TailoredResumePage() {
       referenceResumeIdSessionKey="tailoredBuilderReferenceResumeId"
       aiModelSessionKey="tailoredBuilderAiModel"
       tailorModeSessionKey="tailoredBuilderTailorMode"
-      showSaveButton={false}
+      showSaveButton
       disableAutoLoadDefaultResume
     />
   )

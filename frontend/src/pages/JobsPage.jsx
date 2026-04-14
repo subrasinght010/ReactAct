@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import ResumeSheet from '../components/ResumeSheet'
 
 import { createJob, deleteJob, fetchCompanies, fetchJobs, updateJob } from '../api'
-
-const JD_SESSION_KEY = 'tailoredBuilderJdText'
-const JOB_META_SESSION_KEY = 'tailoredBuilderJobMeta'
 
 const ROLE_PRESETS = ['Backend', 'Software', 'Fullstack']
 
@@ -43,6 +40,17 @@ function PencilIcon() {
   )
 }
 
+function PreviewIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z"
+      />
+    </svg>
+  )
+}
+
 function emptyJobForm() {
   return {
     editingId: null,
@@ -55,21 +63,16 @@ function emptyJobForm() {
     date_of_posting: toDateInput(new Date().toISOString()),
     applied_at: '',
     is_closed: false,
-    is_removed: false,
-    tailored_resume_file: null,
-    existing_tailored_resume_url: '',
   }
 }
 
 function JobsPage() {
   const access = localStorage.getItem('access') || ''
-  const navigate = useNavigate()
   const [rows, setRows] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize] = useState(10)
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
-  const [selectedIds, setSelectedIds] = useState([])
   const [companyOptions, setCompanyOptions] = useState([])
   const [companyReloadTick, setCompanyReloadTick] = useState(0)
   const [jobForm, setJobForm] = useState(null)
@@ -84,6 +87,8 @@ function JobsPage() {
     applied: 'all',
   })
   const [ordering, setOrdering] = useState('-date_of_posting')
+  const [previewResume, setPreviewResume] = useState(null)
+  const [selectedIds, setSelectedIds] = useState([])
 
   const bumpFilters = (patch) => {
     setFilters((prev) => ({ ...prev, ...patch }))
@@ -122,6 +127,25 @@ function JobsPage() {
   }, [access, page, pageSize, filters, ordering])
 
   useEffect(() => {
+    setSelectedIds((prev) => prev.filter((id) => rows.some((row) => row.id === id)))
+  }, [rows])
+
+  const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id))
+  const toggleSelect = (rowId, checked) => {
+    setSelectedIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, rowId]))
+      return prev.filter((id) => id !== rowId)
+    })
+  }
+  const toggleSelectAll = (checked) => {
+    if (!checked) {
+      setSelectedIds([])
+      return
+    }
+    setSelectedIds(rows.map((row) => row.id))
+  }
+
+  useEffect(() => {
     load()
   }, [load])
 
@@ -158,9 +182,6 @@ function JobsPage() {
       date_of_posting: toDateInput(row.date_of_posting),
       applied_at: toDateInput(row.applied_at),
       is_closed: Boolean(row.is_closed),
-      is_removed: Boolean(row.is_removed),
-      tailored_resume_file: null,
-      existing_tailored_resume_url: row.tailored_resume_file_url || '',
     })
   }
 
@@ -173,15 +194,6 @@ function JobsPage() {
       return { ...payload, company: Number(companySel) }
     }
     return payload
-  }
-
-  const appendCompanyToFormData = (fd, companySel, newCompanyRaw) => {
-    const rawNew = String(newCompanyRaw || '').trim()
-    if (rawNew) {
-      fd.append('new_company_name', rawNew)
-    } else if (companySel) {
-      fd.append('company', String(companySel))
-    }
   }
 
   const submitJobForm = async () => {
@@ -208,34 +220,14 @@ function JobsPage() {
         date_of_posting: jobForm.date_of_posting || null,
         applied_at: jobForm.applied_at || null,
         is_closed: Boolean(jobForm.is_closed),
-        is_removed: Boolean(jobForm.is_removed),
       }
 
-      if (jobForm.tailored_resume_file) {
-        const fd = new FormData()
-        appendCompanyToFormData(fd, companySel, rawNew)
-        fd.append('job_id', jobId)
-        fd.append('role', role)
-        fd.append('job_link', String(jobForm.job_link || '').trim())
-        fd.append('jd_text', jd)
-        if (jobForm.date_of_posting) fd.append('date_of_posting', String(jobForm.date_of_posting))
-        if (jobForm.applied_at) fd.append('applied_at', String(jobForm.applied_at))
-        fd.append('is_closed', jobForm.is_closed ? 'true' : 'false')
-        fd.append('is_removed', jobForm.is_removed ? 'true' : 'false')
-        fd.append('tailored_resume_file', jobForm.tailored_resume_file)
-        if (jobForm.editingId) {
-          await updateJob(access, jobForm.editingId, fd)
-        } else {
-          await createJob(access, fd)
-        }
+      let jsonPayload = { ...base }
+      jsonPayload = appendCompanyToPayload(jsonPayload, companySel, rawNew)
+      if (jobForm.editingId) {
+        await updateJob(access, jobForm.editingId, jsonPayload)
       } else {
-        let jsonPayload = { ...base }
-        jsonPayload = appendCompanyToPayload(jsonPayload, companySel, rawNew)
-        if (jobForm.editingId) {
-          await updateJob(access, jobForm.editingId, jsonPayload)
-        } else {
-          await createJob(access, jsonPayload)
-        }
+        await createJob(access, jsonPayload)
       }
       setJobForm(null)
       setCompanyReloadTick((t) => t + 1)
@@ -245,46 +237,41 @@ function JobsPage() {
     }
   }
 
-  const goTailorWithJob = (job) => {
-    sessionStorage.setItem(JD_SESSION_KEY, String(job.jd_text || ''))
-    sessionStorage.setItem(
-      JOB_META_SESSION_KEY,
-      JSON.stringify({
-        id: job.id,
-        job_id: job.job_id,
-        role: job.role,
-        company_name: job.company_name,
-        job_link: job.job_link,
-      }),
-    )
-    navigate('/tailored-builder')
+  const bulkDeleteSelected = async () => {
+    if (!selectedIds.length) return
+    try {
+      const results = await Promise.allSettled(selectedIds.map((id) => deleteJob(access, id)))
+      const failed = results.filter((item) => item.status === 'rejected').length
+      if (failed) {
+        setError(`${failed} job(s) could not be deleted.`)
+      } else {
+        setError('')
+      }
+      setSelectedIds([])
+      await load()
+    } catch (err) {
+      setError(err.message || 'Could not delete selected jobs.')
+    }
   }
 
-  const toggleSelect = (rowId, checked) => {
-    setSelectedIds((prev) => {
-      if (checked) return Array.from(new Set([...prev, rowId]))
-      return prev.filter((id) => id !== rowId)
-    })
-  }
-
-  const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id))
-  const toggleSelectAll = (checked) => {
-    setSelectedIds(checked ? rows.map((row) => row.id) : [])
-  }
-
-  const removeSelected = async () => {
-    const toDelete = [...selectedIds]
-    await Promise.all(
-      toDelete.map(async (id) => {
-        try {
-          await deleteJob(access, id)
-        } catch {
-          // ignore single failures
-        }
-      }),
-    )
-    setSelectedIds([])
-    await load()
+  const bulkMarkClosed = async () => {
+    if (!selectedIds.length) return
+    try {
+      const targetRows = rows.filter((row) => selectedIds.includes(row.id))
+      const results = await Promise.allSettled(
+        targetRows.map((row) => updateJob(access, row.id, { is_closed: true })),
+      )
+      const failed = results.filter((item) => item.status === 'rejected').length
+      if (failed) {
+        setError(`${failed} job(s) could not be marked closed.`)
+      } else {
+        setError('')
+      }
+      setSelectedIds([])
+      await load()
+    } catch (err) {
+      setError(err.message || 'Could not mark selected jobs as closed.')
+    }
   }
 
   return (
@@ -295,10 +282,9 @@ function JobsPage() {
           <p className="subtitle">Filter in one row, add or edit jobs, create a company by name when it is not in the list (names are trimmed and de-duplicated).</p>
         </div>
         <div className="actions">
+          <button type="button" className="secondary" onClick={bulkMarkClosed} disabled={!selectedIds.length || loading}>Mark Closed</button>
+          <button type="button" className="secondary" onClick={bulkDeleteSelected} disabled={!selectedIds.length || loading}>Delete Selected</button>
           <button type="button" className="secondary" onClick={openCreateForm}>Add job</button>
-          <button type="button" className="secondary" onClick={removeSelected} disabled={!selectedIds.length}>
-            Remove selected
-          </button>
         </div>
       </div>
 
@@ -379,15 +365,13 @@ function JobsPage() {
           <thead>
             <tr>
               <th>
-                <input type="checkbox" checked={allSelected} onChange={(e) => toggleSelectAll(e.target.checked)} />
+                <input type="checkbox" checked={allSelected} onChange={(event) => toggleSelectAll(event.target.checked)} />
               </th>
               <th>Job ID</th>
               <th>Company</th>
               <th>Role</th>
               <th>Posting date</th>
-              <th>Closed</th>
-              <th>Removed</th>
-              <th>Tailored file</th>
+              <th>Resume</th>
               <th>Job link</th>
               <th>Applied</th>
               <th>Applied date</th>
@@ -401,22 +385,27 @@ function JobsPage() {
                   <input
                     type="checkbox"
                     checked={selectedIds.includes(row.id)}
-                    onChange={(e) => toggleSelect(row.id, e.target.checked)}
+                    onChange={(event) => toggleSelect(row.id, event.target.checked)}
                   />
                 </td>
                 <td>{row.job_id || '—'}</td>
                 <td>{row.company_name || '—'}</td>
                 <td>{row.role || '—'}</td>
                 <td>{formatDisplayDate(row.date_of_posting)}</td>
-                <td>{row.is_closed ? 'Yes' : 'No'}</td>
-                <td>{row.is_removed ? 'Yes' : 'No'}</td>
-                <td>
-                  {row.has_tailored_resume ? (
-                    <button type="button" className="jobs-tailor-link" onClick={() => goTailorWithJob(row)}>
-                      Yes — open tailor
-                    </button>
+                <td className="jobs-tailored-cell">
+                  {row.resume_preview ? (
+                    <div className="tracking-actions-compact">
+                      <button
+                        type="button"
+                        className="secondary tracking-icon-btn"
+                        title="Preview resume"
+                        onClick={() => setPreviewResume(row.resume_preview)}
+                      >
+                        <PreviewIcon />
+                      </button>
+                    </div>
                   ) : (
-                    'No'
+                    ''
                   )}
                 </td>
                 <td>
@@ -556,42 +545,40 @@ function JobsPage() {
                 onChange={(e) => setJobForm((prev) => ({ ...prev, applied_at: e.target.value }))}
               />
             </label>
-            <div className="jobs-checkbox-row">
-              <label className="tracking-check jobs-form-check">
-                <input
-                  type="checkbox"
-                  checked={jobForm.is_closed}
-                  onChange={(e) => setJobForm((prev) => ({ ...prev, is_closed: e.target.checked }))}
-                />
-                <span>Closed (yes)</span>
-              </label>
-              <label className="tracking-check jobs-form-check">
-                <input
-                  type="checkbox"
-                  checked={jobForm.is_removed}
-                  onChange={(e) => setJobForm((prev) => ({ ...prev, is_removed: e.target.checked }))}
-                />
-                <span>Removed (yes)</span>
-              </label>
-            </div>
-            {jobForm.existing_tailored_resume_url ? (
-              <p className="hint">
-                Current tailored file:
-                {' '}
-                <a href={jobForm.existing_tailored_resume_url} target="_blank" rel="noreferrer">Open</a>
-              </p>
+            {jobForm.editingId ? (
+              <div className="jobs-checkbox-row">
+                <label className="tracking-check jobs-form-check">
+                  <input
+                    type="checkbox"
+                    checked={jobForm.is_closed}
+                    onChange={(e) => setJobForm((prev) => ({ ...prev, is_closed: e.target.checked }))}
+                  />
+                  <span>Closed (yes)</span>
+                </label>
+              </div>
             ) : null}
-            <label>
-              {jobForm.editingId ? 'Replace tailored resume file' : 'Tailored resume file'}
-              <input
-                type="file"
-                accept=".pdf,.doc,.docx"
-                onChange={(e) => setJobForm((prev) => ({ ...prev, tailored_resume_file: e.target.files?.[0] || null }))}
-              />
-            </label>
             <div className="actions">
               <button type="button" onClick={submitJobForm}>{jobForm.editingId ? 'Save' : 'Create'}</button>
               <button type="button" className="secondary" onClick={() => setJobForm(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewResume ? (
+        <div className="modal-overlay" onClick={() => setPreviewResume(null)}>
+          <div className="modal-panel" style={{ width: 'min(920px, 96vw)' }} onClick={(event) => event.stopPropagation()}>
+            <h2>Resume Preview</h2>
+            <p className="subtitle">{previewResume.title || 'Resume'}</p>
+            {previewResume.builder_data && Object.keys(previewResume.builder_data).length ? (
+              <section className="preview-only" style={{ maxHeight: '80vh', overflow: 'auto' }}>
+                <ResumeSheet form={previewResume.builder_data} />
+              </section>
+            ) : (
+              <p className="hint">No builder data available for preview.</p>
+            )}
+            <div className="actions">
+              <button type="button" className="secondary" onClick={() => setPreviewResume(null)}>Close</button>
             </div>
           </div>
         </div>

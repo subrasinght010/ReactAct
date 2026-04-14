@@ -2,14 +2,15 @@ from django.contrib.auth.models import User
 from rest_framework import serializers
 
 from .models import (
-    JobRole,
     Resume,
-    ResumeAnalysis,
-    TailoredJobRun,
+    TailoredResume,
     MailTracking,
     Company,
     Employee,
     Job,
+    UserProfile,
+    Achievement,
+    Interview,
 )
 
 
@@ -26,21 +27,6 @@ class SignupSerializer(serializers.ModelSerializer):
             email=validated_data.get('email', ''),
             password=validated_data['password'],
         )
-
-
-class JobRoleSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = JobRole
-        fields = [
-            'id',
-            'title',
-            'company',
-            'description',
-            'required_keywords',
-            'created_at',
-            'updated_at',
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 class ResumeSerializer(serializers.ModelSerializer):
@@ -60,60 +46,38 @@ class ResumeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'optimized_text', 'status', 'created_at', 'updated_at']
 
 
-class ResumeAnalysisSerializer(serializers.ModelSerializer):
-    resume_title = serializers.SerializerMethodField()
-    job_role_title = serializers.SerializerMethodField()
-
-    def get_resume_title(self, obj):
-        if getattr(obj, 'resume', None) and getattr(obj.resume, 'title', None):
-            return obj.resume.title
-        return getattr(obj, 'resume_title', '') or ''
-
-    def get_job_role_title(self, obj):
-        return obj.job_role.title if obj.job_role else ''
-
-    class Meta:
-        model = ResumeAnalysis
-        fields = [
-            'id',
-            'resume',
-            'resume_title',
-            'job_role',
-            'job_role_title',
-            'ats_score',
-            'keyword_score',
-            'matched_keywords',
-            'missing_keywords',
-            'ai_feedback',
-            'created_at',
-        ]
-        read_only_fields = fields
-
-
-class TailoredJobRunSerializer(serializers.ModelSerializer):
+class TailoredResumeSerializer(serializers.ModelSerializer):
+    job_id = serializers.IntegerField(source='job.id', read_only=True)
+    job_label = serializers.SerializerMethodField()
+    resume_id = serializers.IntegerField(source='resume.id', read_only=True)
     resume_title = serializers.SerializerMethodField()
 
+    def get_job_label(self, obj):
+        if not obj.job_id or not obj.job:
+            return ''
+        return f"{obj.job.job_id} - {obj.job.role}"
+
     def get_resume_title(self, obj):
-        if getattr(obj, 'resume', None) and getattr(obj.resume, 'title', None):
-            return obj.resume.title
-        return ''
+        if not obj.resume_id or not obj.resume:
+            return ''
+        return obj.resume.title
 
     class Meta:
-        model = TailoredJobRun
+        model = TailoredResume
         fields = [
             'id',
-            'resume',
-            'resume_title',
-            'company_name',
-            'job_title',
+            'name',
+            'builder_data',
+            'job',
             'job_id',
-            'job_url',
-            'jd_text',
-            'match_score',
-            'keywords',
+            'job_label',
+            'resume',
+            'resume_id',
+            'resume_title',
             'created_at',
+            'updated_at',
         ]
-        read_only_fields = fields
+        read_only_fields = ['id', 'job_id', 'job_label', 'resume_id', 'resume_title', 'created_at', 'updated_at']
 
 
 class MailTrackingSerializer(serializers.ModelSerializer):
@@ -277,28 +241,39 @@ class CompanySerializer(serializers.ModelSerializer):
 
 class JobSerializer(serializers.ModelSerializer):
     company_name = serializers.SerializerMethodField()
-    tailored_resume_file_url = serializers.SerializerMethodField()
     has_tailored_resume = serializers.SerializerMethodField()
+    tailored_resumes = serializers.SerializerMethodField()
+    resume_preview = serializers.SerializerMethodField()
     applied = serializers.SerializerMethodField()
-    tailored_resume_file = serializers.FileField(write_only=True, required=False, allow_null=True)
 
     def get_company_name(self, obj):
         return obj.company.name if getattr(obj, 'company', None) else ''
 
-    def get_tailored_resume_file_url(self, obj):
-        if not getattr(obj, 'tailored_resume_file', None) or not obj.tailored_resume_file:
-            return ''
-        request = self.context.get('request')
-        try:
-            url = obj.tailored_resume_file.url
-        except ValueError:
-            return ''
-        if request:
-            return request.build_absolute_uri(url)
-        return url
-
     def get_has_tailored_resume(self, obj):
-        return bool(getattr(obj, 'tailored_resume_file', None) and obj.tailored_resume_file)
+        return obj.tailored_resumes.exists()
+
+    def get_tailored_resumes(self, obj):
+        rows = obj.tailored_resumes.all().order_by('created_at', 'id')
+        return [
+            {
+                'id': item.id,
+                'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+            }
+            for item in rows
+        ]
+
+    def get_resume_preview(self, obj):
+        first = obj.tailored_resumes.all().order_by('created_at', 'id').first()
+        if not first:
+            return None
+        data = first.builder_data or {}
+        if not isinstance(data, dict) or not data:
+            return None
+        return {
+            'id': first.id,
+            'title': str(first.name or '').strip() or f'Tailored Resume #{first.id}',
+            'builder_data': data,
+        }
 
     def get_applied(self, obj):
         return obj.applied_at is not None
@@ -310,9 +285,9 @@ class JobSerializer(serializers.ModelSerializer):
             'job_id',
             'role',
             'job_link',
-            'tailored_resume_file',
-            'tailored_resume_file_url',
             'has_tailored_resume',
+            'tailored_resumes',
+            'resume_preview',
             'company',
             'company_name',
             'jd_text',
@@ -327,7 +302,6 @@ class JobSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'company_name',
-            'tailored_resume_file_url',
             'has_tailored_resume',
             'applied',
             'created_at',
@@ -337,3 +311,54 @@ class JobSerializer(serializers.ModelSerializer):
 
 # Backward-compatible alias used by existing views/endpoints.
 ApplicationTrackingSerializer = MailTrackingSerializer
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserProfile
+        fields = [
+            'id',
+            'full_name',
+            'email',
+            'contact_number',
+            'linkedin_url',
+            'github_url',
+            'portfolio_url',
+            'current_employer',
+            'years_of_experience',
+            'location',
+            'summary',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class AchievementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Achievement
+        fields = [
+            'id',
+            'name',
+            'achievement',
+            'skills',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class InterviewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Interview
+        fields = [
+            'id',
+            'company_name',
+            'job_role',
+            'stage',
+            'interview_at',
+            'notes',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']

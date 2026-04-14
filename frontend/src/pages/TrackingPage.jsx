@@ -1,13 +1,63 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useId, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import ResumeSheet from '../components/ResumeSheet'
 
 import {
   createTrackingRow,
   deleteTrackingRow,
+  fetchCompanies,
+  fetchEmployees,
+  fetchJobs,
+  fetchResumes,
   fetchTrackingRows,
   updateTrackingRow,
 } from '../api'
 
 const EMPTY_MILESTONE_DOTS = 10
+
+function DetailIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z"
+      />
+    </svg>
+  )
+}
+
+function EditIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm18-11.5a1 1 0 0 0 0-1.41l-1.34-1.34a1 1 0 0 0-1.41 0l-1.13 1.13l2.75 2.75L21 5.75Z"
+      />
+    </svg>
+  )
+}
+
+function DeleteIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v9h-2V9Zm4 0h2v9h-2V9ZM7 9h2v9H7V9Zm-1 12h12a1 1 0 0 0 1-1V8H5v12a1 1 0 0 0 1 1Z"
+      />
+    </svg>
+  )
+}
+
+function PreviewIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z"
+      />
+    </svg>
+  )
+}
 
 function toDateInput(value) {
   if (!value) return ''
@@ -36,30 +86,63 @@ function rowLastActionType(row) {
   return String(items[items.length - 1]?.type || '')
 }
 
-function buildHrOptions(row) {
-  const names = Array.isArray(row?.available_hrs) ? row.available_hrs : []
-  const ids = Array.isArray(row?.available_hr_ids) ? row.available_hr_ids : []
-  return names.map((name, index) => ({
-    id: ids[index] || null,
-    name: String(name || '').trim(),
-  })).filter((item) => item.name)
+function rowLastSendMode(row) {
+  const items = row?.milestones || []
+  if (!items.length) return ''
+  return String(items[items.length - 1]?.mode || '')
 }
 
 function uniqueArray(values) {
   return Array.from(new Set((Array.isArray(values) ? values : []).map((x) => String(x || '').trim()).filter(Boolean)))
 }
 
+const TEMPLATE_CHOICES = [
+  { value: 'cold_applied', label: 'Cold Applied' },
+  { value: 'referral', label: 'Referral' },
+  { value: 'job_inquire', label: 'Job Inquire' },
+  { value: 'custom', label: 'Custom' },
+]
+
+function SearchableDatalistSelect({ value, onChange, options, placeholder, disabled = false }) {
+  const listId = useId()
+  const [text, setText] = useState('')
+
+  useEffect(() => {
+    const found = (options || []).find((opt) => String(opt.value) === String(value || ''))
+    setText(found ? String(found.label || '') : '')
+  }, [options, value])
+
+  return (
+    <>
+      <input
+        list={listId}
+        value={text}
+        disabled={disabled}
+        placeholder={placeholder}
+        onChange={(event) => {
+          const nextText = event.target.value
+          setText(nextText)
+          const matched = (options || []).find((opt) => String(opt.label || '').toLowerCase() === nextText.toLowerCase())
+          onChange(matched ? String(matched.value) : '')
+        }}
+      />
+      <datalist id={listId}>
+        {(options || []).map((opt) => (
+          <option key={String(opt.value)} value={String(opt.label || '')} />
+        ))}
+      </datalist>
+    </>
+  )
+}
+
 function TrackingPage() {
   const access = localStorage.getItem('access') || ''
+  const navigate = useNavigate()
   const [rows, setRows] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize] = useState(8)
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
-  const [selectedIds, setSelectedIds] = useState([])
-  const [rowControls, setRowControls] = useState({})
-  const [applyStateByRow, setApplyStateByRow] = useState({})
-  const [openHrPickerId, setOpenHrPickerId] = useState(null)
   const [createForm, setCreateForm] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -70,10 +153,28 @@ function TrackingPage() {
     mailed: 'all',
     gotReplied: 'all',
     lastAction: 'all',
-    orderByApplied: 'desc',
   })
+  const [ordering, setOrdering] = useState('-applied_at')
+  const [selectedIds, setSelectedIds] = useState([])
   const [editForm, setEditForm] = useState(null)
+  const [companyOptions, setCompanyOptions] = useState([])
+  const [jobOptions, setJobOptions] = useState([])
+  const [employeeOptions, setEmployeeOptions] = useState([])
+  const [resumeOptions, setResumeOptions] = useState([])
+  const [previewResume, setPreviewResume] = useState(null)
 
+  const tailoredOptionsForJob = (jobId) => {
+    const job = jobOptions.find((item) => String(item.id) === String(jobId || ''))
+    if (!job) return []
+    const options = Array.isArray(job.tailored_resumes) ? [...job.tailored_resumes] : []
+    options.sort((a, b) => {
+      const aTime = new Date(a?.created_at || 0).getTime()
+      const bTime = new Date(b?.created_at || 0).getTime()
+      if (aTime !== bTime) return aTime - bTime
+      return Number(a?.id || 0) - Number(b?.id || 0)
+    })
+    return options
+  }
   const load = async () => {
     if (!access) {
       setRows([])
@@ -91,20 +192,6 @@ function TrackingPage() {
       if (data?.page && Number(data.page) !== page) {
         setPage(Number(data.page))
       }
-      setRowControls((prev) => {
-        const next = { ...prev }
-        for (const row of list) {
-          const key = String(row.id)
-          if (!next[key]) {
-            next[key] = {
-              actionType: rowHasFreshMilestone(row) ? 'followup' : 'fresh',
-              sendMode: 'now',
-              actionAt: '',
-            }
-          }
-        }
-        return next
-      })
     } catch (err) {
       setError(err.message || 'Failed to load tracking rows.')
     } finally {
@@ -116,67 +203,110 @@ function TrackingPage() {
     load()
   }, [access, page, pageSize])
 
+  useEffect(() => {
+    if (!access) return
+    ;(async () => {
+      try {
+        const [companiesData, resumesData] = await Promise.all([
+          fetchCompanies(access, { page: 1, page_size: 300 }),
+          fetchResumes(access).catch(() => []),
+        ])
+        const companyRows = Array.isArray(companiesData?.results) ? companiesData.results : []
+        setCompanyOptions(companyRows)
+        setResumeOptions(Array.isArray(resumesData) ? resumesData : [])
+      } catch {
+        setCompanyOptions([])
+        setResumeOptions([])
+      }
+    })()
+  }, [access])
+
+  const hydrateCompanyDependent = async (companyId) => {
+    if (!companyId) {
+      setJobOptions([])
+      setEmployeeOptions([])
+      return
+    }
+    try {
+      const [jobsData, employeesData] = await Promise.all([
+        fetchJobs(access, { page: 1, page_size: 300, company_id: companyId }),
+        fetchEmployees(access, companyId),
+      ])
+      const jobs = Array.isArray(jobsData?.results) ? jobsData.results : []
+      const emps = Array.isArray(employeesData) ? employeesData : []
+      setJobOptions(jobs)
+      setEmployeeOptions(emps)
+    } catch {
+      setJobOptions([])
+      setEmployeeOptions([])
+    }
+  }
+
   const openCreateForm = () => {
     setCreateForm({
-      company_name: '',
-      job_id: '',
-      role: '',
-      job_url: '',
-      tailored_resume_file: '',
-      tailored_resume_upload: null,
+      company: '',
+      job: '',
+      department: '',
+      template_name: '',
+      template_subject: '',
+      template_choice: 'cold_applied',
+      has_attachment: false,
+      resume_id: '',
+      tailored_resume_id: '',
+      is_freezed: false,
       mailed: false,
       got_replied: false,
       applied_date: toDateInput(new Date().toISOString()),
       posting_date: toDateInput(new Date().toISOString()),
       is_open: true,
-      selected_hrs: [],
+      selected_hr_ids: [],
     })
   }
 
   const createRow = async () => {
     if (!createForm) return
-    const companyName = String(createForm.company_name || '').trim()
-    const jobId = String(createForm.job_id || '').trim()
-    const role = String(createForm.role || '').trim()
-    if (!companyName || !jobId || !role) {
-      setError('Company Name, Job ID, and Role are required.')
+    if (!createForm.company || !createForm.job) {
+      setError('Select company and job from dropdowns.')
       return
     }
+    const selectedCompany = companyOptions.find((c) => String(c.id) === String(createForm.company))
+    const selectedJob = jobOptions.find((j) => String(j.id) === String(createForm.job))
+    const companyName = String(selectedCompany?.name || '').trim()
+    const jobId = String(selectedJob?.job_id || '').trim()
+    const role = String(selectedJob?.role || '').trim()
+    const jobUrl = String(selectedJob?.job_link || '').trim()
+    const resolvedTemplate = createForm.template_choice === 'custom'
+      ? String(createForm.template_name || '').trim()
+      : String(createForm.template_choice || '').trim()
+    const resolvedTemplateSubject = createForm.template_choice === 'custom'
+      ? String(createForm.template_subject || '').trim()
+      : ''
+    const resolvedTemplateChoice = String(createForm.template_choice || '').trim() || 'cold_applied'
+    const resolvedTemplateMessage = resolvedTemplateChoice === 'custom' ? resolvedTemplate : ''
     try {
-      const payload = createForm.tailored_resume_upload ? new FormData() : {
+      const payload = {
+        company: createForm.company || null,
+        job: createForm.job || null,
         company_name: companyName,
         job_id: jobId,
         role,
-        job_url: String(createForm.job_url || '').trim(),
+        job_url: jobUrl,
+        template_choice: resolvedTemplateChoice,
+        template_subject: resolvedTemplateSubject,
+        template_message: resolvedTemplateMessage,
+        template_name: resolvedTemplate,
+        resume: createForm.has_attachment ? (createForm.resume_id || null) : null,
+        tailored_resume: createForm.has_attachment ? (createForm.tailored_resume_id || null) : null,
+        is_freezed: Boolean(createForm.is_freezed),
         mailed: Boolean(createForm.mailed),
         got_replied: Boolean(createForm.got_replied),
         applied_date: createForm.applied_date || null,
         posting_date: createForm.posting_date || null,
         is_open: Boolean(createForm.is_open),
-        selected_hrs: Array.isArray(createForm.selected_hrs) ? createForm.selected_hrs : [],
-      }
-      if (payload instanceof FormData) {
-        payload.append('company_name', companyName)
-        payload.append('job_id', jobId)
-        payload.append('role', role)
-        payload.append('job_url', String(createForm.job_url || '').trim())
-        payload.append('mailed', String(Boolean(createForm.mailed)))
-        payload.append('got_replied', String(Boolean(createForm.got_replied)))
-        payload.append('applied_date', String(createForm.applied_date || ''))
-        payload.append('posting_date', String(createForm.posting_date || ''))
-        payload.append('is_open', String(Boolean(createForm.is_open)))
-        payload.append('tailored_resume_upload', createForm.tailored_resume_upload)
+        selected_hr_ids: Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids : [],
       }
       const created = await createTrackingRow(access, payload)
       setRows((prev) => [created, ...prev])
-      setRowControls((prev) => ({
-        ...prev,
-        [String(created.id)]: {
-          actionType: 'fresh',
-          sendMode: 'now',
-          actionAt: '',
-        },
-      }))
       setCreateForm(null)
       await load()
     } catch (err) {
@@ -184,95 +314,94 @@ function TrackingPage() {
     }
   }
 
-  const updateHrQuick = async (row, selectedValues) => {
-    const hrOptions = buildHrOptions(row)
-    const selected = uniqueArray(selectedValues)
-    const selectedHrIds = Array.from(
-      new Set(
-        hrOptions
-          .filter((item) => selected.includes(item.name) && item.id)
-          .map((item) => Number(item.id))
-          .filter((id) => Number.isFinite(id)),
-      ),
-    )
-    try {
-      const updated = await updateTrackingRow(access, row.id, {
-        selected_hrs: selected,
-        selected_hr_ids: selectedHrIds,
-      })
-      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
-    } catch (err) {
-      setError(err.message || 'Could not update HR selection.')
-    }
-  }
-
-  const toggleFreeze = async (row) => {
-    try {
-      const updated = await updateTrackingRow(access, row.id, { is_freezed: !row.is_freezed })
-      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
-    } catch (err) {
-      setError(err.message || 'Could not update freeze state.')
-    }
-  }
-
   const openEditForm = (row) => {
-    const hrOptions = buildHrOptions(row)
+    const incomingTemplateChoice = String(row.template_choice || '').trim()
+    const computedChoice = ['cold_applied', 'referral', 'job_inquire', 'custom'].includes(incomingTemplateChoice)
+      ? incomingTemplateChoice
+      : (
+        ['cold_applied', 'referral', 'job_inquire'].includes(String(row.template_name || '').trim())
+          ? String(row.template_name || '').trim()
+          : 'custom'
+      )
+    const customTemplateText = computedChoice === 'custom'
+      ? String(row.template_message || row.template_name || '')
+      : ''
+    const customTemplateSubject = computedChoice === 'custom'
+      ? String(row.template_subject || '')
+      : ''
     setEditForm({
       id: row.id,
       company: row.company || '',
+      job: row.job || '',
+      department: '',
       company_name: row.company_name || '',
       job_id: row.job_id || '',
       role: row.role || '',
       job_url: row.job_url || '',
-      tailored_resume_file: row.tailored_resume_file || '',
-      tailored_resume_upload: null,
+      template_name: customTemplateText,
+      template_subject: customTemplateSubject,
+      template_choice: computedChoice,
+      has_attachment: Boolean(row.resume_preview || row.tailored_resume),
+      resume_id: row.resume_preview?.id ? String(row.resume_preview.id) : '',
+      tailored_resume_id: row.tailored_resume ? String(row.tailored_resume) : '',
+      is_freezed: Boolean(row.is_freezed),
       mailed: Boolean(row.mailed),
       applied_date: toDateInput(row.applied_date),
       posting_date: toDateInput(row.posting_date),
       is_open: Boolean(row.is_open),
-      hrOptions,
-      selected_hrs: uniqueArray(row.selected_hrs),
+      selected_hr_ids: Array.isArray(row.selected_hr_ids) ? row.selected_hr_ids.map((id) => String(id)) : [],
       got_replied: Boolean(row.got_replied),
     })
+    hydrateCompanyDependent(row.company || '')
   }
 
   const saveEditForm = async () => {
     if (!editForm) return
-    const uniqueSelectedHrs = uniqueArray(editForm.selected_hrs)
-    const selectedHrIds = editForm.hrOptions
-      .filter((option) => uniqueSelectedHrs.includes(option.name) && option.id)
-      .map((option) => option.id)
+    if (!editForm.company || !editForm.job) {
+      setError('Select company and job from dropdowns.')
+      return
+    }
+    const selectedCompany = companyOptions.find((c) => String(c.id) === String(editForm.company))
+    const selectedJob = jobOptions.find((j) => String(j.id) === String(editForm.job))
+    const companyName = String(selectedCompany?.name || editForm.company_name || '').trim()
+    const jobId = String(selectedJob?.job_id || editForm.job_id || '').trim()
+    const role = String(selectedJob?.role || editForm.role || '').trim()
+    const jobUrl = String(selectedJob?.job_link || editForm.job_url || '').trim()
+    const resolvedTemplate = editForm.template_choice === 'custom'
+      ? String(editForm.template_name || '').trim()
+      : String(editForm.template_choice || '').trim()
+    const resolvedTemplateSubject = editForm.template_choice === 'custom'
+      ? String(editForm.template_subject || '').trim()
+      : ''
+    const resolvedTemplateChoice = String(editForm.template_choice || '').trim() || 'cold_applied'
+    const resolvedTemplateMessage = resolvedTemplateChoice === 'custom' ? resolvedTemplate : ''
+    const selectedHrIds = Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids : []
     const basePayload = {
       company: editForm.company || null,
-      company_name: editForm.company_name,
-      job_id: editForm.job_id,
-      role: editForm.role,
-      job_url: editForm.job_url,
+      job: editForm.job || null,
+      company_name: companyName,
+      job_id: jobId,
+      role,
+      job_url: jobUrl,
+      template_choice: resolvedTemplateChoice,
+      template_subject: resolvedTemplateSubject,
+      template_message: resolvedTemplateMessage,
+      template_name: resolvedTemplate,
+      resume: editForm.resume_id || null,
+      tailored_resume: editForm.tailored_resume_id || null,
+      is_freezed: Boolean(editForm.is_freezed),
       mailed: editForm.mailed,
       applied_date: editForm.applied_date || null,
       posting_date: editForm.posting_date || null,
       is_open: editForm.is_open,
-      selected_hrs: uniqueSelectedHrs,
       selected_hr_ids: selectedHrIds,
       got_replied: editForm.got_replied,
     }
     try {
-      let payload = basePayload
-      if (editForm.tailored_resume_upload) {
-        payload = new FormData()
-        payload.append('company', String(editForm.company || ''))
-        payload.append('company_name', String(editForm.company_name || ''))
-        payload.append('job_id', String(editForm.job_id || ''))
-        payload.append('role', String(editForm.role || ''))
-        payload.append('job_url', String(editForm.job_url || ''))
-        payload.append('mailed', String(Boolean(editForm.mailed)))
-        payload.append('applied_date', String(editForm.applied_date || ''))
-        payload.append('posting_date', String(editForm.posting_date || ''))
-        payload.append('is_open', String(Boolean(editForm.is_open)))
-        payload.append('got_replied', String(Boolean(editForm.got_replied)))
-        uniqueSelectedHrs.forEach((name) => payload.append('selected_hrs', name))
-        selectedHrIds.forEach((id) => payload.append('selected_hr_ids', String(id)))
-        payload.append('tailored_resume_upload', editForm.tailored_resume_upload)
+      const payload = {
+        ...basePayload,
+        resume: editForm.has_attachment ? (editForm.resume_id || null) : null,
+        tailored_resume: editForm.has_attachment ? (editForm.tailored_resume_id || null) : null,
       }
       const updated = await updateTrackingRow(access, editForm.id, payload)
       setRows((prev) => prev.map((row) => (row.id === editForm.id ? updated : row)))
@@ -285,97 +414,46 @@ function TrackingPage() {
   const removeRow = async (rowId) => {
     try {
       await deleteTrackingRow(access, rowId)
-      setSelectedIds((prev) => prev.filter((id) => id !== rowId))
       await load()
     } catch (err) {
       setError(err.message || 'Could not delete row.')
     }
   }
 
-  const removeSelected = async () => {
-    const toDelete = [...selectedIds]
-    await Promise.all(
-      toDelete.map(async (id) => {
-        try {
-          await deleteTrackingRow(access, id)
-        } catch {
-          // no-op
-        }
-      }),
-    )
-    setSelectedIds([])
-    await load()
-  }
-
-  const toggleSelect = (rowId, checked) => {
-    setSelectedIds((prev) => {
-      if (checked) return Array.from(new Set([...prev, rowId]))
-      return prev.filter((id) => id !== rowId)
-    })
-  }
-
-  const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id))
-  const toggleSelectAll = (checked) => {
-    setSelectedIds(checked ? rows.map((row) => row.id) : [])
-  }
-
-  const setActionField = (rowId, key, value) => {
-    setRowControls((prev) => {
-      const current = prev[String(rowId)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
-      return {
-        ...prev,
-        [String(rowId)]: {
-          ...current,
-          [key]: value,
-        },
-      }
-    })
-  }
-
-  const applyAction = async (row) => {
-    if (row.is_freezed) return
-    setApplyStateByRow((prev) => ({
-      ...prev,
-      [String(row.id)]: { status: 'saving', message: 'Applying...' },
-    }))
-    const controls = rowControls[String(row.id)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
-    const canFollowUp = rowHasFreshMilestone(row)
-    const actionType = canFollowUp ? controls.actionType : 'fresh'
-    if (actionType === 'followup' && !canFollowUp) return
-    if (controls.sendMode === 'schedule' && !controls.actionAt) {
-      setError('Pick a date/time for scheduled action.')
-      setApplyStateByRow((prev) => ({
-        ...prev,
-        [String(row.id)]: { status: 'error', message: 'Pick date/time' },
-      }))
-      return
-    }
+  const bulkDeleteSelected = async () => {
+    if (!selectedIds.length) return
     try {
-      const updated = await updateTrackingRow(access, row.id, {
-        append_action: {
-          type: actionType,
-          send_mode: controls.sendMode,
-          action_at: controls.sendMode === 'schedule' ? controls.actionAt : null,
-        },
-      })
-      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
-      setApplyStateByRow((prev) => ({
-        ...prev,
-        [String(row.id)]: { status: 'success', message: 'Applied' },
-      }))
-      setTimeout(() => {
-        setApplyStateByRow((prev) => {
-          const next = { ...prev }
-          if (next[String(row.id)]?.status === 'success') delete next[String(row.id)]
-          return next
-        })
-      }, 1400)
+      const results = await Promise.allSettled(selectedIds.map((id) => deleteTrackingRow(access, id)))
+      const failed = results.filter((item) => item.status === 'rejected').length
+      if (failed) {
+        setError(`${failed} tracking row(s) could not be deleted.`)
+      } else {
+        setError('')
+      }
+      setSelectedIds([])
+      await load()
     } catch (err) {
-      setError(err.message || 'Could not apply action.')
-      setApplyStateByRow((prev) => ({
-        ...prev,
-        [String(row.id)]: { status: 'error', message: 'Failed' },
-      }))
+      setError(err.message || 'Could not delete selected tracking rows.')
+    }
+  }
+
+  const bulkFreezeSelected = async () => {
+    if (!selectedIds.length) return
+    try {
+      const targetRows = filteredRows.filter((row) => selectedIds.includes(row.id))
+      const results = await Promise.allSettled(
+        targetRows.map((row) => updateTrackingRow(access, row.id, { is_freezed: true })),
+      )
+      const failed = results.filter((item) => item.status === 'rejected').length
+      if (failed) {
+        setError(`${failed} tracking row(s) could not be freezed.`)
+      } else {
+        setError('')
+      }
+      setSelectedIds([])
+      await load()
+    } catch (err) {
+      setError(err.message || 'Could not freeze selected tracking rows.')
     }
   }
 
@@ -393,12 +471,73 @@ function TrackingPage() {
       return true
     })
     out.sort((a, b) => {
-      const aTime = new Date(a.applied_date || 0).getTime()
-      const bTime = new Date(b.applied_date || 0).getTime()
-      return filters.orderByApplied === 'asc' ? aTime - bTime : bTime - aTime
+      const aApplied = new Date(a.applied_date || 0).getTime()
+      const bApplied = new Date(b.applied_date || 0).getTime()
+      const aCreated = new Date(a.created_at || 0).getTime()
+      const bCreated = new Date(b.created_at || 0).getTime()
+      const aCompany = String(a.company_name || '').toLowerCase()
+      const bCompany = String(b.company_name || '').toLowerCase()
+      const aJob = String(a.job_id || '').toLowerCase()
+      const bJob = String(b.job_id || '').toLowerCase()
+      const aRole = String(a.role || '').toLowerCase()
+      const bRole = String(b.role || '').toLowerCase()
+
+      switch (ordering) {
+      case 'applied_at':
+        return aApplied - bApplied
+      case '-created_at':
+        return bCreated - aCreated
+      case 'created_at':
+        return aCreated - bCreated
+      case 'company_name':
+        return aCompany.localeCompare(bCompany)
+      case '-company_name':
+        return bCompany.localeCompare(aCompany)
+      case 'job_id':
+        return aJob.localeCompare(bJob)
+      case '-job_id':
+        return bJob.localeCompare(aJob)
+      case 'role':
+        return aRole.localeCompare(bRole)
+      case '-role':
+        return bRole.localeCompare(aRole)
+      case '-applied_at':
+      default:
+        return bApplied - aApplied
+      }
     })
     return out
-  }, [rows, filters])
+  }, [rows, filters, ordering])
+
+  const createTailoredOptions = useMemo(
+    () => (createForm?.job ? tailoredOptionsForJob(createForm.job) : []),
+    [createForm?.job, jobOptions],
+  )
+  const editTailoredOptions = useMemo(
+    () => (editForm?.job ? tailoredOptionsForJob(editForm.job) : []),
+    [editForm?.job, jobOptions],
+  )
+  const orderedResumeOptions = useMemo(() => {
+    const options = [...(Array.isArray(resumeOptions) ? resumeOptions : [])]
+    options.sort((a, b) => {
+      const aTime = new Date(a?.created_at || 0).getTime()
+      const bTime = new Date(b?.created_at || 0).getTime()
+      if (aTime !== bTime) return aTime - bTime
+      return Number(a?.id || 0) - Number(b?.id || 0)
+    })
+    return options
+  }, [resumeOptions])
+
+  const allSelected = filteredRows.length > 0 && filteredRows.every((row) => selectedIds.includes(row.id))
+  const toggleSelect = (rowId, checked) => {
+    setSelectedIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, rowId]))
+      return prev.filter((id) => id !== rowId)
+    })
+  }
+  const toggleSelectAll = (checked) => {
+    setSelectedIds(checked ? filteredRows.map((row) => row.id) : [])
+  }
 
   return (
     <main className="page page-wide page-plain mx-auto w-full">
@@ -408,8 +547,9 @@ function TrackingPage() {
           <p className="subtitle">Compact tracking with HR dropdown, freeze control, and persisted wavy milestones.</p>
         </div>
         <div className="actions">
-          <button type="button" className="secondary" onClick={openCreateForm}>Add Row</button>
-          <button type="button" className="secondary" onClick={removeSelected}>Remove Selected</button>
+          <button type="button" className="secondary" onClick={bulkFreezeSelected} disabled={!selectedIds.length || loading}>Mark Freezed</button>
+          <button type="button" className="secondary" onClick={bulkDeleteSelected} disabled={!selectedIds.length || loading}>Delete Selected</button>
+          <button type="button" className="secondary" onClick={openCreateForm}>Add Tracking</button>
         </div>
       </div>
 
@@ -420,7 +560,21 @@ function TrackingPage() {
         <label>Mailed<select value={filters.mailed} onChange={(event) => setFilters((prev) => ({ ...prev, mailed: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Replied (got_replied)<select value={filters.gotReplied} onChange={(event) => setFilters((prev) => ({ ...prev, gotReplied: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Last Action<select value={filters.lastAction} onChange={(event) => setFilters((prev) => ({ ...prev, lastAction: event.target.value }))}><option value="all">All</option><option value="fresh">Fresh</option><option value="followup">Follow Up</option></select></label>
-        <label>Order By Applied<select value={filters.orderByApplied} onChange={(event) => setFilters((prev) => ({ ...prev, orderByApplied: event.target.value }))}><option value="desc">Newest</option><option value="asc">Oldest</option></select></label>
+        <label>
+          Sort
+          <select value={ordering} onChange={(event) => setOrdering(event.target.value)}>
+            <option value="-applied_at">Applied ↓</option>
+            <option value="applied_at">Applied ↑</option>
+            <option value="-created_at">Created ↓</option>
+            <option value="created_at">Created ↑</option>
+            <option value="company_name">Company A-Z</option>
+            <option value="-company_name">Company Z-A</option>
+            <option value="job_id">Job ID A-Z</option>
+            <option value="-job_id">Job ID Z-A</option>
+            <option value="role">Role A-Z</option>
+            <option value="-role">Role Z-A</option>
+          </select>
+        </label>
       </section>
 
       {error ? <p className="error">{error}</p> : null}
@@ -430,130 +584,70 @@ function TrackingPage() {
         <table className="tracking-table tracking-table-compact">
           <thead>
             <tr>
-              <th><input type="checkbox" checked={allSelected} onChange={(event) => toggleSelectAll(event.target.checked)} /></th>
+              <th>
+                <input type="checkbox" checked={allSelected} onChange={(event) => toggleSelectAll(event.target.checked)} />
+              </th>
               <th>Company</th>
               <th>Job ID</th>
-              <th>HR</th>
+              <th>Employee</th>
               <th>Mailed</th>
               <th>Replied</th>
-              <th>Action</th>
-              <th>Time</th>
+              <th>Mail Type</th>
               <th>Send</th>
               <th>Freeze</th>
-              <th>Apply</th>
-              <th>Edit</th>
-              <th>Remove</th>
+              <th>Template Type</th>
+              <th>Resume</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {filteredRows.map((row) => {
-              const controls = rowControls[String(row.id)] || { actionType: 'fresh', sendMode: 'now', actionAt: '' }
-              const applyState = applyStateByRow[String(row.id)] || { status: '', message: '' }
-              const canFollowUp = rowHasFreshMilestone(row)
               const milestones = Array.isArray(row.milestones) ? row.milestones : []
-              const availableHrOptions = buildHrOptions(row)
               const selectedHrValues = uniqueArray(row.selected_hrs)
+              const linkedPreviewResume = row.resume_preview || row.tailored_resume_preview || null
 
               return (
                 <Fragment key={`row-wrap-${row.id}`}>
                   <tr key={`data-${row.id}`}>
-                    <td><input type="checkbox" checked={selectedIds.includes(row.id)} onChange={(event) => toggleSelect(row.id, event.target.checked)} /></td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(row.id)}
+                        onChange={(event) => toggleSelect(row.id, event.target.checked)}
+                      />
+                    </td>
                     <td>{row.company_name || '-'}</td>
                     <td>{row.job_id || '-'}</td>
-                    <td>
-                      <div className="hr-multi-picker">
-                        <button
-                          type="button"
-                          className="secondary"
-                          disabled={row.is_freezed}
-                          onClick={() => setOpenHrPickerId((prev) => (prev === row.id ? null : row.id))}
-                        >
-                          {selectedHrValues.length ? `${selectedHrValues.length} selected` : 'Select HRs'}
-                        </button>
-                        {openHrPickerId === row.id ? (
-                          <div className="hr-multi-menu">
-                            {availableHrOptions.map((option) => {
-                              const isChecked = selectedHrValues.includes(option.name)
-                              return (
-                                <label key={option.id || option.name} className="hr-multi-item">
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    onChange={(event) => {
-                                      const next = event.target.checked
-                                        ? [...selectedHrValues, option.name]
-                                        : selectedHrValues.filter((value) => value !== option.name)
-                                      updateHrQuick(row, next)
-                                    }}
-                                  />
-                                  <span>{option.name}</span>
-                                </label>
-                              )
-                            })}
-                            {!availableHrOptions.length ? <p className="hint">No HR options</p> : null}
-                            <button type="button" className="secondary" onClick={() => setOpenHrPickerId(null)}>Close</button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </td>
+                    <td>{selectedHrValues.length ? selectedHrValues.join(', ') : '-'}</td>
                     <td>{row.mailed ? 'Yes' : 'No'}</td>
                     <td>{row.got_replied ? 'Yes' : 'No'}</td>
+                    <td>{rowLastActionType(row) || '-'}</td>
+                    <td>{rowLastSendMode(row) || '-'}</td>
+                    <td>{row.is_freezed ? 'Yes' : 'No'}</td>
+                    <td>{String(row.template_choice || '-').replaceAll('_', ' ')}</td>
                     <td>
-                      <select
-                        value={controls.actionType}
-                        onChange={(event) => setActionField(row.id, 'actionType', event.target.value)}
-                        disabled={row.is_freezed}
-                      >
-                        <option value="fresh">Fresh</option>
-                        <option value="followup" disabled={!canFollowUp}>Follow Up</option>
-                      </select>
+                      {linkedPreviewResume ? (
+                        <div className="tracking-actions-compact">
+                          <button
+                            type="button"
+                            className="secondary tracking-icon-btn"
+                            title="Review resume"
+                            onClick={() => setPreviewResume(linkedPreviewResume)}
+                          >
+                            <PreviewIcon />
+                          </button>
+                        </div>
+                      ) : '-'}
                     </td>
-                    <td>
-                      {controls.sendMode === 'schedule' ? (
-                        <input
-                          type="datetime-local"
-                          value={controls.actionAt || ''}
-                          onChange={(event) => setActionField(row.id, 'actionAt', event.target.value)}
-                          disabled={row.is_freezed}
-                        />
-                      ) : (
-                        <span>Server now</span>
-                      )}
-                    </td>
-                    <td>
-                      <select
-                        value={controls.sendMode}
-                        onChange={(event) => setActionField(row.id, 'sendMode', event.target.value)}
-                        disabled={row.is_freezed}
-                      >
-                        <option value="now">Now</option>
-                        <option value="schedule">Schedule</option>
-                      </select>
-                    </td>
-                    <td>
-                      <button type="button" className="secondary" onClick={() => toggleFreeze(row)}>
-                        {row.is_freezed ? 'Unfreeze' : 'Freeze'}
-                      </button>
-                    </td>
-                    <td>
-                      <div className="tracking-apply-cell">
-                        <button
-                          type="button"
-                          onClick={() => applyAction(row)}
-                          disabled={row.is_freezed || applyState.status === 'saving'}
-                        >
-                          {applyState.status === 'saving' ? 'Applying...' : 'Apply'}
-                        </button>
-                        {applyState.message ? (
-                          <span className={`tracking-apply-msg is-${applyState.status || 'idle'}`}>{applyState.message}</span>
-                        ) : null}
+                    <td className="tracking-action-cell">
+                      <div className="tracking-actions-compact">
+                        <button type="button" className="secondary tracking-icon-btn" title="Detail" onClick={() => navigate(`/tracking/${row.id}`)}><DetailIcon /></button>
+                        <button type="button" className="secondary tracking-icon-btn" title="Edit" onClick={() => openEditForm(row)} disabled={row.is_freezed}><EditIcon /></button>
+                        <button type="button" className="tracking-remove-inline tracking-icon-btn" title="Delete" onClick={() => removeRow(row.id)}><DeleteIcon /></button>
                       </div>
                     </td>
-                    <td><button type="button" className="secondary" onClick={() => openEditForm(row)} disabled={row.is_freezed}>Edit</button></td>
-                    <td><button type="button" className="tracking-remove-inline" onClick={() => removeRow(row.id)}>Remove</button></td>
                   </tr>
                   <tr className="tracking-milestone-row">
-                    <td />
                     <td colSpan={12}>
                       <div className="tracking-wave-wrap">
                         <svg className="tracking-wave-svg" viewBox="0 0 1000 44" preserveAspectRatio="none" aria-hidden="true">
@@ -600,17 +694,162 @@ function TrackingPage() {
       {createForm ? (
         <div className="modal-overlay">
           <div className="modal-panel">
-            <h2>Add Tracking Row</h2>
-            <label>Company Name*<input value={createForm.company_name} onChange={(event) => setCreateForm((prev) => ({ ...prev, company_name: event.target.value }))} /></label>
-            <label>Job ID*<input value={createForm.job_id} onChange={(event) => setCreateForm((prev) => ({ ...prev, job_id: event.target.value }))} /></label>
-            <label>Role*<input value={createForm.role} onChange={(event) => setCreateForm((prev) => ({ ...prev, role: event.target.value }))} /></label>
-            <label>Job URL<input value={createForm.job_url} onChange={(event) => setCreateForm((prev) => ({ ...prev, job_url: event.target.value }))} /></label>
-            <label>Upload Tailored Resume<input type="file" accept=".pdf,.doc,.docx" onChange={(event) => setCreateForm((prev) => ({ ...prev, tailored_resume_upload: event.target.files?.[0] || null }))} /></label>
-            <label>Mailed<select value={createForm.mailed ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, mailed: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
-            <label>Got Replied<select value={createForm.got_replied ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, got_replied: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
-            <label>Applied Date<input type="date" value={createForm.applied_date || ''} onChange={(event) => setCreateForm((prev) => ({ ...prev, applied_date: event.target.value }))} /></label>
-            <label>Posting Date<input type="date" value={createForm.posting_date || ''} onChange={(event) => setCreateForm((prev) => ({ ...prev, posting_date: event.target.value }))} /></label>
-            <label>Is Open<select value={createForm.is_open ? 'yes' : 'no'} onChange={(event) => setCreateForm((prev) => ({ ...prev, is_open: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
+            <h2>Add Tracking</h2>
+            <label>
+              Company (dropdown)
+              <SearchableDatalistSelect
+                value={createForm.company || ''}
+                placeholder="Select company"
+                options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
+                onChange={async (nextValue) => {
+                  setCreateForm((prev) => ({ ...prev, company: nextValue, job: '', selected_hr_ids: [], tailored_resume_id: '' }))
+                  await hydrateCompanyDependent(nextValue)
+                }}
+              />
+            </label>
+            <label>
+              Department
+              <SearchableDatalistSelect
+                value={createForm.department || ''}
+                placeholder="Select department"
+                options={Array.from(new Set(employeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
+                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, department: nextValue, selected_hr_ids: [] }))}
+              />
+            </label>
+            <label>
+              Employee (dropdown)
+              <SearchableDatalistSelect
+                value={(createForm.selected_hr_ids || [])[0] || ''}
+                placeholder="Select employee"
+                options={employeeOptions
+                  .filter((emp) => !createForm.department || String(emp.department || '') === String(createForm.department || ''))
+                  .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
+                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: nextValue ? [nextValue] : [] }))}
+              />
+            </label>
+            <label>
+              Job (dropdown)
+              <SearchableDatalistSelect
+                value={createForm.job || ''}
+                placeholder="Select job"
+                options={jobOptions.map((job) => ({ value: String(job.id), label: `${job.job_id || ''} - ${job.role || ''}` }))}
+                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, job: nextValue, tailored_resume_id: '' }))}
+              />
+            </label>
+            <label>
+              Selected Job Details
+              {createForm.job ? (
+                <div className="hint">
+                  {(() => {
+                    const job = jobOptions.find((j) => String(j.id) === String(createForm.job))
+                    return job ? `${job.job_id || '-'} | ${job.role || '-'} | ${job.job_link || '-'}` : 'Select job'
+                  })()}
+                </div>
+              ) : (
+                <div className="hint">Select job</div>
+              )}
+            </label>
+            <label>
+              Template
+              <SearchableDatalistSelect
+                value={createForm.template_choice || 'cold_applied'}
+                placeholder="Select template"
+                options={TEMPLATE_CHOICES}
+                onChange={(nextValue) => setCreateForm((prev) => ({
+                  ...prev,
+                  template_choice: nextValue || 'cold_applied',
+                  template_subject: nextValue === 'custom' ? prev.template_subject : '',
+                  template_name: nextValue === 'custom' ? prev.template_name : '',
+                }))}
+              />
+            </label>
+            {createForm.template_choice === 'custom' ? (
+              <>
+                <label>
+                  Subject line
+                  <textarea
+                    value={createForm.template_subject || ''}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, template_subject: event.target.value }))}
+                    placeholder="Paste custom subject line"
+                    rows={2}
+                  />
+                </label>
+                <label>
+                  Custom Template
+                  <textarea
+                    value={createForm.template_name || ''}
+                    onChange={(event) => setCreateForm((prev) => ({ ...prev, template_name: event.target.value }))}
+                    placeholder="Paste custom mail template"
+                    rows={8}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(createForm.has_attachment)}
+                onChange={(event) => setCreateForm((prev) => {
+                  const checked = event.target.checked
+                  if (checked) return { ...prev, has_attachment: true }
+                  return {
+                    ...prev,
+                    has_attachment: false,
+                    resume_id: '',
+                    tailored_resume_id: '',
+                  }
+                })}
+              />
+              {' '}
+              Attachment
+            </label>
+            {createForm.has_attachment ? (
+              <>
+                <label>
+                  Resume
+                  <SearchableDatalistSelect
+                    value={createForm.resume_id || ''}
+                    placeholder="Select resume"
+                    disabled={Boolean(createForm.tailored_resume_id)}
+                    options={orderedResumeOptions.map((resume) => ({ value: String(resume.id), label: String(resume.title || `Resume #${resume.id}`) }))}
+                    onChange={(value) => {
+                      setCreateForm((prev) => ({
+                        ...prev,
+                        resume_id: value,
+                        tailored_resume_id: value ? '' : prev.tailored_resume_id,
+                      }))
+                    }}
+                  />
+                </label>
+                {createTailoredOptions.length ? (
+                  <label>
+                    Tailored Resume
+                    <SearchableDatalistSelect
+                      value={createForm.tailored_resume_id || ''}
+                      placeholder="Select tailored resume"
+                      disabled={Boolean(createForm.resume_id)}
+                      options={createTailoredOptions.map((item) => ({ value: String(item.id), label: String(item.name || `Tailored Resume #${item.id}`) }))}
+                      onChange={(value) => {
+                        setCreateForm((prev) => ({
+                          ...prev,
+                          tailored_resume_id: value,
+                          resume_id: value ? '' : prev.resume_id,
+                        }))
+                      }}
+                    />
+                  </label>
+                ) : null}
+              </>
+            ) : null}
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(createForm.is_freezed)}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, is_freezed: event.target.checked }))}
+              />
+              {' '}
+              Freeze
+            </label>
             <div className="actions">
               <button type="button" onClick={createRow}>Create</button>
               <button type="button" className="secondary" onClick={() => setCreateForm(null)}>Cancel</button>
@@ -623,35 +862,193 @@ function TrackingPage() {
         <div className="modal-overlay">
           <div className="modal-panel">
             <h2>Edit Tracking Row</h2>
-            <label>Company Name<input value={editForm.company_name} onChange={(event) => setEditForm((prev) => ({ ...prev, company_name: event.target.value }))} /></label>
-            <label>Job ID<input value={editForm.job_id} onChange={(event) => setEditForm((prev) => ({ ...prev, job_id: event.target.value }))} /></label>
-            <label>Role<input value={editForm.role} onChange={(event) => setEditForm((prev) => ({ ...prev, role: event.target.value }))} /></label>
-            <label>Job URL<input value={editForm.job_url} onChange={(event) => setEditForm((prev) => ({ ...prev, job_url: event.target.value }))} /></label>
-            <label>Current Tailored Resume File<input value={editForm.tailored_resume_file || '-'} readOnly /></label>
-            <label>Upload New Tailored Resume<input type="file" accept=".pdf,.doc,.docx" onChange={(event) => setEditForm((prev) => ({ ...prev, tailored_resume_upload: event.target.files?.[0] || null }))} /></label>
-            <label>Mailed<select value={editForm.mailed ? 'yes' : 'no'} onChange={(event) => setEditForm((prev) => ({ ...prev, mailed: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
-            <label>Applied Date<input type="date" value={editForm.applied_date || ''} onChange={(event) => setEditForm((prev) => ({ ...prev, applied_date: event.target.value }))} /></label>
-            <label>Posting Date<input type="date" value={editForm.posting_date || ''} onChange={(event) => setEditForm((prev) => ({ ...prev, posting_date: event.target.value }))} /></label>
-            <label>Is Open<select value={editForm.is_open ? 'yes' : 'no'} onChange={(event) => setEditForm((prev) => ({ ...prev, is_open: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
             <label>
-              Selected HRs
-              <select
-                multiple
-                value={editForm.selected_hrs}
-                onChange={(event) => {
-                  const values = Array.from(event.target.selectedOptions).map((option) => option.value)
-                  setEditForm((prev) => ({ ...prev, selected_hrs: values }))
+              Company (dropdown)
+              <SearchableDatalistSelect
+                value={editForm.company || ''}
+                placeholder="Select company"
+                options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
+                onChange={async (value) => {
+                  setEditForm((prev) => ({ ...prev, company: value, job: '', selected_hr_ids: [] }))
+                  await hydrateCompanyDependent(value)
                 }}
-              >
-                {editForm.hrOptions.map((option) => (
-                  <option key={option.id || option.name} value={option.name}>{option.name}</option>
-                ))}
-              </select>
+              />
             </label>
-            <label>Got Replied<select value={editForm.got_replied ? 'yes' : 'no'} onChange={(event) => setEditForm((prev) => ({ ...prev, got_replied: event.target.value === 'yes' }))}><option value="yes">Yes</option><option value="no">No</option></select></label>
+            <label>
+              Department
+              <SearchableDatalistSelect
+                value={editForm.department || ''}
+                placeholder="Select department"
+                options={Array.from(new Set(employeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
+                onChange={(value) => setEditForm((prev) => ({ ...prev, department: value, selected_hr_ids: [] }))}
+              />
+            </label>
+            <label>
+              Employee (dropdown)
+              <SearchableDatalistSelect
+                value={(editForm.selected_hr_ids || [])[0] || ''}
+                placeholder="Select employee"
+                options={employeeOptions
+                  .filter((emp) => !editForm.department || String(emp.department || '') === String(editForm.department || ''))
+                  .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
+                onChange={(value) => {
+                  const nextValue = String(value || '').trim()
+                  setEditForm((prev) => ({ ...prev, selected_hr_ids: nextValue ? [nextValue] : [] }))
+                }}
+              />
+            </label>
+            <label>
+              Job (dropdown)
+              <SearchableDatalistSelect
+                value={editForm.job || ''}
+                placeholder="Select job"
+                options={jobOptions.map((job) => ({ value: String(job.id), label: `${job.job_id || ''} - ${job.role || ''}` }))}
+                onChange={(value) => {
+                  setEditForm((prev) => ({
+                    ...prev,
+                    job: value,
+                    tailored_resume_id: '',
+                  }))
+                }}
+              />
+            </label>
+            <label>
+              Selected Job Details
+              {editForm.job ? (
+                <div className="hint">
+                  {(() => {
+                    const job = jobOptions.find((j) => String(j.id) === String(editForm.job))
+                    if (!job) return `${editForm.job_id || '-'} | ${editForm.role || '-'} | ${editForm.job_url || '-'}`
+                    return `${job.job_id || '-'} | ${job.role || '-'} | ${job.job_link || '-'}`
+                  })()}
+                </div>
+              ) : (
+                <div className="hint">Select job</div>
+              )}
+            </label>
+            <label>
+              Template
+              <SearchableDatalistSelect
+                value={editForm.template_choice || 'cold_applied'}
+                placeholder="Select template"
+                options={TEMPLATE_CHOICES}
+                onChange={(value) => setEditForm((prev) => ({
+                  ...prev,
+                  template_choice: value || 'cold_applied',
+                  template_subject: value === 'custom' ? prev.template_subject : '',
+                  template_name: value === 'custom' ? prev.template_name : '',
+                }))}
+              />
+            </label>
+            {editForm.template_choice === 'custom' ? (
+              <>
+                <label>
+                  Subject line
+                  <textarea
+                    value={editForm.template_subject || ''}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, template_subject: event.target.value }))}
+                    placeholder="Paste custom subject line"
+                    rows={2}
+                  />
+                </label>
+                <label>
+                  Custom Template
+                  <textarea
+                    value={editForm.template_name || ''}
+                    onChange={(event) => setEditForm((prev) => ({ ...prev, template_name: event.target.value }))}
+                    placeholder="Paste custom mail template"
+                    rows={8}
+                  />
+                </label>
+              </>
+            ) : null}
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(editForm.has_attachment)}
+                onChange={(event) => setEditForm((prev) => {
+                  const checked = event.target.checked
+                  if (checked) return { ...prev, has_attachment: true }
+                  return {
+                    ...prev,
+                    has_attachment: false,
+                    resume_id: '',
+                    tailored_resume_id: '',
+                  }
+                })}
+              />
+              {' '}
+              Attachment
+            </label>
+            {editForm.has_attachment ? (
+              <>
+                <label>
+                  Resume
+                  <SearchableDatalistSelect
+                    value={editForm.resume_id || ''}
+                    placeholder="Select resume"
+                    disabled={Boolean(editForm.tailored_resume_id)}
+                    options={orderedResumeOptions.map((resume) => ({ value: String(resume.id), label: String(resume.title || `Resume #${resume.id}`) }))}
+                    onChange={(value) => {
+                      setEditForm((prev) => ({
+                        ...prev,
+                        resume_id: value,
+                        tailored_resume_id: value ? '' : prev.tailored_resume_id,
+                      }))
+                    }}
+                  />
+                </label>
+                {editTailoredOptions.length ? (
+                  <label>
+                    Tailored Resume
+                    <SearchableDatalistSelect
+                      value={editForm.tailored_resume_id || ''}
+                      placeholder="Select tailored resume"
+                      disabled={Boolean(editForm.resume_id)}
+                      options={editTailoredOptions.map((item) => ({ value: String(item.id), label: String(item.name || `Tailored Resume #${item.id}`) }))}
+                      onChange={(value) => {
+                        setEditForm((prev) => ({
+                          ...prev,
+                          tailored_resume_id: value,
+                          resume_id: value ? '' : prev.resume_id,
+                        }))
+                      }}
+                    />
+                  </label>
+                ) : null}
+              </>
+            ) : null}
+            <label>
+              <input
+                type="checkbox"
+                checked={Boolean(editForm.is_freezed)}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, is_freezed: event.target.checked }))}
+              />
+              {' '}
+              Freeze
+            </label>
             <div className="actions">
               <button type="button" onClick={saveEditForm}>Save</button>
               <button type="button" className="secondary" onClick={() => setEditForm(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {previewResume ? (
+        <div className="modal-overlay" onClick={() => setPreviewResume(null)}>
+          <div className="modal-panel" style={{ width: 'min(920px, 96vw)' }} onClick={(event) => event.stopPropagation()}>
+            <h2>Resume Preview</h2>
+            <p className="subtitle">{previewResume.title || 'Resume'}</p>
+            {previewResume.builder_data && Object.keys(previewResume.builder_data).length ? (
+              <section className="preview-only" style={{ maxHeight: '80vh', overflow: 'auto' }}>
+                <ResumeSheet form={previewResume.builder_data} />
+              </section>
+            ) : (
+              <p className="hint">No builder data available for preview.</p>
+            )}
+            <div className="actions">
+              <button type="button" className="secondary" onClick={() => setPreviewResume(null)}>Close</button>
             </div>
           </div>
         </div>

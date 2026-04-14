@@ -39,6 +39,7 @@ function CompanyPage() {
   const [pageSize] = useState(6)
   const [totalPages, setTotalPages] = useState(1)
   const [totalCount, setTotalCount] = useState(0)
+  const [ordering, setOrdering] = useState('name')
   const [filters, setFilters] = useState({
     company: '',
     hr: '',
@@ -61,7 +62,7 @@ function CompanyPage() {
   }, [employees])
 
   const filteredCompanies = useMemo(() => {
-    return companies.filter((company) => {
+    const out = companies.filter((company) => {
       const hrs = employeesByCompany[String(company.id)] || []
       const companyName = String(company.name || '').toLowerCase()
       const companyFilter = String(filters.company || '').trim().toLowerCase()
@@ -82,7 +83,26 @@ function CompanyPage() {
         return true
       })
     })
-  }, [companies, employeesByCompany, filters])
+
+    out.sort((a, b) => {
+      const aName = String(a.name || '').toLowerCase()
+      const bName = String(b.name || '').toLowerCase()
+      const aCreated = new Date(a.created_at || 0).getTime()
+      const bCreated = new Date(b.created_at || 0).getTime()
+      switch (ordering) {
+      case '-name':
+        return bName.localeCompare(aName)
+      case '-created_at':
+        return bCreated - aCreated
+      case 'created_at':
+        return aCreated - bCreated
+      case 'name':
+      default:
+        return aName.localeCompare(bName)
+      }
+    })
+    return out
+  }, [companies, employeesByCompany, filters, ordering])
 
   const load = async () => {
     if (!access) {
@@ -306,6 +326,15 @@ function CompanyPage() {
             onChange={(event) => setFilters((prev) => ({ ...prev, location: event.target.value }))}
             placeholder="Location"
           />
+        </label>
+        <label>
+          Sort
+          <select value={ordering} onChange={(event) => setOrdering(event.target.value)}>
+            <option value="name">Company A-Z</option>
+            <option value="-name">Company Z-A</option>
+            <option value="-created_at">Created ↓</option>
+            <option value="created_at">Created ↑</option>
+          </select>
         </label>
       </section>
 

@@ -4,8 +4,10 @@ import { useNavigate } from 'react-router-dom'
 import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
 import {
+  createTailoredResume,
   createResume,
   exportAtsPdfLocal,
+  fetchJobs,
   fetchResume,
   fetchResumes,
   optimizeResumeQuality,
@@ -654,7 +656,6 @@ function ResumeBuilderPage({
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
   const [pdfSaveState, setPdfSaveState] = useState({ saving: false, message: '' })
   const [importState, setImportState] = useState({ importing: false, message: '' })
-  const [atsCheckState, setAtsCheckState] = useState(null)
   const [jobDescription, setJobDescription] = useState(() => sessionStorage.getItem(jdSessionKey) || '')
   const [aiModel, setAiModel] = useState(() => sessionStorage.getItem(aiModelSessionKey) || 'gpt-4o')
   const [tailorMode, setTailorMode] = useState(() => sessionStorage.getItem(tailorModeSessionKey) || 'partial')
@@ -667,6 +668,14 @@ function ResumeBuilderPage({
     matchScore: null,
   })
   const [activeTailorAction, setActiveTailorAction] = useState('')
+  const [tailoredModal, setTailoredModal] = useState({
+    open: false,
+    name: '',
+    jobSearch: '',
+    jobId: '',
+    loading: false,
+    jobs: [],
+  })
   const [tailorReferenceBuilder, setTailorReferenceBuilder] = useState(() => {
     if (!enableTailorFlow) return null
     try {
@@ -1171,15 +1180,6 @@ function ResumeBuilderPage({
     navigate('/builder')
   }
 
-  const runAtsCheck = () => {
-    const issues = collectAtsIssues(form)
-    if (issues.length) {
-      setAtsCheckState({ ok: false, issues })
-      return
-    }
-    setAtsCheckState({ ok: true, issues: [] })
-  }
-
   const runTailorAndSave = async () => {
     if (!showJdBox || !enableTailorFlow) return
     if (tailorState.loading) return
@@ -1356,16 +1356,16 @@ function ResumeBuilderPage({
     }
   }
 
-  const saveResumeToAccount = async () => {
+  const saveResumeToAccount = async ({ titleOverride = '', forceCreate = false } = {}) => {
     const access = localStorage.getItem('access')
     if (!access) {
       navigate('/login')
-      return
+      return null
     }
 
     try {
       setSaveState({ saving: true, message: '' })
-      const derivedTitle = autoTitle
+      const derivedTitle = String(titleOverride || '').trim() || autoTitle
       const payload = {
         title: derivedTitle,
         builder_data: form,
@@ -1373,7 +1373,7 @@ function ResumeBuilderPage({
         is_default: Boolean(form.isDefaultResume),
       }
 
-      const data = resumeRecordId
+      const data = (!forceCreate && resumeRecordId)
         ? await updateResume(access, resumeRecordId, payload)
         : await createResume(access, payload)
 
@@ -1383,7 +1383,70 @@ function ResumeBuilderPage({
         ...prev,
         isDefaultResume: Boolean(data.is_default),
       }))
-      setSaveState({ saving: false, message: `Saved: ${new Date().toLocaleTimeString()}` })
+      setSaveState({
+        saving: false,
+        message: `Saved: ${new Date().toLocaleTimeString()}`,
+      })
+      return data
+    } catch (err) {
+      setSaveState({ saving: false, message: err.message || 'Save failed' })
+      return null
+    }
+  }
+
+  const saveWithRenamePrompt = async () => {
+    const suggested = String(autoTitle || '').trim() || 'My Resume'
+    const nextName = window.prompt('Rename resume title (optional):', suggested)
+    if (nextName === null) return
+    const value = String(nextName || '').trim() || suggested
+    await saveResumeToAccount({ titleOverride: value, forceCreate: false })
+  }
+
+  const openSaveToTailored = async () => {
+    const access = localStorage.getItem('access')
+    if (!access) {
+      navigate('/login')
+      return
+    }
+    const suggested = `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
+    setTailoredModal({
+      open: true,
+      name: suggested,
+      jobSearch: '',
+      jobId: '',
+      loading: true,
+      jobs: [],
+    })
+    try {
+      const data = await fetchJobs(access, { page: 1, page_size: 300, ordering: '-created_at' })
+      const jobs = Array.isArray(data?.results) ? data.results : []
+      setTailoredModal((prev) => ({ ...prev, loading: false, jobs }))
+    } catch {
+      setTailoredModal((prev) => ({ ...prev, loading: false, jobs: [] }))
+    }
+  }
+
+  const saveToTailored = async () => {
+    const access = localStorage.getItem('access')
+    if (!access) {
+      navigate('/login')
+      return
+    }
+    try {
+      setSaveState({ saving: true, message: '' })
+      const name = String(tailoredModal.name || '').trim() || `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
+      const payload = {
+        name,
+        builder_data: form,
+        resume: resumeRecordId ? Number(resumeRecordId) : null,
+        job: tailoredModal.jobId ? Number(tailoredModal.jobId) : null,
+      }
+      await createTailoredResume(access, payload)
+      setTailoredModal((prev) => ({ ...prev, open: false }))
+      setSaveState({
+        saving: false,
+        message: `Saved to Tailored: ${new Date().toLocaleTimeString()}`,
+      })
     } catch (err) {
       setSaveState({ saving: false, message: err.message || 'Save failed' })
     }
@@ -1397,18 +1460,13 @@ function ResumeBuilderPage({
         </button>
       )}
       {showSaveButton && (
-        <button type="button" onClick={saveResumeToAccount} disabled={saveState.saving}>
+        <button type="button" onClick={saveWithRenamePrompt} disabled={saveState.saving}>
           {saveState.saving ? 'Saving...' : 'Save'}
         </button>
       )}
-      {!minimalTailorUi && (
-        <button type="button" className="secondary" onClick={downloadDoc}>
-          Download DOC
-        </button>
-      )}
-      {!minimalTailorUi && (
-        <button type="button" className="secondary" onClick={runAtsCheck}>
-          ATS Check
+      {showSaveButton && enableTailorFlow && (
+        <button type="button" className="secondary" onClick={openSaveToTailored} disabled={saveState.saving}>
+          {saveState.saving ? 'Saving...' : 'Save To Tailored'}
         </button>
       )}
       {showJdBox && enableTailorFlow && (
@@ -1436,6 +1494,16 @@ function ResumeBuilderPage({
           Edit In Builder
         </button>
       )}
+      {enableTailorFlow && (
+        <>
+          <button type="button" className="secondary" onClick={() => navigate('/profile/templates')}>
+            Back Templates
+          </button>
+          <button type="button" className="secondary" onClick={() => navigate('/profile')}>
+            Resume Management
+          </button>
+        </>
+      )}
       <button type="button" className="secondary" onClick={downloadAtsPdf}>
         ATS PDF
       </button>
@@ -1446,6 +1514,16 @@ function ResumeBuilderPage({
       )}
     </div>
   )
+
+  const filteredJobsForTailored = useMemo(() => {
+    const term = String(tailoredModal.jobSearch || '').trim().toLowerCase()
+    const all = Array.isArray(tailoredModal.jobs) ? tailoredModal.jobs : []
+    if (!term) return all
+    return all.filter((job) => {
+      const combined = `${job.job_id || ''} ${job.role || ''} ${job.company_name || ''}`.toLowerCase()
+      return combined.includes(term)
+    })
+  }, [tailoredModal.jobSearch, tailoredModal.jobs])
 
   return (
     <main className="builder-layout builder-page">
@@ -1577,19 +1655,6 @@ function ResumeBuilderPage({
             <p className={importState.message.startsWith('Imported') ? 'success' : 'error'}>
               {importState.message}
             </p>
-          )}
-          {!minimalTailorUi && atsCheckState?.ok && (
-            <p className="success">ATS check passed. Resume looks parser-friendly.</p>
-          )}
-          {!minimalTailorUi && atsCheckState && !atsCheckState.ok && (
-            <div className="error-box">
-              <strong>ATS check found items to fix:</strong>
-              <ul>
-                {atsCheckState.issues.map((issue) => (
-                  <li key={issue}>{issue}</li>
-                ))}
-              </ul>
-            </div>
           )}
 
           {!minimalTailorUi && (
@@ -2073,6 +2138,53 @@ function ResumeBuilderPage({
       <section className="preview-panel">
         <ResumeSheet form={form} />
       </section>
+
+      {tailoredModal.open ? (
+        <div className="modal-overlay" onClick={() => setTailoredModal((prev) => ({ ...prev, open: false }))}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <h2>Save To Tailored</h2>
+            <label>
+              Tailored Name
+              <input
+                value={tailoredModal.name}
+                onChange={(e) => setTailoredModal((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Enter tailored resume name"
+              />
+            </label>
+            <label>
+              Search Job (Optional)
+              <input
+                value={tailoredModal.jobSearch}
+                onChange={(e) => setTailoredModal((prev) => ({ ...prev, jobSearch: e.target.value }))}
+                placeholder="Search by job id, role, company"
+              />
+            </label>
+            <label>
+              Associate Job (Optional)
+              <select
+                value={tailoredModal.jobId || ''}
+                onChange={(e) => setTailoredModal((prev) => ({ ...prev, jobId: e.target.value }))}
+                disabled={tailoredModal.loading}
+              >
+                <option value="">No job association</option>
+                {filteredJobsForTailored.map((job) => (
+                  <option key={job.id} value={job.id}>
+                    {job.job_id} - {job.role} ({job.company_name})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="actions">
+              <button type="button" onClick={saveToTailored} disabled={saveState.saving || tailoredModal.loading}>
+                {saveState.saving ? 'Saving...' : 'Save To Tailored'}
+              </button>
+              <button type="button" className="secondary" onClick={() => setTailoredModal((prev) => ({ ...prev, open: false }))}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   )
 }

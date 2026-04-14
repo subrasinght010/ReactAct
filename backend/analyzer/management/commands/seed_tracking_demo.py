@@ -49,7 +49,7 @@ class Command(BaseCommand):
         if reset:
             TrackingAction.objects.filter(tracking__user=user, tracking__Job__company__name__in=company_names).delete()
             Tracking.objects.filter(user=user, Job__company__name__in=company_names).delete()
-            MailTracking.objects.filter(user=user, company__name__in=company_names).delete()
+            MailTracking.objects.filter(user=user, job__company__name__in=company_names).delete()
             Job.objects.filter(user=user, company__name__in=company_names).delete()
             Employee.objects.filter(user=user, company__name__in=company_names).delete()
             Company.objects.filter(user=user, name__in=company_names).delete()
@@ -94,7 +94,6 @@ class Command(BaseCommand):
                     defaults={
                         "role": random.choice(roles),
                         "job_link": f"https://jobs.example.com/{company.name.lower().replace(' ', '-')}/{job_idx}",
-                        "tailored_resume_file": f"/Users/subrat/Desktop/Ats/{user.username}_{company_idx}_{job_idx}.pdf",
                         "date_of_posting": now - timedelta(days=job_idx * 2),
                         "applied_at": now - timedelta(days=job_idx),
                         "is_closed": False,
@@ -104,12 +103,10 @@ class Command(BaseCommand):
 
                 tracking, created = Tracking.objects.get_or_create(
                     user=user,
-                    Job=job,
+                    job=job,
                     defaults={
                         "mailed": True,
-                        "got_replied": job_idx % 2 == 0,
-                        "is_open": True,
-                        "action": "fresh",
+                        "mail_type": "fresh",
                         "is_freezed": False,
                     },
                 )
@@ -135,19 +132,19 @@ class Command(BaseCommand):
                         send_mode="scheduled",
                         action_at=base_time + timedelta(days=2, hours=4),
                     )
-                    tracking.action = "followed_up"
-                    tracking.save(update_fields=["action", "updated_at"])
+                    tracking.mail_type = "followed_up"
+                    tracking.save(update_fields=["mail_type", "updated_at"])
 
                 if not tracking.mail_tracking_id:
+                    replied_flag = (job_idx % 2 == 0)
                     mail = MailTracking.objects.create(
                         user=user,
-                        company=company,
                         employee=selected[0] if selected else None,
                         job=job,
                         mailed=True,
-                        got_replied=tracking.got_replied,
-                        maild_at=timezone.now() - timedelta(days=job_idx),
-                        replied_at=(timezone.now() - timedelta(days=job_idx - 1)) if tracking.got_replied else None,
+                        got_replied=replied_flag,
+                        mailed_at=timezone.now() - timedelta(days=job_idx),
+                        replied_at=(timezone.now() - timedelta(days=job_idx - 1)) if replied_flag else None,
                     )
                     tracking.mail_tracking = mail
                     tracking.save(update_fields=["mail_tracking", "updated_at"])
