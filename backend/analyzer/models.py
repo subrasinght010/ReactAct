@@ -335,6 +335,12 @@ class MailTrackingEvent(BaseModel):
         ('sent', 'Sent Now'),
         ('scheduled', 'Scheduled'),
     ]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('sent', 'Sent'),
+        ('failed', 'Failed'),
+        ('bounced', 'Bounced'),
+    ]
 
     mail_tracking = models.ForeignKey(MailTracking, on_delete=models.CASCADE, related_name='events')
     tracking = models.ForeignKey(
@@ -353,6 +359,7 @@ class MailTrackingEvent(BaseModel):
     )
     mail_type = models.CharField(max_length=20, choices=MAIL_TYPE_CHOICES)
     send_mode = models.CharField(max_length=20, choices=SEND_MODE_CHOICES, default='sent')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     action_at = models.DateTimeField()
     got_replied = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
@@ -364,6 +371,7 @@ class MailTrackingEvent(BaseModel):
             models.Index(fields=['mail_tracking', '-created_at']),
             models.Index(fields=['tracking', '-created_at']),
             models.Index(fields=['employee', '-created_at']),
+            models.Index(fields=['mail_tracking', 'status', '-created_at'], name='analyzer_ma_mail_tr_9ddbce_idx'),
         ]
 
     def __str__(self):

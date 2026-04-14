@@ -196,8 +196,21 @@ class Command(BaseCommand):
 
                 subject, body = self._build_mail(row, emp, profile, achievements, use_ai=use_ai)
                 try:
-                    if not dry_run:
-                        self._send_email(row.user, to_email, subject, body, attachment_path=attachment_path)
+                    if dry_run:
+                        self._log_event(
+                            mail_tracking=mail_tracking,
+                            tracking=row,
+                            employee=emp,
+                            success=False,
+                            subject=subject,
+                            body=body,
+                            to_email=to_email,
+                            notes="Dry run: send skipped.",
+                            event_status="pending",
+                        )
+                        continue
+
+                    self._send_email(row.user, to_email, subject, body, attachment_path=attachment_path)
 
                     # Keep employee email synced once resolved via pattern.
                     if not str(emp.email or "").strip():
@@ -226,6 +239,10 @@ class Command(BaseCommand):
                         self._set_employee_working_mail(emp, False)
                     row_failed += 1
                     total_failed += 1
+
+            if dry_run:
+                self.stdout.write(self.style.WARNING(f"[tracking:{row.id}] dry run only; planned recipients={len(employees)}"))
+                continue
 
             if row_sent > 0:
                 row.mailed = True
@@ -1012,6 +1029,7 @@ class Command(BaseCommand):
             employee=employee,
             mail_type=self._map_mail_type(tracking),
             send_mode="sent",
+            status="sent",
             action_at=now,
             got_replied=False,
             notes="Mail sent from cron command.",
@@ -1020,15 +1038,19 @@ class Command(BaseCommand):
                 "subject": subject,
                 "body": body,
                 "cc": [],
+                "status": "sent",
             },
         )
 
-    def _log_event(self, mail_tracking, tracking, employee, success, subject, body, to_email, notes):
+    def _log_event(self, mail_tracking, tracking, employee, success, subject, body, to_email, notes, event_status=None):
         now = timezone.now()
+        normalized_status = str(event_status or ("sent" if success else "failed")).strip().lower()
+        if normalized_status not in {"pending", "sent", "failed", "bounced"}:
+            normalized_status = "failed"
         history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
         history.append(
             {
-                "status": "sent" if success else "failed",
+                "status": normalized_status,
                 "to_email": to_email,
                 "subject": subject,
                 "body": body,
@@ -1047,6 +1069,7 @@ class Command(BaseCommand):
             employee=employee,
             mail_type=self._map_mail_type(tracking),
             send_mode="sent",
+            status=normalized_status,
             action_at=now,
             got_replied=False,
             notes=notes,
@@ -1055,6 +1078,6 @@ class Command(BaseCommand):
                 "subject": subject,
                 "body": body,
                 "cc": [],
-                "status": "sent" if success else "failed",
+                "status": normalized_status,
             },
         )

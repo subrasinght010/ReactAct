@@ -2441,6 +2441,7 @@ class ApplicationTrackingDetailView(APIView):
                     'employee_name': str(item.employee.name or '').strip() if item.employee_id and item.employee else '',
                     'mail_type': str(item.mail_type or '').strip(),
                     'send_mode': str(item.send_mode or '').strip(),
+                    'status': str(item.status or '').strip(),
                     'action_at': item.action_at.isoformat() if item.action_at else '',
                     'got_replied': bool(item.got_replied),
                     'notes': str(item.notes or '').strip(),

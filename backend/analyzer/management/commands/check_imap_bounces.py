@@ -244,6 +244,26 @@ class Command(BaseCommand):
             if p_to == str(recipient or "").strip().lower() and p_subject == str(subject or "").strip() and p_status == "bounced":
                 return False
 
+        latest_event = (
+            MailTrackingEvent.objects
+            .filter(mail_tracking=mail_tracking)
+            .order_by('-action_at', '-created_at')
+            .only('id', 'employee_id', 'mail_type', 'send_mode', 'status', 'raw_payload')
+        )
+        matched_event = None
+        normalized_recipient = str(recipient or "").strip().lower()
+        for item in latest_event[:120]:
+            payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+            item_to = str(payload.get("to_email") or "").strip().lower()
+            item_status = str(item.status or payload.get("status") or "").strip().lower()
+            if item_to == normalized_recipient and item_status in {"sent", "failed"}:
+                matched_event = item
+                break
+
+        employee = matched_event.employee if matched_event and matched_event.employee_id else None
+        mail_type = str(matched_event.mail_type or "").strip() if matched_event else ""
+        send_mode = str(matched_event.send_mode or "").strip() if matched_event else ""
+
         now = timezone.now()
         history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
         history.append(
@@ -252,8 +272,8 @@ class Command(BaseCommand):
                 "to_email": recipient,
                 "subject": subject,
                 "body": "",
-                "employee_id": None,
-                "employee_name": "",
+                "employee_id": employee.id if employee else None,
+                "employee_name": str(employee.name or "").strip() if employee else "",
                 "notes": "Bounce detected from IMAP inbox.",
                 "at": now.isoformat(),
             }
@@ -264,9 +284,10 @@ class Command(BaseCommand):
         MailTrackingEvent.objects.create(
             mail_tracking=mail_tracking,
             tracking=tracking,
-            employee=None,
-            mail_type="followup" if str(tracking.mail_type or "").strip().lower() == "followed_up" else "fresh",
-            send_mode="sent",
+            employee=employee,
+            mail_type=mail_type or ("followup" if str(tracking.mail_type or "").strip().lower() == "followed_up" else "fresh"),
+            send_mode=send_mode or "sent",
+            status="bounced",
             action_at=now,
             got_replied=False,
             notes="Bounce detected from IMAP inbox.",
@@ -302,17 +323,31 @@ class Command(BaseCommand):
             tracking.save(update_fields=["mail_delivery_status", "updated_at"])
             return
 
-        history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
         latest_by_email = {}
-        for row in history:
-            if not isinstance(row, dict):
+        event_rows = (
+            MailTrackingEvent.objects
+            .filter(mail_tracking=mail_tracking)
+            .order_by('action_at', 'created_at')
+        )
+        for item in event_rows:
+            payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+            to_email = str(payload.get("to_email") or "").strip().lower()
+            status = str(item.status or payload.get("status") or "").strip().lower()
+            if not to_email or status not in {"sent", "failed", "bounced"}:
                 continue
-            to_email = str(row.get("to_email") or "").strip().lower()
-            status = str(row.get("status") or "").strip().lower()
-            if not to_email:
-                continue
-            if status in {"sent", "failed", "bounced"}:
-                latest_by_email[to_email] = status
+            latest_by_email[to_email] = status
+
+        if not latest_by_email:
+            history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
+            for row in history:
+                if not isinstance(row, dict):
+                    continue
+                to_email = str(row.get("to_email") or "").strip().lower()
+                status = str(row.get("status") or "").strip().lower()
+                if not to_email:
+                    continue
+                if status in {"sent", "failed", "bounced"}:
+                    latest_by_email[to_email] = status
 
         sent_count = sum(1 for value in latest_by_email.values() if value == "sent")
         failed_count = sum(1 for value in latest_by_email.values() if value in {"failed", "bounced"})
