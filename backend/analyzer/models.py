@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.db.models.functions import Lower
 
 
 class BaseModel(models.Model):
@@ -234,6 +235,13 @@ class Tracking(BaseModel):
         related_name='application_tracking_rows',
     )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tracking_rows')
+    achievement = models.ForeignKey(
+        'Achievement',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='tracking_rows',
+    )
     resume = models.ForeignKey(
         Resume,
         on_delete=models.SET_NULL,
@@ -258,9 +266,9 @@ class Tracking(BaseModel):
         max_length=20,
         choices=[
             ('pending', 'Pending'),
-            ('sent', 'Sent'),
+            ('complete_sent', 'Complete Sent'),
             ('failed', 'Failed'),
-            ('partially_sent', 'Partially Sent'),
+            ('partial_sent', 'Partial Sent'),
         ],
         default='pending',
     )
@@ -416,6 +424,13 @@ class Achievement(BaseModel):
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['user', '-created_at']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                Lower('name'),
+                'user',
+                name='uniq_achievement_user_name_ci',
+            ),
         ]
 
     def __str__(self):

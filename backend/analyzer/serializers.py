@@ -401,6 +401,20 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class AchievementSerializer(serializers.ModelSerializer):
+    def validate_name(self, value):
+        text = str(value or '').strip()
+        if not text:
+            raise serializers.ValidationError('Name is required.')
+        request = self.context.get('request') if isinstance(self.context, dict) else None
+        user = getattr(request, 'user', None)
+        if getattr(user, 'is_authenticated', False):
+            rows = Achievement.objects.filter(user=user, name__iexact=text)
+            if self.instance is not None:
+                rows = rows.exclude(id=self.instance.id)
+            if rows.exists():
+                raise serializers.ValidationError('Achievement name already exists.')
+        return text
+
     class Meta:
         model = Achievement
         fields = [

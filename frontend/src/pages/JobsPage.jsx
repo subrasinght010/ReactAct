@@ -78,14 +78,13 @@ function JobsPage() {
   const [companyReloadTick, setCompanyReloadTick] = useState(0)
   const [jobForm, setJobForm] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [formError, setFormError] = useState('')
   const [filters, setFilters] = useState({
     companyName: '',
     postingDate: '',
     appliedDate: '',
     jobId: '',
     role: '',
-    applied: 'all',
   })
   const [ordering, setOrdering] = useState('-date_of_posting')
   const [previewResume, setPreviewResume] = useState(null)
@@ -103,7 +102,6 @@ function JobsPage() {
       return
     }
     setLoading(true)
-    setError('')
     try {
       const data = await fetchJobs(access, {
         page,
@@ -113,7 +111,6 @@ function JobsPage() {
         applied_date: filters.appliedDate || undefined,
         job_id: filters.jobId.trim() || undefined,
         role: filters.role.trim() || undefined,
-        applied: filters.applied === 'all' ? undefined : filters.applied,
         ordering,
       })
       const list = Array.isArray(data?.results) ? data.results : []
@@ -121,7 +118,7 @@ function JobsPage() {
       setTotalCount(Number(data?.count ?? list.length))
       setTotalPages(Number(data?.total_pages || 1))
     } catch (err) {
-      setError(err.message || 'Failed to load jobs.')
+      console.error(err.message || 'Failed to load jobs.')
     } finally {
       setLoading(false)
     }
@@ -168,10 +165,12 @@ function JobsPage() {
   }, [access, companyReloadTick])
 
   const openCreateForm = () => {
+    setFormError('')
     setJobForm(emptyJobForm())
   }
 
   const openEditForm = (row) => {
+    setFormError('')
     setJobForm({
       editingId: row.id,
       company: row.company != null ? String(row.company) : '',
@@ -204,13 +203,14 @@ function JobsPage() {
     const companySel = String(jobForm.company || '').trim()
     const rawNew = String(jobForm.new_company_name || '').trim()
     if (!jobId || !role) {
-      setError('Job ID and Role are required.')
+      setFormError('Job ID and Role are required.')
       return
     }
     if (!rawNew && !companySel) {
-      setError('Select a company or enter a new company name.')
+      setFormError('Select a company or enter a new company name.')
       return
     }
+    setFormError('')
     try {
       const jd = String(jobForm.jd_text || '')
       const base = {
@@ -234,24 +234,18 @@ function JobsPage() {
       setCompanyReloadTick((t) => t + 1)
       await load()
     } catch (err) {
-      setError(err.message || 'Could not save job.')
+      setFormError(err.message || 'Could not save job.')
     }
   }
 
   const bulkDeleteSelected = async () => {
     if (!selectedIds.length) return
     try {
-      const results = await Promise.allSettled(selectedIds.map((id) => deleteJob(access, id)))
-      const failed = results.filter((item) => item.status === 'rejected').length
-      if (failed) {
-        setError(`${failed} job(s) could not be deleted.`)
-      } else {
-        setError('')
-      }
+      await Promise.allSettled(selectedIds.map((id) => deleteJob(access, id)))
       setSelectedIds([])
       await load()
     } catch (err) {
-      setError(err.message || 'Could not delete selected jobs.')
+      console.error(err.message || 'Could not delete selected jobs.')
     }
   }
 
@@ -259,35 +253,37 @@ function JobsPage() {
     if (!selectedIds.length) return
     try {
       const targetRows = rows.filter((row) => selectedIds.includes(row.id))
-      const results = await Promise.allSettled(
+      await Promise.allSettled(
         targetRows.map((row) => updateJob(access, row.id, { is_closed: true })),
       )
-      const failed = results.filter((item) => item.status === 'rejected').length
-      if (failed) {
-        setError(`${failed} job(s) could not be marked closed.`)
-      } else {
-        setError('')
-      }
       setSelectedIds([])
       await load()
     } catch (err) {
-      setError(err.message || 'Could not mark selected jobs as closed.')
+      console.error(err.message || 'Could not mark selected jobs as closed.')
     }
   }
 
   return (
     <main className="page page-wide page-plain mx-auto w-full">
-      <div className="tracking-head">
-        <div>
-          <h1>Jobs</h1>
-          <p className="subtitle">Filter in one row, add or edit jobs, create a company by name when it is not in the list (names are trimmed and de-duplicated).</p>
+      <section className="jobs-topbar">
+        <div className="tracking-head">
+          <div>
+            <h1>Jobs</h1>
+            <p className="subtitle">Filter, edit, and manage company-linked roles in one place.</p>
+          </div>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={bulkMarkClosed} disabled={!selectedIds.length || loading}>Mark Closed</button>
+            <button type="button" className="secondary" onClick={bulkDeleteSelected} disabled={!selectedIds.length || loading}>Delete Selected</button>
+            <button type="button" className="secondary" onClick={openCreateForm}>Add job</button>
+          </div>
         </div>
-        <div className="actions">
-          <button type="button" className="secondary" onClick={bulkMarkClosed} disabled={!selectedIds.length || loading}>Mark Closed</button>
-          <button type="button" className="secondary" onClick={bulkDeleteSelected} disabled={!selectedIds.length || loading}>Delete Selected</button>
-          <button type="button" className="secondary" onClick={openCreateForm}>Add job</button>
+
+        <div className="jobs-summary-bar">
+          <span>{totalCount} jobs</span>
+          <span>{selectedIds.length} selected</span>
+          <span>{rows.filter((row) => !row?.is_closed && !row?.is_removed).length} open on page</span>
         </div>
-      </div>
+      </section>
 
       <section className="tracking-filters filters-one-row jobs-filters-one-row">
         <label>
@@ -323,17 +319,6 @@ function JobsPage() {
           <input value={filters.role} onChange={(e) => bumpFilters({ role: e.target.value })} placeholder="Contains…" />
         </label>
         <label>
-          Applied?
-          <select
-            value={filters.applied}
-            onChange={(e) => bumpFilters({ applied: e.target.value })}
-          >
-            <option value="all">All</option>
-            <option value="yes">Yes</option>
-            <option value="no">No</option>
-          </select>
-        </label>
-        <label>
           Sort
           <select
             value={ordering}
@@ -358,10 +343,9 @@ function JobsPage() {
         </label>
       </section>
 
-      {error ? <p className="error">{error}</p> : null}
       {loading ? <p className="hint">Loading jobs…</p> : null}
 
-      <div className="tracking-table-wrap tracking-table-wrap-compact">
+      <div className="tracking-table-wrap tracking-table-wrap-compact jobs-table-wrap">
         <table className="tracking-table tracking-table-compact jobs-table">
           <thead>
             <tr>
@@ -374,7 +358,6 @@ function JobsPage() {
               <th>Posting date</th>
               <th>Resume</th>
               <th>Job link</th>
-              <th>Applied</th>
               <th>Applied date</th>
               <th>Edit</th>
             </tr>
@@ -389,10 +372,10 @@ function JobsPage() {
                     onChange={(event) => toggleSelect(row.id, event.target.checked)}
                   />
                 </td>
-                <td>{row.job_id || '—'}</td>
-                <td>{row.company_name || '—'}</td>
-                <td>{row.role || '—'}</td>
-                <td>{formatDisplayDate(row.date_of_posting)}</td>
+                <td className="jobs-id-cell">{row.job_id || '—'}</td>
+                <td className="jobs-company-cell">{row.company_name || '—'}</td>
+                <td className="jobs-role-cell">{row.role || '—'}</td>
+                <td className="jobs-date-cell">{formatDisplayDate(row.date_of_posting)}</td>
                 <td className="jobs-tailored-cell">
                   {row.resume_preview ? (
                     <div className="tracking-actions-compact">
@@ -409,7 +392,7 @@ function JobsPage() {
                     ''
                   )}
                 </td>
-                <td>
+                <td className="jobs-link-cell">
                   {row.job_link ? (
                     <a
                       href={row.job_link}
@@ -425,9 +408,8 @@ function JobsPage() {
                     '—'
                   )}
                 </td>
-                <td>{row.applied ? 'Yes' : 'No'}</td>
-                <td>{formatDisplayDate(row.applied_at)}</td>
-                <td>
+                <td className="jobs-date-cell">{formatDisplayDate(row.applied_at)}</td>
+                <td className="jobs-edit-cell">
                   <button
                     type="button"
                     className="secondary jobs-edit-btn"
@@ -465,8 +447,13 @@ function JobsPage() {
 
       {jobForm ? (
         <div className="modal-overlay">
-          <div className="modal-panel modal-panel-jobs">
-            <h2>{jobForm.editingId ? 'Edit job' : 'Add job'}</h2>
+          <div className="modal-panel modal-panel-jobs jobs-modal-panel">
+            <div className="tracking-modal-head">
+              <h2>{jobForm.editingId ? 'Edit job' : 'Add job'}</h2>
+              <p className="subtitle">Keep the company, role, posting details, and resume link structured in one place.</p>
+            </div>
+            <div className="tracking-form-grid jobs-form-grid">
+            <div className="tracking-form-section-title tracking-form-span-2">Company</div>
             <label>
               Company (existing)
               <SingleSelectDropdown
@@ -476,7 +463,6 @@ function JobsPage() {
                 onChange={(nextValue) => setJobForm((prev) => ({ ...prev, company: nextValue }))}
               />
             </label>
-            <p className="hint jobs-form-hint">If the company is missing, type a name below. Extra spaces are removed; matching names reuse one company.</p>
             <label>
               New company name
               <input
@@ -485,6 +471,8 @@ function JobsPage() {
                 placeholder="Creates company if not already listed"
               />
             </label>
+            <p className="hint jobs-form-hint tracking-form-span-2">If the company is missing, type a name below. Extra spaces are removed; matching names reuse one company.</p>
+            <div className="tracking-form-section-title tracking-form-span-2">Role & Identity</div>
             <label>
               Job ID*
               <input value={jobForm.job_id} onChange={(e) => setJobForm((prev) => ({ ...prev, job_id: e.target.value }))} />
@@ -503,7 +491,7 @@ function JobsPage() {
                 <option key={r} value={r} />
               ))}
             </datalist>
-            <div className="jobs-role-chips">
+            <div className="jobs-role-chips tracking-form-span-2">
               {ROLE_PRESETS.map((r) => (
                 <button
                   key={r}
@@ -515,6 +503,7 @@ function JobsPage() {
                 </button>
               ))}
             </div>
+            <div className="tracking-form-section-title tracking-form-span-2">Links & Dates</div>
             <label>
               Job link
               <input value={jobForm.job_link} onChange={(e) => setJobForm((prev) => ({ ...prev, job_link: e.target.value }))} />
@@ -544,8 +533,8 @@ function JobsPage() {
               />
             </label>
             {jobForm.editingId ? (
-              <div className="jobs-checkbox-row">
-                <label className="tracking-check jobs-form-check">
+              <div className="jobs-checkbox-row tracking-form-span-2">
+                <label className="tracking-check jobs-form-check jobs-form-check-card">
                   <input
                     type="checkbox"
                     checked={jobForm.is_closed}
@@ -555,9 +544,11 @@ function JobsPage() {
                 </label>
               </div>
             ) : null}
+            </div>
+            {formError ? <p className="error">{formError}</p> : null}
             <div className="actions">
               <button type="button" onClick={submitJobForm}>{jobForm.editingId ? 'Save' : 'Create'}</button>
-              <button type="button" className="secondary" onClick={() => setJobForm(null)}>Cancel</button>
+              <button type="button" className="secondary" onClick={() => { setJobForm(null); setFormError('') }}>Cancel</button>
             </div>
           </div>
         </div>

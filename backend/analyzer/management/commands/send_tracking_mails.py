@@ -36,9 +36,9 @@ class Command(BaseCommand):
         sent = int(sent_count or 0)
         failed = int(failed_count or 0)
         if sent > 0 and failed > 0:
-            return "partially_sent"
+            return "partial_sent"
         if sent > 0:
-            return "sent"
+            return "complete_sent"
         return "failed"
 
     def _default_subject_for_template(self, template_choice, role, company_name, emp_name="", job_id=""):

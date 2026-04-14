@@ -954,7 +954,7 @@ class AchievementListCreateView(APIView):
         return Response(AchievementSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = AchievementSerializer(data=request.data)
+        serializer = AchievementSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             profile, _ = UserProfile.objects.get_or_create(
                 user=request.user,
@@ -980,7 +980,7 @@ class AchievementDetailView(APIView):
             row = self._get_object(request, achievement_id)
         except Achievement.DoesNotExist:
             return Response({'detail': 'Achievement not found.'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = AchievementSerializer(row, data=request.data, partial=True)
+        serializer = AchievementSerializer(row, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated = serializer.save()
             return Response(AchievementSerializer(updated).data, status=status.HTTP_200_OK)
@@ -1410,6 +1410,8 @@ class TailoredResumeListCreateView(APIView):
                 resume = Resume.objects.get(id=raw_resume, user=request.user)
             except Resume.DoesNotExist:
                 return Response({'resume': ['Resume not found.']}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            return Response({'resume': ['Original resume reference is required.']}, status=status.HTTP_400_BAD_REQUEST)
 
         created = TailoredResume.objects.create(
             job=job,
@@ -2129,6 +2131,9 @@ class ApplicationTrackingListCreateView(APIView):
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
+            'achievement_id': tracking.achievement_id,
+            'achievement_name': str(tracking.achievement.name or '').strip() if tracking.achievement_id and tracking.achievement else '',
+            'achievement_text': str(tracking.achievement.achievement or '').strip() if tracking.achievement_id and tracking.achievement else '',
             'template_choice': template_choice,
             'template_subject': template_subject,
             'template_message': template_message,
@@ -2157,7 +2162,7 @@ class ApplicationTrackingListCreateView(APIView):
     def get(self, request):
         queryset = (
             Tracking.objects.filter(user=request.user, is_removed=False)
-            .select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking')
+            .select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement')
             .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
             .order_by('-created_at')
         )
@@ -2186,6 +2191,9 @@ class ApplicationTrackingListCreateView(APIView):
         schedule_time = self._to_datetime(payload.get('schedule_time'))
         if self._is_follow_up_template(template_choice) and not schedule_time:
             schedule_time = timezone.now()
+        mail_type = str(payload.get('mail_type') or payload.get('action') or 'fresh').strip().lower()
+        if mail_type not in {'fresh', 'followed_up'}:
+            mail_type = 'fresh'
         company = self._resolve_company(request, payload)
         if not company:
             return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2195,10 +2203,17 @@ class ApplicationTrackingListCreateView(APIView):
         resume = self._resolve_resume(request, payload)
         if payload.get('resume') not in [None, '', 'null'] and not resume:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        achievement = None
+        achievement_raw = str(payload.get('achievement') or payload.get('achievement_id') or '').strip()
+        if achievement_raw:
+            achievement = Achievement.objects.filter(id=achievement_raw, user=request.user).first()
+            if not achievement:
+                return Response({'detail': 'Achievement not found.'}, status=status.HTTP_400_BAD_REQUEST)
 
         tracking = Tracking.objects.create(
             user=request.user,
             job=job,
+            achievement=achievement,
             resume=resume,
             template_choice=template_choice,
             template_subject=template_subject,
@@ -2207,7 +2222,7 @@ class ApplicationTrackingListCreateView(APIView):
             schedule_time=schedule_time,
             mail_delivery_status='pending',
             mailed=self._to_bool(payload.get('mailed'), default=False),
-            mail_type='fresh',
+            mail_type=mail_type,
         )
         tailored_resume_id = str(payload.get('tailored_resume') or '').strip()
         if tailored_resume_id:
@@ -2239,7 +2254,7 @@ class ApplicationTrackingListCreateView(APIView):
         available_hr_map = {company.id: list(available)}
         return Response(
             self._serialize_tracking_row(
-                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking').first(),
+                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement').first(),
                 available_hr_map,
             ),
             status=status.HTTP_201_CREATED,
@@ -2462,6 +2477,9 @@ class ApplicationTrackingDetailView(APIView):
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
+            'achievement_id': row.achievement_id,
+            'achievement_name': str(row.achievement.name or '').strip() if row.achievement_id and row.achievement else '',
+            'achievement_text': str(row.achievement.achievement or '').strip() if row.achievement_id and row.achievement else '',
             'selected_employees': selected_employees,
             'template_choice': template_choice,
             'template_subject': template_subject,
@@ -2491,7 +2509,7 @@ class ApplicationTrackingDetailView(APIView):
             row = (
                 Tracking.objects
                 .filter(id=tracking_id, user=request.user, is_removed=False)
-                .select_related('job__company', 'mail_tracking', 'resume', 'tailored_resume')
+                .select_related('job__company', 'mail_tracking', 'resume', 'tailored_resume', 'achievement')
                 .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
                 .first()
             )
@@ -2546,7 +2564,7 @@ class ApplicationTrackingDetailView(APIView):
             row.mailed = self._to_bool(payload.get('mailed'), default=row.mailed)
         if 'mail_delivery_status' in payload:
             status_value = str(payload.get('mail_delivery_status') or '').strip().lower()
-            if status_value in {'pending', 'sent', 'failed', 'partially_sent'}:
+            if status_value in {'pending', 'complete_sent', 'failed', 'partial_sent'}:
                 row.mail_delivery_status = status_value
         if 'resume' in payload:
             raw_resume_id = str(payload.get('resume') or '').strip()
@@ -2568,6 +2586,15 @@ class ApplicationTrackingDetailView(APIView):
                 if not tailored:
                     return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.tailored_resume = tailored
+        if 'achievement' in payload or 'achievement_id' in payload:
+            achievement_raw = str(payload.get('achievement') or payload.get('achievement_id') or '').strip()
+            if not achievement_raw:
+                row.achievement = None
+            else:
+                achievement = Achievement.objects.filter(id=achievement_raw, user=request.user).first()
+                if not achievement:
+                    return Response({'detail': 'Achievement not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                row.achievement = achievement
         if any(key in payload for key in ['template_choice', 'template_subject', 'custom_subject', 'template_message', 'template_name']):
             template_choice, template_subject, template_message = self._extract_template_fields(payload)
             row.template_choice = template_choice
@@ -2666,7 +2693,7 @@ class ApplicationTrackingDetailView(APIView):
                 row.mailed = True
             row.save(update_fields=['mail_type', 'mailed', 'updated_at'])
 
-        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking').prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').first()
+        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement').prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').first()
         return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
@@ -3483,6 +3510,13 @@ class ExtensionEmployeeCreateView(APIView):
             return 'Engineering'
         return 'Other'
 
+    def _normalize_profile_url(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return ''
+        cleaned = raw.split('#', 1)[0].split('?', 1)[0].rstrip('/')
+        return cleaned.lower()
+
     def _resolve_company(self, user, payload):
         company_id = payload.get('company_id') or payload.get('company')
         if company_id:
@@ -3539,6 +3573,18 @@ class ExtensionEmployeeCreateView(APIView):
         if missing:
             return Response(
                 {'detail': f'Missing required fields: {", ".join(missing)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        linkedin_key = self._normalize_profile_url(linkedin_url)
+        duplicate = False
+        for row in Employee.objects.filter(user=actor, company=company).only('id', 'profile'):
+            if self._normalize_profile_url(row.profile) == linkedin_key:
+                duplicate = True
+                break
+        if duplicate:
+            return Response(
+                {'detail': 'This company + LinkedIn URL already exists.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

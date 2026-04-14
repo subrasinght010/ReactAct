@@ -318,9 +318,9 @@ class Command(BaseCommand):
         failed_count = sum(1 for value in latest_by_email.values() if value in {"failed", "bounced"})
 
         if sent_count > 0 and failed_count > 0:
-            tracking.mail_delivery_status = "partially_sent"
+            tracking.mail_delivery_status = "partial_sent"
         elif sent_count > 0:
-            tracking.mail_delivery_status = "sent"
+            tracking.mail_delivery_status = "complete_sent"
         elif failed_count > 0:
             tracking.mail_delivery_status = "failed"
         else:

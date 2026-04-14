@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ResumeSheet from '../components/ResumeSheet'
 import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
@@ -201,26 +201,17 @@ function skillsPreviewFromResume(row) {
   return `${raw.slice(0, 72).trim()}...`
 }
 
-function AddIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z" /></svg>
+function interviewJobDisplay(companyName, jobRole, jobCode) {
+  const parts = [
+    String(companyName || '').trim(),
+    String(jobRole || '').trim(),
+    String(jobCode || '').trim(),
+  ].filter(Boolean)
+  return parts.join(' | ') || '-'
 }
-function EditIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25Zm18-11.5a1 1 0 0 0 0-1.41l-1.34-1.34a1 1 0 0 0-1.41 0l-1.13 1.13l2.75 2.75L21 5.75Z" /></svg>
-}
-function DeleteIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm1 6h2v9h-2V9Zm4 0h2v9h-2V9ZM7 9h2v9H7V9Zm-1 12h12a1 1 0 0 0 1-1V8H5v12a1 1 0 0 0 1 1Z" /></svg>
-}
-function PreviewIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z" /></svg>
-}
-function SaveIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M17 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7l-4-4Zm-5 16a3 3 0 1 1 0-6a3 3 0 0 1 0 6Zm3-10H5V5h10v4Z" /></svg>
-}
+
 function CloseIcon() {
   return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="m18.3 5.71l-1.41-1.42L12 9.17L7.11 4.29L5.7 5.71L10.59 10.6L5.7 15.5l1.41 1.41L12 12l4.89 4.91l1.41-1.41l-4.89-4.9z" /></svg>
-}
-function BuilderIcon() {
-  return <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9A5.7 5.7 0 0 0 4 3.1L7.4 6.5L5.9 8L2.5 4.6a5.7 5.7 0 0 0-.1 8.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1a1.2 1.2 0 0 0 1.7 0l2.6-2.6a1.2 1.2 0 0 0 0-1.7Z" /></svg>
 }
 
 function ProfilePage() {
@@ -253,6 +244,42 @@ function ProfilePage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [ok, setOk] = useState('')
+
+  const interviewCompanyOptions = useMemo(() => {
+    const seen = new Set()
+    const options = []
+    ;(Array.isArray(jobOptions) ? jobOptions : []).forEach((job) => {
+      const companyName = String(job?.company_name || '').trim()
+      if (!companyName) return
+      const key = companyName.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      options.push({ value: companyName, label: companyName })
+    })
+    options.sort((a, b) => a.label.localeCompare(b.label))
+    return options
+  }, [jobOptions])
+
+  const interviewJobOptions = useMemo(() => {
+    const selectedCompany = String(interviewForm.company_name || '').trim().toLowerCase()
+    return (Array.isArray(jobOptions) ? jobOptions : [])
+      .filter((job) => {
+        if (!selectedCompany) return false
+        return String(job?.company_name || '').trim().toLowerCase() === selectedCompany
+      })
+      .map((job) => ({
+        value: String(job.id),
+        label: interviewJobDisplay(job.company_name, job.role, job.job_id),
+      }))
+  }, [jobOptions, interviewForm.company_name])
+
+  const interviewLocationName = useMemo(() => {
+    if (!interviewForm.location_ref) return ''
+    const match = (Array.isArray(locationOptions) ? locationOptions : []).find(
+      (location) => String(location?.id) === String(interviewForm.location_ref),
+    )
+    return String(match?.name || '').trim()
+  }, [interviewForm.location_ref, locationOptions])
 
   const loadAll = async () => {
     setLoading(true)
@@ -323,7 +350,14 @@ function ProfilePage() {
   }
 
   const openResumeInBuilder = (resumeId) => {
+    sessionStorage.setItem('builderSaveMode', 'edit')
     sessionStorage.setItem('builderResumeId', String(resumeId))
+    navigate('/builder')
+  }
+
+  const openCreateResumeInBuilder = () => {
+    sessionStorage.setItem('builderSaveMode', 'create')
+    sessionStorage.removeItem('builderResumeId')
     navigate('/builder')
   }
 
@@ -458,29 +492,29 @@ function ProfilePage() {
           <p className="subtitle">Personal info, achievements, resumes, and interview milestones.</p>
         </div>
         <div className="actions">
-          <button type="button" className="secondary tracking-icon-btn" title="Resume Builder" aria-label="Resume Builder" onClick={() => navigate('/builder')}><BuilderIcon /></button>
+          <button type="button" className="secondary" onClick={openCreateResumeInBuilder}>Open Resume Workspace</button>
         </div>
       </div>
 
       {loading ? <p className="hint">Loading profile...</p> : null}
 
       <section className="dash-card">
-        <div className="tracking-head">
+        <div className="tracking-head profile-section-head">
           <h2>Resumes</h2>
           <div className="actions">
-            <button type="button" className="secondary tracking-icon-btn" title="Add Resume" aria-label="Add Resume" onClick={() => navigate('/builder')}><AddIcon /></button>
+            <button type="button" className="secondary" onClick={openCreateResumeInBuilder}>Add Resume</button>
           </div>
         </div>
         <div className="profile-resume-grid">
           {resumes.map((row) => (
-            <article key={row.id} className="rounded-xl border border-slate-200 p-4">
-              <p><strong>{row.title || `Resume #${row.id}`}</strong></p>
+            <article key={row.id} className="resume-card profile-card-shell">
+              <p className="resume-card-title"><strong>{row.title || `Resume #${row.id}`}</strong></p>
               {skillsPreviewFromResume(row) ? <p className="hint">Skills: {skillsPreviewFromResume(row)}</p> : null}
-              <p className="hint">Updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '-'}</p>
-              <div className="actions">
-                <button type="button" className="secondary tracking-icon-btn" title="Preview" aria-label="Preview" onClick={() => setPreviewResume(row)}><PreviewIcon /></button>
-                <button type="button" className="secondary tracking-icon-btn" title="Edit" aria-label="Edit" onClick={() => openResumeInBuilder(row.id)}><EditIcon /></button>
-                <button type="button" className="secondary tracking-icon-btn" title="Delete" aria-label="Delete" onClick={() => removeResume(row.id)}><DeleteIcon /></button>
+              <p className="resume-card-meta">Updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '-'}</p>
+              <div className="resume-card-actions">
+                <button type="button" className="secondary" onClick={() => setPreviewResume(row)}>Preview</button>
+                <button type="button" className="secondary" onClick={() => openResumeInBuilder(row.id)}>Edit</button>
+                <button type="button" className="secondary" onClick={() => removeResume(row.id)}>Delete</button>
               </div>
             </article>
           ))}
@@ -489,24 +523,32 @@ function ProfilePage() {
       </section>
 
       <section className="dash-card">
-        <div className="tracking-head">
+        <div className="tracking-head profile-section-head">
           <h2>Personal Info</h2>
           <div className="actions">
             {!editingProfile ? (
-              <button type="button" className="secondary tracking-icon-btn" title="Edit" aria-label="Edit" onClick={() => setEditingProfile(true)}><EditIcon /></button>
+              <button type="button" className="secondary" onClick={() => setEditingProfile(true)}>Edit Info</button>
             ) : null}
           </div>
         </div>
         {!editingProfile ? (
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="profile-info-grid">
             {profileRows(profile).map(([label, value]) => (
-              <p key={label}><strong>{label}:</strong> {String(value)}</p>
+              <div key={label} className="profile-info-item">
+                <span className="profile-info-label">{label}</span>
+                <span className="profile-info-value">{String(value)}</span>
+              </div>
             ))}
-            {!profileRows(profile).length ? <p><strong>Full Name:</strong> {profileUsername || '-'}</p> : null}
+            {!profileRows(profile).length ? (
+              <div className="profile-info-item">
+                <span className="profile-info-label">Full Name</span>
+                <span className="profile-info-value">{profileUsername || '-'}</span>
+              </div>
+            ) : null}
           </div>
         ) : (
           <>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="profile-form-grid">
               <label>Full Name<input value={profileForm.full_name} onChange={(e) => setProfileForm((p) => ({ ...p, full_name: e.target.value }))} /></label>
               <label>Email<input value={profileForm.email} onChange={(e) => setProfileForm((p) => ({ ...p, email: e.target.value }))} /></label>
               <label>Contact Number<input value={profileForm.contact_number} onChange={(e) => setProfileForm((p) => ({ ...p, contact_number: e.target.value }))} /></label>
@@ -551,42 +593,42 @@ function ProfilePage() {
               <label>Summary<textarea rows={3} value={profileForm.summary} onChange={(e) => setProfileForm((p) => ({ ...p, summary: e.target.value }))} /></label>
             </div>
             <div className="actions">
-              <button type="button" className="tracking-icon-btn" title="Save" aria-label="Save" onClick={saveProfile}><SaveIcon /></button>
-              <button type="button" className="secondary tracking-icon-btn" title="Cancel" aria-label="Cancel" onClick={() => { setProfileForm(profile); setEditingProfile(false) }}><CloseIcon /></button>
+              <button type="button" onClick={saveProfile}>Save</button>
+              <button type="button" className="secondary" onClick={() => { setProfileForm(profile); setEditingProfile(false) }}>Cancel</button>
             </div>
           </>
         )}
       </section>
 
       <section className="dash-card">
-        <div className="tracking-head">
+        <div className="tracking-head profile-section-head">
           <h2>Achievements</h2>
           <div className="actions">
-            <button type="button" className="secondary tracking-icon-btn" title="Add Achievement" aria-label="Add Achievement" onClick={() => { setShowAchForm((v) => !v); setEditingAchId(null); setAchForm(EMPTY_ACH) }}><AddIcon /></button>
+            <button type="button" className="secondary" onClick={() => { setShowAchForm((v) => !v); setEditingAchId(null); setAchForm(EMPTY_ACH) }}>{showAchForm ? 'Close Form' : 'Add Achievement'}</button>
           </div>
         </div>
         {showAchForm ? (
           <>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="profile-form-grid">
               <label>Name<input value={achForm.name} onChange={(e) => setAchForm((p) => ({ ...p, name: e.target.value }))} /></label>
               <label>Skills<input value={achForm.skills} onChange={(e) => setAchForm((p) => ({ ...p, skills: e.target.value }))} placeholder="Python, React, AWS" /></label>
               <label className="md:col-span-2">Achievement<textarea rows={3} value={achForm.achievement} onChange={(e) => setAchForm((p) => ({ ...p, achievement: e.target.value }))} /></label>
             </div>
             <div className="actions">
-              <button type="button" className="tracking-icon-btn" title={editingAchId ? 'Update' : 'Create'} aria-label={editingAchId ? 'Update' : 'Create'} onClick={saveAchievement}><SaveIcon /></button>
-              <button type="button" className="secondary tracking-icon-btn" title="Cancel" aria-label="Cancel" onClick={() => { setShowAchForm(false); setEditingAchId(null); setAchForm(EMPTY_ACH) }}><CloseIcon /></button>
+              <button type="button" onClick={saveAchievement}>{editingAchId ? 'Update' : 'Create'}</button>
+              <button type="button" className="secondary" onClick={() => { setShowAchForm(false); setEditingAchId(null); setAchForm(EMPTY_ACH) }}>Cancel</button>
             </div>
           </>
         ) : null}
         <div className="profile-ach-grid">
           {achievements.map((row) => (
-            <article key={row.id} className="rounded-xl border border-slate-200 p-4">
-              <p><strong>{row.name || '-'}</strong></p>
+            <article key={row.id} className="resume-card profile-card-shell">
+              <p className="resume-card-title"><strong>{row.name || '-'}</strong></p>
               <p className="hint">{row.skills || '-'}</p>
-              <p>{row.achievement || '-'}</p>
-              <div className="actions">
-                <button type="button" className="secondary tracking-icon-btn" title="Edit" aria-label="Edit" onClick={() => editAchievement(row)}><EditIcon /></button>
-                <button type="button" className="secondary tracking-icon-btn" title="Delete" aria-label="Delete" onClick={() => removeAchievement(row.id)}><DeleteIcon /></button>
+              <p className="resume-card-snippet">{row.achievement || '-'}</p>
+              <div className="resume-card-actions">
+                <button type="button" className="secondary" onClick={() => editAchievement(row)}>Edit</button>
+                <button type="button" className="secondary" onClick={() => removeAchievement(row.id)}>Delete</button>
               </div>
             </article>
           ))}
@@ -595,23 +637,35 @@ function ProfilePage() {
       </section>
 
       <section className="dash-card">
-        <div className="tracking-head">
+        <div className="tracking-head profile-section-head">
           <h2>Interview Section</h2>
           <div className="actions">
-            <button type="button" className="secondary tracking-icon-btn" title="Add Interview" aria-label="Add Interview" onClick={() => { setShowInterviewForm((v) => !v); setEditingInterviewId(null); setInterviewForm(EMPTY_INTERVIEW) }}><AddIcon /></button>
+            <button type="button" className="secondary" onClick={() => { setShowInterviewForm((v) => !v); setEditingInterviewId(null); setInterviewForm(EMPTY_INTERVIEW) }}>{showInterviewForm ? 'Close Form' : 'Add Interview'}</button>
           </div>
         </div>
         {showInterviewForm ? (
           <>
-            <div className="grid gap-3 md:grid-cols-2">
+            <div className="profile-form-grid">
+              <label>Company
+                <SingleSelectDropdown
+                  value={interviewForm.company_name}
+                  placeholder="Select company"
+                  options={interviewCompanyOptions}
+                  onChange={(nextValue) => setInterviewForm((p) => ({
+                    ...p,
+                    company_name: nextValue || '',
+                    job: '',
+                    job_role: '',
+                    job_code: '',
+                  }))}
+                />
+              </label>
               <label>Select Job
                 <SingleSelectDropdown
                   value={interviewForm.job}
-                  placeholder="Select job"
-                  options={jobOptions.map((job) => ({
-                    value: String(job.id),
-                    label: `${job.job_id || '-'} | ${job.company_name || '-'} | ${job.role || '-'}`,
-                  }))}
+                  placeholder={interviewForm.company_name ? 'Select job' : 'Select company first'}
+                  options={interviewJobOptions}
+                  disabled={!interviewForm.company_name}
                   onChange={(e) => {
                     const selectedId = String(e || '')
                     const selectedJob = jobOptions.find((item) => String(item.id) === selectedId)
@@ -625,23 +679,15 @@ function ProfilePage() {
                   }}
                 />
               </label>
-              <label>Company<input value={interviewForm.company_name} onChange={(e) => setInterviewForm((p) => ({ ...p, company_name: e.target.value }))} /></label>
               <label>Job Role<input value={interviewForm.job_role} onChange={(e) => setInterviewForm((p) => ({ ...p, job_role: e.target.value }))} /></label>
               <label>Job ID<input value={interviewForm.job_code} onChange={(e) => setInterviewForm((p) => ({ ...p, job_code: e.target.value }))} /></label>
-              <label>Location
-                <SingleSelectDropdown
-                  value={interviewForm.location_ref}
-                  placeholder="Select location"
-                  options={locationOptions.map((location) => ({ value: String(location.id), label: String(location.name || '') }))}
-                  onChange={(nextValue) => setInterviewForm((p) => ({ ...p, location_ref: nextValue }))}
-                />
-              </label>
+              {interviewLocationName ? <div className="hint profile-form-note">Location: {interviewLocationName}</div> : null}
               <label>Interview At<input type="datetime-local" value={interviewForm.interview_at} onChange={(e) => setInterviewForm((p) => ({ ...p, interview_at: e.target.value }))} /></label>
               <label className="md:col-span-2">Notes<textarea rows={3} value={interviewForm.notes} onChange={(e) => setInterviewForm((p) => ({ ...p, notes: e.target.value }))} /></label>
             </div>
             <div className="actions">
-              <button type="button" className="tracking-icon-btn" title={editingInterviewId ? 'Update' : 'Create'} aria-label={editingInterviewId ? 'Update' : 'Create'} onClick={saveInterview}><SaveIcon /></button>
-              <button type="button" className="secondary tracking-icon-btn" title="Cancel" aria-label="Cancel" onClick={() => { setShowInterviewForm(false); setEditingInterviewId(null); setInterviewForm(EMPTY_INTERVIEW) }}><CloseIcon /></button>
+              <button type="button" onClick={saveInterview}>{editingInterviewId ? 'Update' : 'Create'}</button>
+              <button type="button" className="secondary" onClick={() => { setShowInterviewForm(false); setEditingInterviewId(null); setInterviewForm(EMPTY_INTERVIEW) }}>Cancel</button>
             </div>
           </>
         ) : null}
@@ -663,15 +709,15 @@ function ProfilePage() {
             const totalDots = showFutureDots ? 10 : reachedCount
             const currentDotIndex = reachedCount - 1
             return (
-              <article key={row.id} className="rounded-xl border border-slate-200 p-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p><strong>{row.company_name}</strong> | {row.job_role} | {row.job_code || '-'}</p>
+              <article key={row.id} className="profile-interview-card">
+                <div className="profile-interview-head">
+                  <p className="profile-interview-title">{interviewJobDisplay(row.company_name, row.job_role, row.job_code)}</p>
                   <div className="tracking-actions-compact">
-                    <button type="button" className="secondary tracking-icon-btn" title="Edit" aria-label="Edit" onClick={() => editInterview(row)}><EditIcon /></button>
-                    <button type="button" className="secondary tracking-icon-btn" title="Delete" aria-label="Delete" onClick={() => removeInterview(row.id)}><DeleteIcon /></button>
+                    <button type="button" className="secondary" onClick={() => editInterview(row)}>Edit</button>
+                    <button type="button" className="secondary" onClick={() => removeInterview(row.id)}>Delete</button>
                   </div>
                 </div>
-                <div className="grid gap-2 md:grid-cols-2">
+                <div className="profile-form-grid profile-form-grid-tight">
                   <label>Other Stage
                     <SingleSelectDropdown
                       value={otherStageValueDraft}
@@ -730,7 +776,7 @@ function ProfilePage() {
                     />
                   </label>
                 </div>
-                <div className="grid gap-2 md:grid-cols-2">
+                <div className="profile-form-grid profile-form-grid-tight">
                   <label>Action
                     <SingleSelectDropdown
                       value={row.action || 'active'}
@@ -741,7 +787,7 @@ function ProfilePage() {
                     />
                   </label>
                 </div>
-                {row.location_name ? <p className="hint">Location: {row.location_name}</p> : null}
+                {row.location_name ? <p className="hint profile-form-note">Location: {row.location_name}</p> : null}
                 <div className="profile-milestone-wrap">
                   {Array.from({ length: totalDots }, (_, index) => (
                     <div key={`${row.id}-step-${index}`} className="profile-milestone-node">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 
 import { fetchTrackingRow } from '../api'
@@ -15,6 +15,40 @@ function toFriendlyDateTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString()
+}
+
+function formatMailType(value) {
+  const raw = String(value || '').trim().toLowerCase()
+  if (raw === 'followed_up' || raw === 'followup') return 'Follow Up'
+  if (raw === 'fresh') return 'Fresh'
+  return raw ? raw.replaceAll('_', ' ') : '-'
+}
+
+function formatSendMode(value) {
+  const raw = String(value || '').trim().toLowerCase()
+  if (raw === 'sent') return 'On Time'
+  if (raw === 'scheduled') return 'Scheduled'
+  return raw ? raw.replaceAll('_', ' ') : '-'
+}
+
+function actionRowsForDetail(row, filteredMailEvents) {
+  if (Array.isArray(filteredMailEvents) && filteredMailEvents.length) {
+    return filteredMailEvents.map((item) => ({
+      id: `event-${item.id}`,
+      type: item.mail_type,
+      mode: item.send_mode,
+      replied: Boolean(item.got_replied),
+      at: item.action_at,
+    }))
+  }
+  const milestones = Array.isArray(row?.milestones) ? row.milestones : []
+  return milestones.map((item, index) => ({
+    id: `milestone-${index}`,
+    type: item?.type,
+    mode: item?.mode,
+    replied: false,
+    at: item?.at,
+  }))
 }
 
 function TrackingDetailPage() {
@@ -35,8 +69,7 @@ function TrackingDetailPage() {
         const data = await fetchTrackingRow(access, trackingId)
         if (!cancelled) {
           setRow(data)
-          const firstEmployee = Array.isArray(data?.selected_employees) ? data.selected_employees[0] : null
-          setSelectedEmployeeId(firstEmployee?.id ? String(firstEmployee.id) : '')
+          setSelectedEmployeeId('')
         }
       } catch (err) {
         if (!cancelled) setError(err.message || 'Could not load tracking detail.')
@@ -49,13 +82,53 @@ function TrackingDetailPage() {
     }
   }, [access, trackingId])
 
-  const employeeOptions = Array.isArray(row?.selected_employees) ? row.selected_employees : []
+  const employeeOptions = useMemo(() => {
+    const out = []
+    const seen = new Set()
+    const pushOption = (idValue, nameValue) => {
+      const id = String(idValue || '').trim()
+      const name = String(nameValue || '').trim()
+      if (!id || !name) return
+      if (seen.has(id)) return
+      seen.add(id)
+      out.push({ id, name })
+    }
+
+    ;(Array.isArray(row?.selected_employees) ? row.selected_employees : []).forEach((item) => {
+      pushOption(item?.id, item?.name)
+    })
+
+    const selectedIds = Array.isArray(row?.selected_hr_ids) ? row.selected_hr_ids : []
+    const selectedNames = Array.isArray(row?.selected_hrs) ? row.selected_hrs : []
+    selectedIds.forEach((id, index) => {
+      pushOption(id, selectedNames[index] || `Employee #${id}`)
+    })
+
+    ;(Array.isArray(row?.mail_events) ? row.mail_events : []).forEach((item) => {
+      pushOption(item?.employee_id, item?.employee_name)
+    })
+
+    return out
+  }, [row])
+
+  useEffect(() => {
+    if (!employeeOptions.length) {
+      setSelectedEmployeeId('')
+      return
+    }
+    setSelectedEmployeeId((prev) => {
+      if (prev && employeeOptions.some((item) => String(item.id) === String(prev))) return prev
+      return String(employeeOptions[0].id)
+    })
+  }, [employeeOptions])
+
   const filteredMailEvents = Array.isArray(row?.mail_events)
     ? row.mail_events.filter((item) => {
       if (!selectedEmployeeId) return true
       return String(item.employee_id || '') === String(selectedEmployeeId)
     })
     : []
+  const actionRows = actionRowsForDetail(row, filteredMailEvents)
   const scopedEvents = filteredMailEvents
   const mailedAt = scopedEvents.length
     ? scopedEvents[0]?.action_at || ''
@@ -86,28 +159,34 @@ function TrackingDetailPage() {
       {row ? (
         <>
           <section className="dash-card">
-            <h2>Summary</h2>
-            <div className="grid gap-3 md:grid-cols-2">
-              <p><strong>Company:</strong> {row.company_name || '-'}</p>
-              <p><strong>Job ID:</strong> {row.job_id || '-'}</p>
-              <p><strong>Role:</strong> {row.role || '-'}</p>
-              <p><strong>Job URL:</strong> {row.job_url ? <a href={row.job_url} target="_blank" rel="noreferrer">Open</a> : '-'}</p>
-              <p><strong>Selected HR:</strong> {Array.isArray(row.selected_hrs) && row.selected_hrs.length ? row.selected_hrs.join(', ') : '-'}</p>
-              <p><strong>Status:</strong> {row.is_open ? 'Open' : 'Closed'}</p>
-              <p><strong>Template Type:</strong> {formatTemplateType(row.template_choice)}</p>
-              <p><strong>Selected Resume:</strong> {row.resume_preview?.title || row.tailored_resume_preview?.title || '-'}</p>
-              <p><strong>Freeze:</strong> {row.is_freezed ? 'Yes' : 'No'}</p>
-              <p><strong>Created At:</strong> {toFriendlyDateTime(row.created_at)}</p>
-              <p><strong>Last Updated:</strong> {toFriendlyDateTime(row.updated_at)}</p>
-              <p><strong>Mailed:</strong> {(row.mailed || scopedEvents.length) ? 'Yes' : 'No'} {mailedAt ? `(${toFriendlyDateTime(mailedAt)})` : ''}</p>
-              <p><strong>Got Response:</strong> {(row.got_replied || repliedEvents.length) ? 'Yes' : 'No'} {repliedAt ? `(${toFriendlyDateTime(repliedAt)})` : ''}</p>
-              <p><strong>Response From Employee:</strong> {repliedBy.length ? repliedBy.join(', ') : '-'}</p>
+            <div className="profile-section-head">
+              <h2>Summary</h2>
+            </div>
+            <div className="tracking-detail-grid">
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Company</span><span className="tracking-detail-value">{row.company_name || '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Job ID</span><span className="tracking-detail-value">{row.job_id || '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Role</span><span className="tracking-detail-value">{row.role || '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Job URL</span><span className="tracking-detail-value">{row.job_url ? <a href={row.job_url} target="_blank" rel="noreferrer">Open</a> : '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Selected HR</span><span className="tracking-detail-value">{Array.isArray(row.selected_hrs) && row.selected_hrs.length ? row.selected_hrs.join(', ') : '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Status</span><span className="tracking-detail-value">{row.is_open ? 'Open' : 'Closed'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Mail Status</span><span className="tracking-detail-value">{String(row.mail_delivery_status || 'pending').replaceAll('_', ' ')}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Template Type</span><span className="tracking-detail-value">{formatTemplateType(row.template_choice)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Mail Type</span><span className="tracking-detail-value">{formatMailType(row.mail_type)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Send</span><span className="tracking-detail-value">{formatSendMode(row.schedule_time ? 'scheduled' : (scopedEvents[0]?.send_mode || 'sent'))}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Selected Resume</span><span className="tracking-detail-value">{row.resume_preview?.title || row.tailored_resume_preview?.title || '-'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Freeze</span><span className="tracking-detail-value">{row.is_freezed ? 'Yes' : 'No'}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Schedule Time</span><span className="tracking-detail-value">{toFriendlyDateTime(row.schedule_time)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Created At</span><span className="tracking-detail-value">{toFriendlyDateTime(row.created_at)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Last Updated</span><span className="tracking-detail-value">{toFriendlyDateTime(row.updated_at)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Mailed</span><span className="tracking-detail-value">{(row.mailed || scopedEvents.length) ? 'Yes' : 'No'} {mailedAt ? `(${toFriendlyDateTime(mailedAt)})` : ''}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Got Response</span><span className="tracking-detail-value">{(row.got_replied || repliedEvents.length) ? 'Yes' : 'No'} {repliedAt ? `(${toFriendlyDateTime(repliedAt)})` : ''}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Response From Employee</span><span className="tracking-detail-value">{repliedBy.length ? repliedBy.join(', ') : '-'}</span></div>
             </div>
           </section>
 
           <section className="dash-card">
-            <div className="flex justify-end">
-              <label className="min-w-[280px]">
+            <div className="tracking-detail-filter">
+              <label className="tracking-detail-select">
                 Select Employee
                 <SingleSelectDropdown
                   value={selectedEmployeeId}
@@ -125,6 +204,7 @@ function TrackingDetailPage() {
 
           <section className="dash-card">
             <h2>Mail Chat History</h2>
+            <div className="tracking-table-wrap">
             <table className="tracking-table">
               <thead>
                 <tr>
@@ -150,10 +230,12 @@ function TrackingDetailPage() {
                 ) : null}
               </tbody>
             </table>
+            </div>
           </section>
 
           <section className="dash-card">
             <h2>Action Taken</h2>
+            <div className="tracking-table-wrap">
             <table className="tracking-table">
               <thead>
                 <tr>
@@ -164,19 +246,20 @@ function TrackingDetailPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredMailEvents.map((item) => (
+                {actionRows.map((item) => (
                   <tr key={`action-${item.id}`}>
-                    <td>{item.mail_type || '-'}</td>
-                    <td>{item.send_mode || '-'}</td>
-                    <td>{item.got_replied ? 'Yes' : 'No'}</td>
-                    <td>{toFriendlyDateTime(item.action_at)}</td>
+                    <td>{formatMailType(item.type)}</td>
+                    <td>{formatSendMode(item.mode)}</td>
+                    <td>{item.replied ? 'Yes' : 'No'}</td>
+                    <td>{toFriendlyDateTime(item.at)}</td>
                   </tr>
                 ))}
-                {!filteredMailEvents.length ? (
+                {!actionRows.length ? (
                   <tr><td colSpan={4}>No actions available for this employee.</td></tr>
                 ) : null}
               </tbody>
             </table>
+            </div>
           </section>
         </>
       ) : null}

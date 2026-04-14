@@ -29,9 +29,12 @@ const els = {
   empLocation: document.getElementById('empLocation'),
   fetchEmployeeFromPageBtn: document.getElementById('fetchEmployeeFromPageBtn'),
   saveEmployeeBtn: document.getElementById('saveEmployeeBtn'),
-  refreshEmployeeBtn: document.getElementById('refreshEmployeeBtn'),
   clearEmployeeBtn: document.getElementById('clearEmployeeBtn'),
 }
+
+const API_BASE_STORAGE_KEY = 'applypilot_api_base'
+const META_CACHE_KEY = 'applypilot_form_meta_cache'
+const META_CACHE_TTL_MS = 10 * 60 * 1000
 
 function esc(value) {
   return String(value || '')
@@ -103,6 +106,14 @@ function extMessage(payload) {
       resolve(res.data)
     })
   })
+}
+
+function chromeStorageGet(keys) {
+  return new Promise((resolve) => chrome.storage.local.get(keys, resolve))
+}
+
+function chromeStorageSet(value) {
+  return new Promise((resolve) => chrome.storage.local.set(value, resolve))
 }
 
 function normalizeLocationKey(value) {
@@ -296,7 +307,23 @@ function pickTopItHubLocations(locations, count = 8) {
 
 async function loadMetaAndCompanies() {
   const apiBase = els.apiBase.value.trim()
-  const meta = await extMessage({ type: 'EXTENSION_GET_FORM_META', apiBase })
+  const stored = await chromeStorageGet([META_CACHE_KEY])
+  const cache = stored?.[META_CACHE_KEY]
+  const canUseCache = cache
+    && cache.apiBase === apiBase
+    && Number(cache.savedAt || 0) > (Date.now() - META_CACHE_TTL_MS)
+    && cache.data
+  const meta = canUseCache ? cache.data : await extMessage({ type: 'EXTENSION_GET_FORM_META', apiBase })
+
+  if (!canUseCache) {
+    await chromeStorageSet({
+      [META_CACHE_KEY]: {
+        apiBase,
+        savedAt: Date.now(),
+        data: meta,
+      },
+    })
+  }
 
   const locations = Array.isArray(meta?.location_options) ? meta.location_options : []
   const locationNames = []
@@ -335,6 +362,7 @@ function clearJobFields() {
 }
 
 async function refreshPanel() {
+  await chromeStorageSet({ [META_CACHE_KEY]: null })
   await loadMetaAndCompanies()
   setStatus('Refreshed form data')
 }
@@ -464,7 +492,17 @@ els.refreshBtn.addEventListener('click', () => refreshPanel().catch((err) => set
 els.clearJobBtn.addEventListener('click', () => clearJobFields())
 els.fetchEmployeeFromPageBtn.addEventListener('click', () => fetchEmployeeFromPage().catch((err) => setEmployeeStatus(String(err?.message || err || 'Error'), true)))
 els.saveEmployeeBtn.addEventListener('click', () => saveEmployee().catch((err) => setEmployeeStatus(String(err?.message || err || 'Error'), true)))
-els.refreshEmployeeBtn.addEventListener('click', () => refreshPanel().catch((err) => setStatus(err.message, true)))
 els.clearEmployeeBtn.addEventListener('click', () => clearEmployeeFields())
 
-loadMetaAndCompanies().then(() => setStatus('Ready')).catch((err) => setStatus(err.message, true))
+els.apiBase.addEventListener('change', async () => {
+  const value = String(els.apiBase.value || '').trim()
+  await chromeStorageSet({ [API_BASE_STORAGE_KEY]: value, [META_CACHE_KEY]: null })
+})
+
+;(async () => {
+  const stored = await chromeStorageGet([API_BASE_STORAGE_KEY])
+  const savedApiBase = String(stored?.[API_BASE_STORAGE_KEY] || '').trim()
+  if (savedApiBase) els.apiBase.value = savedApiBase
+  await loadMetaAndCompanies()
+  setStatus('Ready')
+})().catch((err) => setStatus(err.message, true))

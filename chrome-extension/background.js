@@ -73,31 +73,46 @@ async function tryAutoTokenFromOpenAppTabs() {
 }
 
 async function apiFetch(path, options = {}) {
-  let token = await getToken()
-  if (!token) {
-    token = await tryAutoTokenFromOpenAppTabs()
-  }
-  if (options.requireAuth && !token) {
-    throw new Error('Please login in web app')
-  }
-
   const apiBase = normalizeApiBase(options.apiBase)
   const url = `${apiBase}${path}`
-  const authHeaders = token ? { Authorization: `Bearer ${token}` } : {}
 
-  const response = await fetch(url, {
-    method: options.method || 'GET',
-    headers: {
-      ...authHeaders,
-      ...(options.headers || {}),
-    },
-    ...(options.body !== undefined ? { body: options.body } : {}),
-  })
+  async function requestWithToken(tok) {
+    const authHeaders = tok ? { Authorization: `Bearer ${tok}` } : {}
+    const response = await fetch(url, {
+      method: options.method || 'GET',
+      headers: {
+        ...authHeaders,
+        ...(options.headers || {}),
+      },
+      ...(options.body !== undefined ? { body: options.body } : {}),
+    })
+    const data = await response.json().catch(() => ({}))
+    return { response, data }
+  }
 
-  const data = await response.json().catch(() => ({}))
+  let token = await getToken()
+  if (!token) token = await tryAutoTokenFromOpenAppTabs()
+  if (options.requireAuth && !token) throw new Error('Please login in web app')
+
+  let { response, data } = await requestWithToken(token)
+  const detail = formatApiError(data)
+
+  const tokenInvalid = response.status === 401 && /token not valid|token is invalid|token is expired/i.test(detail)
+  if (tokenInvalid) {
+    await setToken('')
+    const refreshed = await tryAutoTokenFromOpenAppTabs()
+    if (options.requireAuth && !refreshed) {
+      throw new Error('Please login in web app')
+    }
+    if (refreshed) {
+      const retry = await requestWithToken(refreshed)
+      response = retry.response
+      data = retry.data
+    }
+  }
+
   if (!response.ok) {
-    const detail = formatApiError(data)
-    throw new Error(`HTTP ${response.status}: ${detail}`)
+    throw new Error(`HTTP ${response.status}: ${formatApiError(data)}`)
   }
   return data
 }

@@ -48,21 +48,28 @@ function ResultSummary({ title, data, kind }) {
   const hasErrors = errors.length > 0
 
   return (
-    <section className="card" style={{ marginTop: 12, borderColor: hasErrors ? '#f4b4b4' : '#b8dec0' }}>
-      <h3 style={{ marginBottom: 8 }}>{title}</h3>
-      <div className="hint">Received: {Number(box.received || 0)} | Created: {Number(box.created || 0)} | Company Created: {Number(box.company_created || 0)}</div>
-      {kind === 'job' ? (
-        <div className="hint">Duplicate in file: {Number(box.duplicate_in_file || 0)} | Duplicate in DB: {Number(box.duplicate_in_db || 0)}</div>
-      ) : null}
+    <section className={`bulk-result ${hasErrors ? 'is-error' : 'is-success'}`}>
+      <h3 className="bulk-result-title">{title}</h3>
+      <div className="bulk-result-stats">
+        <span className="bulk-stat-chip">Received: {Number(box.received || 0)}</span>
+        <span className="bulk-stat-chip">Created: {Number(box.created || 0)}</span>
+        <span className="bulk-stat-chip">Company Created: {Number(box.company_created || 0)}</span>
+        {kind === 'job' ? (
+          <>
+            <span className="bulk-stat-chip">Duplicate in file: {Number(box.duplicate_in_file || 0)}</span>
+            <span className="bulk-stat-chip">Duplicate in DB: {Number(box.duplicate_in_db || 0)}</span>
+          </>
+        ) : null}
+      </div>
       {hasErrors ? (
         <>
-          <p className="error" style={{ marginTop: 8 }}>Row errors: {errors.length}</p>
-          <div style={{ maxHeight: 220, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+          <p className="error">Row errors: {errors.length}</p>
+          <div className="bulk-error-list">
             {errors.map((item, index) => {
               const rowNo = Number(item?.row || 0)
               const message = typeof item?.error === 'string' ? item.error : JSON.stringify(item?.error || {})
               return (
-                <p key={`${kind}-err-${index}`} style={{ margin: '4px 0' }}>
+                <p key={`${kind}-err-${index}`}>
                   Row {rowNo || '-'}: {message}
                 </p>
               )
@@ -70,7 +77,7 @@ function ResultSummary({ title, data, kind }) {
           </div>
         </>
       ) : (
-        <p style={{ color: '#1b7f3b', marginTop: 8 }}>Upload completed with no row errors.</p>
+        <p className="bulk-success-text">Upload completed with no row errors.</p>
       )}
     </section>
   )
@@ -158,36 +165,33 @@ function BulkUploadPage() {
   }
 
   return (
-    <main className="page page-wide page-plain mx-auto w-full">
+    <main className="page page-wide page-plain mx-auto w-full bulk-shell">
       <div className="tracking-head">
         <div>
           <h1>Bulk Upload</h1>
           <p className="subtitle">Upload Employees and Jobs separately using JSON text or JSON file.</p>
         </div>
       </div>
+      <section className="bulk-banner">
+        <p>Tip: paste JSON and upload directly, or choose `.json` files. Results show created rows, duplicates, and row-level errors.</p>
+      </section>
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))',
-          gap: 16,
-          alignItems: 'start',
-        }}
-      >
-        <section className="card">
+      <div className="bulk-grid">
+        <section className="bulk-panel">
           <h2>Employees Bulk Upload</h2>
           <p className="hint">Required fields: first_name, last_name, role, location, company, department.</p>
           <label>
             Employees JSON
             <textarea
-              rows={10}
+              rows={11}
               value={employeeJson}
               onChange={(event) => setEmployeeJson(event.target.value)}
               placeholder='Paste array or { "employees": [...] }'
             />
           </label>
-          <div className="actions" style={{ marginBottom: 10 }}>
+          <div className="actions">
             <button type="button" onClick={submitEmployeesJson} disabled={employeeLoading}>Upload Employees (JSON)</button>
+            <button type="button" className="secondary" onClick={() => setEmployeeJson(EMPLOYEE_SAMPLE)} disabled={employeeLoading}>Reset Sample</button>
           </div>
           <label>
             Employees JSON File
@@ -199,25 +203,27 @@ function BulkUploadPage() {
           </label>
           <div className="actions">
             <button type="button" className="secondary" onClick={submitEmployeesFile} disabled={employeeLoading}>Upload Employees (File)</button>
+            {employeeFile ? <span className="hint">Selected: {employeeFile.name}</span> : null}
           </div>
           {employeeError ? <p className="error">{employeeError}</p> : null}
           <ResultSummary title="Employee Upload Result" data={employeeResult} kind="employee" />
         </section>
 
-        <section className="card">
+        <section className="bulk-panel">
           <h2>Jobs Bulk Upload</h2>
           <p className="hint">Required fields: company, job_id, job_link. Duplicate company + job_id is rejected.</p>
           <label>
             Jobs JSON
             <textarea
-              rows={10}
+              rows={11}
               value={jobJson}
               onChange={(event) => setJobJson(event.target.value)}
               placeholder='Paste array or { "jobs": [...] }'
             />
           </label>
-          <div className="actions" style={{ marginBottom: 10 }}>
+          <div className="actions">
             <button type="button" onClick={submitJobsJson} disabled={jobLoading}>Upload Jobs (JSON)</button>
+            <button type="button" className="secondary" onClick={() => setJobJson(JOB_SAMPLE)} disabled={jobLoading}>Reset Sample</button>
           </div>
           <label>
             Jobs JSON File
@@ -229,6 +235,7 @@ function BulkUploadPage() {
           </label>
           <div className="actions">
             <button type="button" className="secondary" onClick={submitJobsFile} disabled={jobLoading}>Upload Jobs (File)</button>
+            {jobFile ? <span className="hint">Selected: {jobFile.name}</span> : null}
           </div>
           {jobError ? <p className="error">{jobError}</p> : null}
           <ResultSummary title="Job Upload Result" data={jobResult} kind="job" />

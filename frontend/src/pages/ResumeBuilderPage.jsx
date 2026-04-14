@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 
 import RichTextarea from '../components/RichTextarea'
 import ResumeSheet from '../components/ResumeSheet'
+import { SingleSelectDropdown } from '../components/SearchableDropdown'
 import {
   createTailoredResume,
   createResume,
@@ -583,7 +584,7 @@ function buildDocHtml(form) {
 }
 
 function ResumeBuilderPage({
-  pageTitle = 'Resume Builder',
+  pageTitle = 'Resume Workspace',
   subtitle = 'Fill inputs on left. Resume updates live on right.',
   importSessionKey = 'builderImport',
   resumeIdSessionKey = 'builderResumeId',
@@ -653,6 +654,7 @@ function ResumeBuilderPage({
     ],
   })
   const [resumeRecordId, setResumeRecordId] = useState(() => sessionStorage.getItem(resumeIdSessionKey))
+  const [saveMode, setSaveMode] = useState(() => (sessionStorage.getItem('builderSaveMode') === 'edit' ? 'edit' : 'create'))
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
   const [pdfSaveState, setPdfSaveState] = useState({ saving: false, message: '' })
   const [importState, setImportState] = useState({ importing: false, message: '' })
@@ -671,7 +673,6 @@ function ResumeBuilderPage({
   const [tailoredModal, setTailoredModal] = useState({
     open: false,
     name: '',
-    jobSearch: '',
     jobId: '',
     loading: false,
     jobs: [],
@@ -769,6 +770,10 @@ function ResumeBuilderPage({
   }, [showJdBox, tailorMode, tailorModeSessionKey])
 
   useEffect(() => {
+    sessionStorage.setItem('builderSaveMode', saveMode)
+  }, [saveMode])
+
+  useEffect(() => {
     const raw = sessionStorage.getItem(importSessionKey)
     if (raw) {
       try {
@@ -831,10 +836,17 @@ function ResumeBuilderPage({
           if (cancelled) return
           setForm((prev) => ({
             ...prev,
+            ...(full.builder_data || {}),
+            pageMarginIn: normalizePageMarginIn(full.builder_data?.pageMarginIn ?? prev.pageMarginIn),
+            sectionUnderline: true,
             isDefaultResume: Boolean(full.is_default),
           }))
+          setResumeRecordId(String(full.id))
+          setSaveMode('edit')
+          // Stored resume was loaded successfully; do not override with default resume.
+          return
         } catch {
-          // ignore; keep local state
+          // If stored resume is missing/invalid, fall back to default resume.
         }
         if (cancelled) return
         try {
@@ -1265,8 +1277,10 @@ function ResumeBuilderPage({
       }
 
       // Tailor action is preview-first. Keep save manual to avoid auto-overwrite.
-      setResumeRecordId(null)
-      sessionStorage.removeItem(resumeIdSessionKey)
+      if (saveMode === 'create') {
+        setResumeRecordId(null)
+        sessionStorage.removeItem(resumeIdSessionKey)
+      }
 
       const mode = String(result?.mode || '')
       const score = Number(result?.match_score)
@@ -1337,8 +1351,10 @@ function ResumeBuilderPage({
         }))
       }
 
-      setResumeRecordId(null)
-      sessionStorage.removeItem(resumeIdSessionKey)
+      if (saveMode === 'create') {
+        setResumeRecordId(null)
+        sessionStorage.removeItem(resumeIdSessionKey)
+      }
 
       setTailorState({
         loading: false,
@@ -1379,10 +1395,16 @@ function ResumeBuilderPage({
 
       const data = (!forceCreate && resumeRecordId)
         ? await updateResume(access, resumeRecordId, payload)
-        : await createResume(access, payload)
+        : (() => {
+            if (!forceCreate && saveMode === 'edit') {
+              throw new Error('Edit mode cannot create new resume. Use Add Resume (+) to create.')
+            }
+            return createResume(access, payload)
+          })()
 
       setResumeRecordId(String(data.id))
       sessionStorage.setItem(resumeIdSessionKey, String(data.id))
+      setSaveMode('edit')
       setForm((prev) => ({
         ...prev,
         isDefaultResume: Boolean(data.is_default),
@@ -1399,6 +1421,10 @@ function ResumeBuilderPage({
   }
 
   const openSaveModal = () => {
+    if (saveMode === 'edit' && !resumeRecordId) {
+      setSaveState({ saving: false, message: 'Edit mode cannot create new resume. Use Add Resume (+).' })
+      return
+    }
     const suggested = String(autoTitle || '').trim() || 'My Resume'
     setSaveModal({
       open: true,
@@ -1425,7 +1451,6 @@ function ResumeBuilderPage({
     setTailoredModal({
       open: true,
       name: suggested,
-      jobSearch: '',
       jobId: '',
       loading: true,
       jobs: [],
@@ -1447,11 +1472,16 @@ function ResumeBuilderPage({
     }
     try {
       setSaveState({ saving: true, message: '' })
+      const sourceResumeId = String(resumeRecordId || tailorReferenceResumeId || '').trim()
+      if (!sourceResumeId) {
+        setSaveState({ saving: false, message: 'Save original resume first (or load reference resume) before Save To Tailored.' })
+        return
+      }
       const name = String(tailoredModal.name || '').trim() || `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
       const payload = {
         name,
         builder_data: form,
-        resume: resumeRecordId ? Number(resumeRecordId) : null,
+        resume: Number(sourceResumeId),
         job: tailoredModal.jobId ? Number(tailoredModal.jobId) : null,
       }
       await createTailoredResume(access, payload)
@@ -1518,16 +1548,6 @@ function ResumeBuilderPage({
     </div>
   )
 
-  const filteredJobsForTailored = useMemo(() => {
-    const term = String(tailoredModal.jobSearch || '').trim().toLowerCase()
-    const all = Array.isArray(tailoredModal.jobs) ? tailoredModal.jobs : []
-    if (!term) return all
-    return all.filter((job) => {
-      const combined = `${job.job_id || ''} ${job.role || ''} ${job.company_name || ''}`.toLowerCase()
-      return combined.includes(term)
-    })
-  }, [tailoredModal.jobSearch, tailoredModal.jobs])
-
   return (
     <main className="builder-layout builder-page">
       <section className="builder-panel">
@@ -1540,7 +1560,10 @@ function ResumeBuilderPage({
         />
         <div className="builder-header">
           <div className="builder-header-top">
-            <h1>{pageTitle}</h1>
+            <div>
+              <h1>{pageTitle}</h1>
+              <p className="builder-kicker">Career Tools</p>
+            </div>
             <button type="button" className="secondary" onClick={() => navigate('/profile')}>
               Back to Profile
             </button>
@@ -1552,32 +1575,39 @@ function ResumeBuilderPage({
 
         <div className="form">
           {showJdBox && (
-            <div className="exp-card">
-              <label htmlFor="job-description">Paste Job Description</label>
-              <label htmlFor="ai-model-select" style={{ marginTop: 8 }}>AI Model</label>
-              <select
-                id="ai-model-select"
-                value={aiModel}
-                onChange={(e) => setAiModel(e.target.value)}
-              >
-                {AI_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <label htmlFor="tailor-mode-select" style={{ marginTop: 8 }}>Tailor Type</label>
-              <select
-                id="tailor-mode-select"
-                value={tailorMode}
-                onChange={(e) => setTailorMode(e.target.value)}
-              >
-                {TAILOR_MODE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+            <div className="exp-card builder-jd-card">
+              <div className="builder-section-top">
+                <label htmlFor="job-description">Paste Job Description</label>
+                <span className="builder-section-tag">AI Assist</span>
+              </div>
+              <div className="builder-control-grid">
+                <label htmlFor="ai-model-select">AI Model
+                  <select
+                    id="ai-model-select"
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                  >
+                    {AI_MODEL_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label htmlFor="tailor-mode-select">Tailor Type
+                  <select
+                    id="tailor-mode-select"
+                    value={tailorMode}
+                    onChange={(e) => setTailorMode(e.target.value)}
+                  >
+                    {TAILOR_MODE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <textarea
                 id="job-description"
                 rows={10}
@@ -1666,9 +1696,12 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="section-options">
-            <label>Typography</label>
-            <div className="exp-row">
+            <div className="section-options builder-settings-card">
+            <div className="builder-section-top">
+              <label>Typography</label>
+              <span className="builder-section-tag">Layout</span>
+            </div>
+            <div className="builder-control-grid">
               <select
                 value={form.bodyFontFamily || FONT_FAMILY_OPTIONS[0].value}
                 onChange={(e) => updateField('bodyFontFamily', e.target.value)}
@@ -1689,7 +1722,7 @@ function ResumeBuilderPage({
                 <option value="12">Font size: 12</option>
               </select>
             </div>
-            <div className="exp-row">
+            <div className="builder-control-grid">
               <select
                 value={String(form.bodyLineHeight || 1)}
                 onChange={(e) => updateField('bodyLineHeight', Number(e.target.value))}
@@ -1764,7 +1797,7 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="exp-editor">
+            <div className="exp-editor builder-block">
             <div className="exp-editor-head">
               <label>Extra sections (optional)</label>
               <button type="button" className="secondary" onClick={addCustomSection}>
@@ -1808,7 +1841,7 @@ function ResumeBuilderPage({
           {!minimalTailorUi && <input value={form.location} onChange={(e) => updateField('location', e.target.value)} placeholder="Location" />}
 
           {!minimalTailorUi && (
-            <div className="exp-editor">
+            <div className="exp-editor builder-block">
             <div className="exp-editor-head">
               <label>Profile Links (max 5)</label>
               <button
@@ -1848,7 +1881,7 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="section-options">
+            <div className="section-options builder-settings-card">
             <label className="checkbox">
               <input
                 type="checkbox"
@@ -1898,7 +1931,7 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="exp-editor">
+            <div className="exp-editor builder-block">
             <div className="exp-editor-head">
               <label>Experience</label>
               <button type="button" className="secondary" onClick={addExperience}>
@@ -1972,7 +2005,7 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="exp-editor">
+            <div className="exp-editor builder-block">
             <div className="exp-editor-head">
               <label>Projects</label>
               <button type="button" className="secondary" onClick={addProject}>
@@ -2021,7 +2054,7 @@ function ResumeBuilderPage({
           )}
 
           {!minimalTailorUi && (
-            <div className="edu-editor">
+            <div className="edu-editor builder-block">
             <div className="exp-editor-head">
               <label>Education</label>
               <button type="button" className="secondary" onClick={addEducation}>
@@ -2144,6 +2177,12 @@ function ResumeBuilderPage({
       </section>
 
       <section className="preview-panel">
+        <div className="preview-panel-head">
+          <div>
+            <h2>Live Preview</h2>
+            <p className="subtitle">A cleaner view of what will be exported and shared.</p>
+          </div>
+        </div>
         <ResumeSheet form={form} />
       </section>
 
@@ -2160,27 +2199,18 @@ function ResumeBuilderPage({
               />
             </label>
             <label>
-              Search Job (Optional)
-              <input
-                value={tailoredModal.jobSearch}
-                onChange={(e) => setTailoredModal((prev) => ({ ...prev, jobSearch: e.target.value }))}
-                placeholder="Search by job id, role, company"
-              />
-            </label>
-            <label>
               Associate Job (Optional)
-              <select
+              <SingleSelectDropdown
                 value={tailoredModal.jobId || ''}
-                onChange={(e) => setTailoredModal((prev) => ({ ...prev, jobId: e.target.value }))}
+                placeholder="Search/select job"
+                clearLabel="No job association"
                 disabled={tailoredModal.loading}
-              >
-                <option value="">No job association</option>
-                {filteredJobsForTailored.map((job) => (
-                  <option key={job.id} value={job.id}>
-                    {job.job_id} - {job.role} ({job.company_name})
-                  </option>
-                ))}
-              </select>
+                options={(Array.isArray(tailoredModal.jobs) ? tailoredModal.jobs : []).map((job) => ({
+                  value: String(job.id),
+                  label: `${job.job_id || '-'} | ${job.role || '-'} | ${job.company_name || '-'}`,
+                }))}
+                onChange={(nextValue) => setTailoredModal((prev) => ({ ...prev, jobId: nextValue }))}
+              />
             </label>
             <div className="actions">
               <button type="button" onClick={saveToTailored} disabled={saveState.saving || tailoredModal.loading}>

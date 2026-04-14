@@ -48,6 +48,7 @@ function ResumePreviewPage() {
       setLoading(true)
       const full = await fetchResume(access, resumeId)
       sessionStorage.setItem('builderImport', JSON.stringify(full.builder_data || {}))
+      sessionStorage.setItem('builderSaveMode', 'edit')
       sessionStorage.setItem('builderResumeId', String(resumeId))
       navigate('/builder')
     } catch (err) {

@@ -3,21 +3,42 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Job Assistant</title>
+  <title>ApplyPilot Companion</title>
   <link rel="stylesheet" href="panel.css" />
 </head>
 <body>
   <main class="app">
-    <header>
-      <h1>Job Assistant</h1>
+    <header class="hero">
+      <div class="hero-mark">AP</div>
+      <div class="hero-copy">
+        <h1>ApplyPilot Companion</h1>
+        <p class="hero-subtitle">Capture jobs and employee contacts faster from hiring pages and LinkedIn.</p>
+      </div>
       <p id="status" class="status"></p>
     </header>
 
-    <section class="card">
-      <h2>Job Create</h2>
+    <section class="card card-settings">
+      <div class="card-head">
+        <div>
+          <h2>Connection</h2>
+          <p class="card-note">Point the extension to your local ApplyPilot backend and refresh shared data.</p>
+        </div>
+      </div>
       <div class="row">
         <label>API Base</label>
         <input id="apiBase" value="http://127.0.0.1:8000/api" />
+      </div>
+      <div class="actions actions-inline">
+        <button id="refreshBtn" type="button">Refresh Data</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2>Job Create</h2>
+          <p class="card-note">Pull the current job page details, review them, and save directly.</p>
+        </div>
       </div>
       <div class="row">
         <div>
@@ -58,13 +79,17 @@
       <div class="actions">
         <button id="fetchFromPageBtn" type="button">Fetch From Page</button>
         <button id="saveJobBtn" type="button">Save Job</button>
-        <button id="refreshBtn" type="button">Refresh</button>
         <button id="clearJobBtn" type="button">Clear Fields</button>
       </div>
     </section>
 
     <section class="card">
-      <h2>Employee Create</h2>
+      <div class="card-head">
+        <div>
+          <h2>Employee Create</h2>
+          <p class="card-note">Capture recruiters or team contacts from LinkedIn profile pages.</p>
+        </div>
+      </div>
       <div class="row two">
         <div><label>Name</label><input id="empName" required /></div>
         <div>
@@ -137,7 +162,6 @@
       <div class="actions">
         <button id="fetchEmployeeFromPageBtn" type="button">Fetch Employee</button>
         <button id="saveEmployeeBtn" type="button">Save Employee</button>
-        <button id="refreshEmployeeBtn" type="button">Refresh</button>
         <button id="clearEmployeeBtn" type="button">Clear Fields</button>
       </div>
     </section>
