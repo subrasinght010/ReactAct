@@ -39,12 +39,41 @@ function parseJsonList(raw, keyName) {
   throw new Error(`${keyName} JSON must be an array or object containing "${keyName}" array.`)
 }
 
-function pretty(data) {
-  try {
-    return JSON.stringify(data, null, 2)
-  } catch {
-    return String(data)
-  }
+function ResultSummary({ title, data, kind }) {
+  if (!data || typeof data !== 'object') return null
+  const box = kind === 'employee' ? data.employees : data.jobs
+  if (!box || typeof box !== 'object') return null
+
+  const errors = Array.isArray(box.errors) ? box.errors : []
+  const hasErrors = errors.length > 0
+
+  return (
+    <section className="card" style={{ marginTop: 12, borderColor: hasErrors ? '#f4b4b4' : '#b8dec0' }}>
+      <h3 style={{ marginBottom: 8 }}>{title}</h3>
+      <div className="hint">Received: {Number(box.received || 0)} | Created: {Number(box.created || 0)} | Company Created: {Number(box.company_created || 0)}</div>
+      {kind === 'job' ? (
+        <div className="hint">Duplicate in file: {Number(box.duplicate_in_file || 0)} | Duplicate in DB: {Number(box.duplicate_in_db || 0)}</div>
+      ) : null}
+      {hasErrors ? (
+        <>
+          <p className="error" style={{ marginTop: 8 }}>Row errors: {errors.length}</p>
+          <div style={{ maxHeight: 220, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 8, padding: 8 }}>
+            {errors.map((item, index) => {
+              const rowNo = Number(item?.row || 0)
+              const message = typeof item?.error === 'string' ? item.error : JSON.stringify(item?.error || {})
+              return (
+                <p key={`${kind}-err-${index}`} style={{ margin: '4px 0' }}>
+                  Row {rowNo || '-'}: {message}
+                </p>
+              )
+            })}
+          </div>
+        </>
+      ) : (
+        <p style={{ color: '#1b7f3b', marginTop: 8 }}>Upload completed with no row errors.</p>
+      )}
+    </section>
+  )
 }
 
 function BulkUploadPage() {
@@ -53,23 +82,23 @@ function BulkUploadPage() {
   const [employeeJson, setEmployeeJson] = useState(EMPLOYEE_SAMPLE)
   const [employeeFile, setEmployeeFile] = useState(null)
   const [employeeLoading, setEmployeeLoading] = useState(false)
-  const [employeeResult, setEmployeeResult] = useState('')
+  const [employeeResult, setEmployeeResult] = useState(null)
   const [employeeError, setEmployeeError] = useState('')
 
   const [jobJson, setJobJson] = useState(JOB_SAMPLE)
   const [jobFile, setJobFile] = useState(null)
   const [jobLoading, setJobLoading] = useState(false)
-  const [jobResult, setJobResult] = useState('')
+  const [jobResult, setJobResult] = useState(null)
   const [jobError, setJobError] = useState('')
 
   const submitEmployeesJson = async () => {
     setEmployeeError('')
-    setEmployeeResult('')
+    setEmployeeResult(null)
     setEmployeeLoading(true)
     try {
       const rows = parseJsonList(employeeJson, 'employees')
       const data = await bulkUploadEmployees(access, { employees: rows })
-      setEmployeeResult(pretty(data))
+      setEmployeeResult(data)
     } catch (err) {
       setEmployeeError(err.message || 'Employee upload failed.')
     } finally {
@@ -83,11 +112,11 @@ function BulkUploadPage() {
       return
     }
     setEmployeeError('')
-    setEmployeeResult('')
+    setEmployeeResult(null)
     setEmployeeLoading(true)
     try {
       const data = await bulkUploadEmployees(access, employeeFile, { isFile: true })
-      setEmployeeResult(pretty(data))
+      setEmployeeResult(data)
     } catch (err) {
       setEmployeeError(err.message || 'Employee file upload failed.')
     } finally {
@@ -97,12 +126,12 @@ function BulkUploadPage() {
 
   const submitJobsJson = async () => {
     setJobError('')
-    setJobResult('')
+    setJobResult(null)
     setJobLoading(true)
     try {
       const rows = parseJsonList(jobJson, 'jobs')
       const data = await bulkUploadJobs(access, { jobs: rows })
-      setJobResult(pretty(data))
+      setJobResult(data)
     } catch (err) {
       setJobError(err.message || 'Job upload failed.')
     } finally {
@@ -116,11 +145,11 @@ function BulkUploadPage() {
       return
     }
     setJobError('')
-    setJobResult('')
+    setJobResult(null)
     setJobLoading(true)
     try {
       const data = await bulkUploadJobs(access, jobFile, { isFile: true })
-      setJobResult(pretty(data))
+      setJobResult(data)
     } catch (err) {
       setJobError(err.message || 'Job file upload failed.')
     } finally {
@@ -137,75 +166,74 @@ function BulkUploadPage() {
         </div>
       </div>
 
-      <section className="card" style={{ marginBottom: 16 }}>
-        <h2>Employees Bulk Upload</h2>
-        <p className="hint">Required fields: first_name, last_name, role, location, company, department.</p>
-        <label>
-          Employees JSON
-          <textarea
-            rows={10}
-            value={employeeJson}
-            onChange={(event) => setEmployeeJson(event.target.value)}
-            placeholder='Paste array or { "employees": [...] }'
-          />
-        </label>
-        <div className="actions" style={{ marginBottom: 10 }}>
-          <button type="button" onClick={submitEmployeesJson} disabled={employeeLoading}>Upload Employees (JSON)</button>
-        </div>
-        <label>
-          Employees JSON File
-          <input
-            type="file"
-            accept="application/json,.json"
-            onChange={(event) => setEmployeeFile(event.target.files?.[0] || null)}
-          />
-        </label>
-        <div className="actions">
-          <button type="button" className="secondary" onClick={submitEmployeesFile} disabled={employeeLoading}>Upload Employees (File)</button>
-        </div>
-        {employeeError ? <p className="error">{employeeError}</p> : null}
-        {employeeResult ? (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))',
+          gap: 16,
+          alignItems: 'start',
+        }}
+      >
+        <section className="card">
+          <h2>Employees Bulk Upload</h2>
+          <p className="hint">Required fields: first_name, last_name, role, location, company, department.</p>
           <label>
-            Employee Upload Result
-            <textarea rows={12} value={employeeResult} readOnly />
+            Employees JSON
+            <textarea
+              rows={10}
+              value={employeeJson}
+              onChange={(event) => setEmployeeJson(event.target.value)}
+              placeholder='Paste array or { "employees": [...] }'
+            />
           </label>
-        ) : null}
-      </section>
+          <div className="actions" style={{ marginBottom: 10 }}>
+            <button type="button" onClick={submitEmployeesJson} disabled={employeeLoading}>Upload Employees (JSON)</button>
+          </div>
+          <label>
+            Employees JSON File
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => setEmployeeFile(event.target.files?.[0] || null)}
+            />
+          </label>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={submitEmployeesFile} disabled={employeeLoading}>Upload Employees (File)</button>
+          </div>
+          {employeeError ? <p className="error">{employeeError}</p> : null}
+          <ResultSummary title="Employee Upload Result" data={employeeResult} kind="employee" />
+        </section>
 
-      <section className="card">
-        <h2>Jobs Bulk Upload</h2>
-        <p className="hint">Required fields: company, job_id, job_link. Duplicate company + job_id is rejected.</p>
-        <label>
-          Jobs JSON
-          <textarea
-            rows={10}
-            value={jobJson}
-            onChange={(event) => setJobJson(event.target.value)}
-            placeholder='Paste array or { "jobs": [...] }'
-          />
-        </label>
-        <div className="actions" style={{ marginBottom: 10 }}>
-          <button type="button" onClick={submitJobsJson} disabled={jobLoading}>Upload Jobs (JSON)</button>
-        </div>
-        <label>
-          Jobs JSON File
-          <input
-            type="file"
-            accept="application/json,.json"
-            onChange={(event) => setJobFile(event.target.files?.[0] || null)}
-          />
-        </label>
-        <div className="actions">
-          <button type="button" className="secondary" onClick={submitJobsFile} disabled={jobLoading}>Upload Jobs (File)</button>
-        </div>
-        {jobError ? <p className="error">{jobError}</p> : null}
-        {jobResult ? (
+        <section className="card">
+          <h2>Jobs Bulk Upload</h2>
+          <p className="hint">Required fields: company, job_id, job_link. Duplicate company + job_id is rejected.</p>
           <label>
-            Job Upload Result
-            <textarea rows={12} value={jobResult} readOnly />
+            Jobs JSON
+            <textarea
+              rows={10}
+              value={jobJson}
+              onChange={(event) => setJobJson(event.target.value)}
+              placeholder='Paste array or { "jobs": [...] }'
+            />
           </label>
-        ) : null}
-      </section>
+          <div className="actions" style={{ marginBottom: 10 }}>
+            <button type="button" onClick={submitJobsJson} disabled={jobLoading}>Upload Jobs (JSON)</button>
+          </div>
+          <label>
+            Jobs JSON File
+            <input
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => setJobFile(event.target.files?.[0] || null)}
+            />
+          </label>
+          <div className="actions">
+            <button type="button" className="secondary" onClick={submitJobsFile} disabled={jobLoading}>Upload Jobs (File)</button>
+          </div>
+          {jobError ? <p className="error">{jobError}</p> : null}
+          <ResultSummary title="Job Upload Result" data={jobResult} kind="job" />
+        </section>
+      </div>
     </main>
   )
 }

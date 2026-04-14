@@ -5,9 +5,10 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from django.contrib.auth import get_user_model
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -72,6 +73,14 @@ def _paginate_queryset(queryset, request, default_page_size=10, max_page_size=10
         'page_size': page_size,
         'total_pages': total_pages,
     }
+
+
+def _resolve_extension_user(request):
+    user = getattr(request, 'user', None)
+    if getattr(user, 'is_authenticated', False):
+        return user
+    User = get_user_model()
+    return User.objects.order_by('id').first()
 
 def _plain_text_from_html(value: str) -> str:
     import re
@@ -3287,4 +3296,277 @@ class BulkUploadJobsView(BulkUploadJobsEmployeesView):
                 'jobs': jobs_summary,
             },
             status=response_status,
+        )
+
+
+class ExtensionFormMetaView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser]
+
+    def get(self, request):
+        posted_date_options = [
+            {'value': 'today', 'label': 'Today'},
+            {'value': 'yesterday', 'label': 'Yesterday'},
+            {'value': 'last_3_days', 'label': 'Last 3 Days'},
+            {'value': 'last_7_days', 'label': 'Last 7 Days'},
+            {'value': 'custom', 'label': 'Posted Date'},
+        ]
+        location_rows = Location.objects.all().order_by('name')[:10]
+        return Response(
+            {
+                'department_options': [
+                    {'value': 'HR', 'label': 'HR'},
+                    {'value': 'Engineering', 'label': 'Engineering'},
+                    {'value': 'Other', 'label': 'Other'},
+                ],
+                'location_options': [
+                    {'value': str(row.name or '').strip(), 'label': str(row.name or '').strip()}
+                    for row in location_rows
+                    if str(row.name or '').strip()
+                ],
+                'posted_date_options': posted_date_options,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ExtensionCompanySearchView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser]
+
+    def get(self, request):
+        actor = _resolve_extension_user(request)
+        if not actor:
+            return Response({'detail': 'No user found for extension context.'}, status=status.HTTP_400_BAD_REQUEST)
+        q = str(request.query_params.get('q') or '').strip()
+        rows = Company.objects.filter(user=actor)
+        if q:
+            rows = rows.filter(name__icontains=q)
+        rows = rows.order_by('name')[:50]
+        return Response(
+            {
+                'results': [
+                    {
+                        'id': row.id,
+                        'name': row.name,
+                        'mail_format': str(row.mail_format or '').strip(),
+                    }
+                    for row in rows
+                ]
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ExtensionJobCreateView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser]
+
+    def _to_date(self, value):
+        raw = str(value or '').strip()
+        if not raw:
+            return None
+        try:
+            return datetime.fromisoformat(raw[:10]).date()
+        except Exception:
+            return None
+
+    def _resolve_posted_date(self, payload):
+        custom = self._to_date(payload.get('posted_date') or payload.get('date_of_posting'))
+        if custom:
+            return custom
+
+        option = str(payload.get('posted_date_option') or '').strip().lower()
+        today = timezone.localdate()
+        if option == 'today':
+            return today
+        if option == 'yesterday':
+            return today - timedelta(days=1)
+        if option == 'last_3_days':
+            return today - timedelta(days=3)
+        if option == 'last_7_days':
+            return today - timedelta(days=7)
+        return None
+
+    def _resolve_company(self, user, payload):
+        company_id = payload.get('company_id') or payload.get('company')
+        if company_id:
+            try:
+                return Company.objects.get(id=company_id, user=user), ''
+            except Company.DoesNotExist:
+                return None, 'Company not found.'
+
+        company_name = normalize_company_name(payload.get('company_name') or payload.get('company'))
+        if not company_name:
+            return None, 'company_name is required when company_id is not provided.'
+        company = Company.objects.filter(user=user, name__iexact=company_name).first()
+        if company:
+            return company, ''
+        company = Company.objects.create(user=user, name=company_name)
+        return company, ''
+
+    def post(self, request):
+        payload = request.data or {}
+        actor = _resolve_extension_user(request)
+        if not actor:
+            return Response({'detail': 'No user found for extension context.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        company, company_error = self._resolve_company(actor, payload)
+        if company_error:
+            return Response({'detail': company_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        mail_pattern = str(payload.get('mail_pattern') or payload.get('company_mail_pattern') or '').strip()
+        if mail_pattern and str(company.mail_format or '').strip() != mail_pattern:
+            company.mail_format = mail_pattern
+            company.save(update_fields=['mail_format', 'updated_at'])
+
+        job_id_value = str(payload.get('job_id') or '').strip()
+        role_value = str(payload.get('role') or '').strip()
+        job_link_value = str(payload.get('job_link') or '').strip()
+        jd_value = str(payload.get('jd') or payload.get('jd_text') or '').strip()
+        posted_date = self._resolve_posted_date(payload)
+        applied_raw = str(payload.get('applied') or '').strip().lower()
+        is_applied = applied_raw in {'yes', 'y', 'true', '1'}
+        applied_at = timezone.localdate() if is_applied else None
+
+        missing = []
+        if not job_id_value:
+            missing.append('job_id')
+        if not role_value:
+            missing.append('role')
+        if not job_link_value:
+            missing.append('job_link')
+        if missing:
+            return Response(
+                {'detail': f'Missing required fields: {", ".join(missing)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        duplicate = Job.objects.filter(
+            user=actor,
+            company=company,
+            job_id__iexact=job_id_value,
+            is_removed=False,
+        ).exists()
+        if duplicate:
+            return Response(
+                {'detail': 'This company + job_id already exists.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        created = Job.objects.create(
+            user=actor,
+            company=company,
+            job_id=job_id_value,
+            role=role_value,
+            job_link=job_link_value,
+            jd_text=jd_value,
+            date_of_posting=posted_date,
+            applied_at=applied_at,
+        )
+        return Response(
+            {
+                'message': 'Job created.',
+                'job': JobSerializer(created, context={'request': request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ExtensionEmployeeCreateView(APIView):
+    permission_classes = [AllowAny]
+    parser_classes = [JSONParser]
+
+    def _map_department(self, value):
+        text = str(value or '').strip().lower()
+        if text in {'hr', 'human resource', 'human resources', 'talent', 'recruiting', 'recruiter'}:
+            return 'HR'
+        if text in {'engineering', 'engineer', 'developer', 'sde', 'software', 'dev'}:
+            return 'Engineering'
+        return 'Other'
+
+    def _resolve_company(self, user, payload):
+        company_id = payload.get('company_id') or payload.get('company')
+        if company_id:
+            try:
+                return Company.objects.get(id=company_id, user=user), ''
+            except Company.DoesNotExist:
+                return None, 'Company not found.'
+
+        company_name = normalize_company_name(payload.get('company_name') or payload.get('company'))
+        if not company_name:
+            return None, 'company_name is required when company_id is not provided.'
+        company = Company.objects.filter(user=user, name__iexact=company_name).first()
+        if company:
+            return company, ''
+        company = Company.objects.create(user=user, name=company_name)
+        return company, ''
+
+    def post(self, request):
+        payload = dict(request.data or {})
+        actor = _resolve_extension_user(request)
+        if not actor:
+            return Response({'detail': 'No user found for extension context.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        company, company_error = self._resolve_company(actor, payload)
+        if company_error:
+            return Response({'detail': company_error}, status=status.HTTP_400_BAD_REQUEST)
+
+        first_name = str(payload.get('first_name') or '').strip()
+        middle_name = str(payload.get('middle_name') or '').strip()
+        last_name = str(payload.get('last_name') or '').strip()
+        plain_name = str(payload.get('name') or '').strip()
+        raw_department = str(payload.get('department') or '').strip()
+        department = self._map_department(raw_department)
+        role = str(payload.get('role') or payload.get('job_role') or '').strip()
+        linkedin_url = str(payload.get('linkedin_url') or payload.get('profile') or '').strip()
+        contact_number = str(payload.get('contact_number') or payload.get('contact_num') or '').strip()
+        email = str(payload.get('email') or '').strip()
+        location = str(payload.get('location') or '').strip()
+        about = str(payload.get('about') or '').strip()
+
+        missing = []
+        if not role:
+            missing.append('role')
+        if not raw_department:
+            missing.append('department')
+        if not (plain_name or first_name or last_name):
+            missing.append('name/first_name/last_name')
+        if not linkedin_url:
+            missing.append('linkedin_url')
+        if not about:
+            missing.append('about')
+        if not location:
+            missing.append('location')
+        if missing:
+            return Response(
+                {'detail': f'Missing required fields: {", ".join(missing)}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer_payload = {
+            'company': company.id,
+            'name': plain_name,
+            'first_name': first_name,
+            'middle_name': middle_name,
+            'last_name': last_name,
+            'department': department,
+            'role': role,
+            'profile': linkedin_url,
+            'contact_number': contact_number,
+            'email': email,
+            'about': about,
+            'location': location,
+        }
+        serializer = EmployeeSerializer(data=serializer_payload)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        created = serializer.save(user=actor, company=company)
+        return Response(
+            {
+                'message': 'Employee created.',
+                'employee': EmployeeSerializer(created).data,
+            },
+            status=status.HTTP_201_CREATED,
         )

@@ -22,17 +22,16 @@
 7. Select folder: `chrome-extension`
 
 ## How to use
-1. Open extension popup.
-2. Paste JWT access token.
-3. Open a job page.
-4. Click `Fetch JD from Page`.
-5. Upload reference resume PDF.
-6. Fill company/job details.
-7. Click `Tailor + Save`.
+Apollo-like side panel is enabled.
+
+1. Click extension icon.
+2. Side panel opens with:
+   - Job Create form
+   - Employee Create form
+3. Fetch job data from page and save via extension APIs.
 
 For autofill:
 1. Add predefined answers JSON.
 2. Optionally keep `Use AI` enabled.
 3. Click `Scan Questions`.
 4. Click `AutoFill Form`.
-
