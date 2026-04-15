@@ -271,23 +271,250 @@ def _mail_tracking_sent_at(mail_tracking):
     return event.action_at if event and event.action_at else None
 
 
+def _event_got_replied(event):
+    if not event:
+        return False
+    payload = event.raw_payload if isinstance(getattr(event, 'raw_payload', None), dict) else {}
+    payload_status = str(payload.get('status') or '').strip().lower()
+    if payload_status == 'replied':
+        return True
+    notes = str(getattr(event, 'notes', '') or '').strip().lower()
+    return 'reply detected' in notes or 'got reply' in notes
+
+
 def _mail_tracking_replied_at(mail_tracking):
     if not mail_tracking:
         return None
-    event = (
+    events = (
         MailTrackingEvent.objects
-        .filter(mail_tracking=mail_tracking, got_replied=True)
+        .filter(mail_tracking=mail_tracking)
         .order_by('-action_at', '-created_at')
-        .only('action_at')
-        .first()
     )
-    return event.action_at if event and event.action_at else None
+    for item in events:
+        if _event_got_replied(item):
+            return item.action_at if item.action_at else None
+    return None
 
 
 def _mail_tracking_got_replied(mail_tracking):
     if not mail_tracking:
         return False
-    return MailTrackingEvent.objects.filter(mail_tracking=mail_tracking, got_replied=True).exists()
+    return any(_event_got_replied(item) for item in MailTrackingEvent.objects.filter(mail_tracking=mail_tracking))
+
+
+def _tracking_action_delivery_fallback(tracking):
+    if not tracking:
+        return {'mailed': False, 'status': 'pending'}
+    if getattr(tracking, 'schedule_time', None):
+        return {'mailed': False, 'status': 'pending'}
+    actions = list(tracking.actions.all().order_by('created_at'))
+    if not actions:
+        return {'mailed': False, 'status': 'pending'}
+    has_sent = any(str(item.send_mode or '').strip().lower() == 'sent' for item in actions)
+    has_scheduled = any(str(item.send_mode or '').strip().lower() == 'scheduled' for item in actions)
+    if has_sent:
+        return {'mailed': True, 'status': 'complete_sent'}
+    if has_scheduled:
+        return {'mailed': False, 'status': 'pending'}
+    return {'mailed': bool(getattr(tracking, 'mailed', False)), 'status': str(getattr(tracking, 'mail_delivery_status', 'pending') or 'pending')}
+
+
+def _tracking_sent_employee_map_for_day(tracking, action_type, action_at):
+    if not tracking or not action_at:
+        return {}
+    action_day = timezone.localdate(action_at)
+    mail_tracking = _mail_tracking_for_row(tracking)
+    query = Q(tracking=tracking)
+    if mail_tracking:
+        query = query | Q(tracking__isnull=True, mail_tracking=mail_tracking)
+    rows = (
+        MailTrackingEvent.objects
+        .filter(query, status='sent', mail_type=action_type, action_at__date=action_day)
+        .select_related('employee')
+        .order_by('action_at', 'id')
+    )
+    sent_map = {}
+    for item in rows:
+        if not item.employee_id:
+            continue
+        sent_map[item.employee_id] = str(item.employee.name or '').strip() if item.employee_id and item.employee else f'Employee #{item.employee_id}'
+    return sent_map
+
+
+def _user_sent_employee_map_for_day(user, action_type, action_at, employee_ids=None, exclude_tracking_id=None):
+    if not user or not action_at:
+        return {}
+    action_day = timezone.localdate(action_at)
+    query = Q(tracking__user=user) | Q(mail_tracking__user=user)
+    rows = (
+        MailTrackingEvent.objects
+        .filter(query, status='sent', mail_type=action_type, action_at__date=action_day)
+        .select_related('employee', 'tracking', 'mail_tracking__tracking')
+        .order_by('action_at', 'id')
+    )
+    if employee_ids:
+        rows = rows.filter(employee_id__in=employee_ids)
+
+    sent_map = {}
+    for item in rows:
+        item_tracking_id = item.tracking_id
+        if not item_tracking_id and item.mail_tracking_id and item.mail_tracking and item.mail_tracking.tracking_id:
+            item_tracking_id = item.mail_tracking.tracking_id
+        if exclude_tracking_id and item_tracking_id == exclude_tracking_id:
+            continue
+        if not item.employee_id:
+            continue
+        sent_map[item.employee_id] = str(item.employee.name or '').strip() if item.employee_id and item.employee else f'Employee #{item.employee_id}'
+    return sent_map
+
+
+def _user_fresh_tracking_employee_map_for_day(user, employee_ids=None, exclude_tracking_id=None, day=None):
+    if not user:
+        return {}
+    target_day = day or timezone.localdate()
+    rows = (
+        Tracking.objects
+        .filter(user=user, mail_type='fresh', created_at__date=target_day)
+        .exclude(id=exclude_tracking_id)
+    )
+    if employee_ids:
+        rows = rows.filter(selected_hrs__id__in=employee_ids)
+    rows = rows.distinct()
+    if not rows.exists():
+        return {}
+
+    employees = (
+        Employee.objects
+        .filter(selected_in_tracking_rows__in=rows)
+        .distinct()
+        .order_by('name', 'id')
+    )
+    if employee_ids:
+        employees = employees.filter(id__in=employee_ids)
+
+    employee_map = {}
+    for item in employees:
+        employee_map[item.id] = str(item.name or '').strip() or f'Employee #{item.id}'
+    return employee_map
+
+
+def _job_fresh_tracking_employee_map_for_day(user, job, employee_ids=None, exclude_tracking_id=None, day=None):
+    if not user or not job:
+        return {}
+    target_day = day or timezone.localdate()
+    rows = (
+        Tracking.objects
+        .filter(user=user, job=job, mail_type='fresh', created_at__date=target_day)
+        .exclude(id=exclude_tracking_id)
+    )
+    if employee_ids:
+        rows = rows.filter(selected_hrs__id__in=employee_ids)
+    rows = rows.distinct()
+    if not rows.exists():
+        return {}
+
+    employees = (
+        Employee.objects
+        .filter(selected_in_tracking_rows__in=rows)
+        .distinct()
+        .order_by('name', 'id')
+    )
+    if employee_ids:
+        employees = employees.filter(id__in=employee_ids)
+
+    employee_map = {}
+    for item in employees:
+        employee_map[item.id] = str(item.name or '').strip() or f'Employee #{item.id}'
+    return employee_map
+
+
+def _same_day_job_tracking_row(user, job, day=None, exclude_tracking_id=None):
+    if not user or not job:
+        return None
+    target_day = day or timezone.localdate()
+    rows = (
+        Tracking.objects
+        .filter(user=user, job=job, created_at__date=target_day)
+        .exclude(id=exclude_tracking_id)
+        .order_by('-created_at', '-id')
+    )
+    return rows.first()
+
+
+def _fresh_action_employee_map_for_day(tracking, action_at, employee_ids=None):
+    if not tracking or not action_at:
+        return {}
+    action_day = timezone.localdate(action_at)
+    actions = tracking.actions.filter(action_type='fresh')
+    employee_id_set = set()
+    for item in actions:
+        item_day = timezone.localdate(item.action_at) if item.action_at else None
+        if item_day != action_day:
+            continue
+        meta = _tracking_action_note_meta(item.notes)
+        for employee_id in meta.get('employee_ids') or []:
+            try:
+                employee_id_set.add(int(employee_id))
+            except Exception:
+                continue
+    if employee_ids:
+        employee_id_set &= {int(value) for value in employee_ids if str(value).strip()}
+    if not employee_id_set:
+        return {}
+    employees = Employee.objects.filter(id__in=employee_id_set).order_by('name', 'id')
+    employee_map = {}
+    for item in employees:
+        employee_map[item.id] = str(item.name or '').strip() or f'Employee #{item.id}'
+    return employee_map
+
+
+def _tracking_action_note_meta(notes):
+    raw = str(notes or '').strip()
+    if not raw:
+        return {'label': '', 'employee_ids': [], 'count': 1}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {'label': raw, 'employee_ids': [], 'count': 1}
+    if not isinstance(data, dict):
+        return {'label': raw, 'employee_ids': [], 'count': 1}
+    employee_ids = []
+    for value in data.get('employee_ids') or []:
+        try:
+            employee_ids.append(int(value))
+        except Exception:
+            continue
+    count = data.get('count')
+    try:
+        count = max(1, int(count))
+    except Exception:
+        count = 1
+    return {
+        'label': str(data.get('label') or '').strip(),
+        'employee_ids': employee_ids,
+        'count': count,
+    }
+
+
+def _build_tracking_action_notes(*, label='', employee_ids=None, count=1):
+    normalized_ids = []
+    for value in employee_ids or []:
+        try:
+            normalized_ids.append(int(value))
+        except Exception:
+            continue
+    payload = {}
+    if str(label or '').strip():
+        payload['label'] = str(label).strip()
+    if normalized_ids:
+        payload['employee_ids'] = sorted(set(normalized_ids))
+    try:
+        safe_count = max(1, int(count))
+    except Exception:
+        safe_count = 1
+    if safe_count > 1:
+        payload['count'] = safe_count
+    return json.dumps(payload, separators=(',', ':')) if payload else ''
 
 
 def _resolve_extension_user(request):
@@ -377,45 +604,6 @@ def _employee_department_bucket(employee) -> str:
     role = str(getattr(employee, 'JobRole', '') or '').strip()
     merged = f'{dept} {role}'.strip()
     return _department_bucket_from_text(merged)
-
-
-def _allowed_department_buckets_for_template(choice: str):
-    normalized = str(choice or '').strip().lower()
-    rules = {
-        'cold_applied': {'hr'},
-        'follow_up_applied': {'hr'},
-        'follow_up_call': {'hr'},
-        'follow_up_interview': {'hr'},
-        'referral': {'engineering'},
-        'job_inquire': {'hr', 'engineering'},
-    }
-    return rules.get(normalized)
-
-
-def _validate_template_against_employees(choice: str, employees) -> str:
-    allowed = _allowed_department_buckets_for_template(choice)
-    selected = list(employees or [])
-    if not allowed or not selected:
-        return ''
-
-    allowed_labels = {
-        'hr': 'HR',
-        'engineering': 'Engineering',
-    }
-    invalid = []
-    for emp in selected:
-        bucket = _employee_department_bucket(emp)
-        if bucket not in allowed:
-            emp_name = str(getattr(emp, 'name', '') or '').strip() or f'Employee #{getattr(emp, "id", "")}'
-            emp_dept = str(getattr(emp, 'department', '') or '').strip() or 'Unknown'
-            invalid.append(f'{emp_name} ({emp_dept})')
-
-    if not invalid:
-        return ''
-
-    allowed_text = ', '.join([allowed_labels.get(item, item.title()) for item in sorted(allowed)])
-    joined_invalid = '; '.join(invalid[:5])
-    return f'Template "{choice}" is only allowed for {allowed_text} contacts. Remove invalid selections: {joined_invalid}.'
 
 
 def _restrict_to_reference_sections(reference_builder: dict, result_builder: dict) -> dict:
@@ -2106,70 +2294,6 @@ class ApplicationTrackingListCreateView(APIView):
         except Exception:
             return None
 
-    def _extract_template_fields(self, payload):
-        allowed = {
-            'cold_applied',
-            'referral',
-            'job_inquire',
-            'follow_up_applied',
-            'follow_up_referral',
-            'follow_up_call',
-            'follow_up_interview',
-            'custom',
-        }
-        choice = str(payload.get('template_choice') or '').strip().lower()
-        subject = str(payload.get('template_subject') or payload.get('custom_subject') or '').strip()
-        message = str(payload.get('template_message') or '').strip()
-        legacy = str(payload.get('template_name') or '').strip()
-
-        if choice and choice not in allowed:
-            choice = ''
-        if not choice:
-            if legacy in allowed:
-                choice = legacy
-            elif legacy:
-                choice = 'custom'
-                message = message or legacy
-        if choice == 'custom' and not message and legacy and legacy not in allowed:
-            message = legacy
-        if not choice:
-            choice = 'cold_applied'
-        if choice == 'custom' and (not subject or not message):
-            raise ValidationError({'detail': 'Custom mail requires both subject and body.'})
-        if choice != 'custom':
-            subject = ''
-            message = ''
-        return choice, subject, message
-
-    def _is_follow_up_template(self, choice):
-        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
-
-    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
-        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
-        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
-
-        if choice == 'custom':
-            return 'complete_ai'
-        if choice == 'cold_applied':
-            if compose_mode == 'partial_ai':
-                return 'partial_ai'
-            current = str(current_value or '').strip().lower()
-            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
-        return 'hardcoded'
-
-    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
-        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
-        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
-
-        if choice == 'custom':
-            return 'complete_ai'
-        if choice == 'cold_applied':
-            if compose_mode == 'partial_ai':
-                return 'partial_ai'
-            current = str(current_value or '').strip().lower()
-            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
-        return 'hardcoded'
-
     def _resolve_company(self, request, payload):
         company_id = payload.get('company')
         if company_id:
@@ -2254,6 +2378,11 @@ class ApplicationTrackingListCreateView(APIView):
             return None
 
     def _sync_selected_hrs(self, request, tracking, payload):
+        targets = self._resolve_selected_hrs(request, tracking.job.company_id if tracking.job_id and tracking.job and tracking.job.company_id else None, payload)
+        if targets is not None:
+            tracking.selected_hrs.set(targets)
+
+    def _resolve_selected_hrs(self, request, company_id, payload):
         selected_ids = payload.get('selected_hr_ids')
         selected_names = payload.get('selected_hrs')
         if hasattr(request.data, 'getlist'):
@@ -2272,15 +2401,16 @@ class ApplicationTrackingListCreateView(APIView):
 
         if isinstance(selected_ids, list) and selected_ids:
             targets = Employee.objects.filter(user=request.user, id__in=selected_ids, working_mail=True)
-        elif isinstance(selected_names, list) and selected_names and tracking.job_id and tracking.job and tracking.job.company_id:
+        elif isinstance(selected_names, list) and selected_names and company_id:
             targets = Employee.objects.filter(
                 user=request.user,
-                company_id=tracking.job.company_id,
+                company_id=company_id,
                 working_mail=True,
                 name__in=[str(name or '').strip() for name in selected_names if str(name or '').strip()],
             )
         if selected_ids is not None or selected_names is not None:
-            tracking.selected_hrs.set(targets)
+            return targets
+        return None
 
     def _append_action(self, tracking, payload):
         action = payload.get('append_action')
@@ -2290,18 +2420,98 @@ class ApplicationTrackingListCreateView(APIView):
         action_type = str(action.get('type') or '').strip().lower()
         if action_type not in {'fresh', 'followup'}:
             return 'Invalid action type.'
-        if action_type == 'followup' and not tracking.actions.filter(action_type='fresh').exists():
-            return 'Fresh mail must be done first before follow up.'
 
         send_mode = str(action.get('send_mode') or 'now').strip().lower()
         mapped_send_mode = 'sent' if send_mode == 'now' else 'scheduled'
         action_at = self._to_datetime(action.get('action_at')) or timezone.now()
+        existing_actions = tracking.actions.all()
+        has_any_action = existing_actions.exists()
+        has_fresh_action = existing_actions.filter(action_type='fresh').exists()
+        selected_employee_ids = sorted([emp.id for emp in tracking.selected_hrs.all() if emp.id])
+        if not has_any_action:
+            action_type = 'fresh'
+        elif action_type == 'followup' and not has_fresh_action:
+            return 'First milestone must be Fresh before any Follow Up.'
+
+        notes = _build_tracking_action_notes(employee_ids=selected_employee_ids)
+        last_action = existing_actions.order_by('-created_at').first()
+        if last_action and str(last_action.action_type or '') == action_type:
+            last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+            current_day = timezone.localdate(action_at)
+            last_meta = _tracking_action_note_meta(last_action.notes)
+            last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+            if last_day == current_day and (not last_employee_ids or last_employee_ids == selected_employee_ids):
+                next_count = int(last_meta.get('count') or 1) + 1
+                last_action.notes = _build_tracking_action_notes(
+                    label=last_meta.get('label') or '',
+                    employee_ids=selected_employee_ids,
+                    count=next_count,
+                )
+                last_action.action_at = action_at
+                last_action.save(update_fields=['notes', 'action_at', 'updated_at'])
+                tracking.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
+                if action_type == 'fresh':
+                    tracking.mailed = True
+                    tracking.save(update_fields=['mail_type', 'mailed', 'updated_at'])
+                else:
+                    tracking.save(update_fields=['mail_type', 'updated_at'])
+                return None
+        if action_type == 'fresh':
+            selected_employees = list(tracking.selected_hrs.all())
+            action_history_today = _fresh_action_employee_map_for_day(
+                tracking,
+                action_at,
+                employee_ids=selected_employee_ids,
+            )
+            overlap = [action_history_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in action_history_today]
+            if overlap:
+                return f'Fresh mail already used these employees earlier today in this tracking: {", ".join(overlap)}. Choose fully different employees, use Follow Up, or send tomorrow.'
+            same_job_fresh_today = _job_fresh_tracking_employee_map_for_day(
+                tracking.user,
+                tracking.job,
+                exclude_tracking_id=tracking.id,
+                day=timezone.localdate(action_at),
+            )
+            cross_sent_today = _user_sent_employee_map_for_day(
+                tracking.user,
+                'fresh',
+                action_at,
+                employee_ids=selected_employee_ids,
+                exclude_tracking_id=tracking.id,
+            )
+            overlap = [cross_sent_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in cross_sent_today]
+            if overlap:
+                return f'Already sent Fresh mail today to: {", ".join(overlap)}. Use follow up, choose different employees, or send tomorrow.'
+            sent_today = _tracking_sent_employee_map_for_day(tracking, 'fresh', action_at)
+            overlap = [sent_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in sent_today]
+            if overlap:
+                return f'Already sent Fresh mail today to: {", ".join(overlap)}. Use different employees today or send tomorrow.'
+            if sent_today and selected_employees:
+                notes = _build_tracking_action_notes(label='Emp Changed', employee_ids=selected_employee_ids)
+            elif last_action and str(last_action.action_type or '') == 'fresh':
+                last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+                current_day = timezone.localdate(action_at)
+                last_meta = _tracking_action_note_meta(last_action.notes)
+                last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+                if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
+                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+            elif same_job_fresh_today and selected_employees:
+                notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+        elif action_type == 'followup':
+            if last_action and str(last_action.action_type or '') == 'followup':
+                last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+                current_day = timezone.localdate(action_at)
+                last_meta = _tracking_action_note_meta(last_action.notes)
+                last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+                if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
+                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
 
         TrackingAction.objects.create(
             tracking=tracking,
             action_type=action_type,
             send_mode=mapped_send_mode,
             action_at=action_at,
+            notes=notes,
         )
         tracking.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
         if action_type == 'fresh':
@@ -2318,6 +2528,8 @@ class ApplicationTrackingListCreateView(APIView):
         mailed_at_value = _mail_tracking_sent_at(mail_tracking)
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
+        action_delivery_fallback = _tracking_action_delivery_fallback(tracking)
+        is_currently_scheduled = bool(tracking.schedule_time)
         available = available_hr_map.get(company.id if company else None, [])
         selected = list(tracking.selected_hrs.all())
         tailored_rows = []
@@ -2370,8 +2582,10 @@ class ApplicationTrackingListCreateView(APIView):
                 'type': item.action_type,
                 'mode': item.send_mode,
                 'at': item.action_at.isoformat() if item.action_at else '',
+                'notes': _tracking_action_note_meta(item.notes).get('label') or '',
+                'count': _tracking_action_note_meta(item.notes).get('count') or 1,
             }
-            for item in tracking.actions.all().order_by('created_at')[:10]
+            for item in tracking.actions.all().order_by('created_at')[:20]
         ]
         events_query = Q(tracking=tracking)
         mail_tracking = _mail_tracking_for_row(tracking)
@@ -2382,9 +2596,7 @@ class ApplicationTrackingListCreateView(APIView):
             .filter(events_query)
             .order_by('action_at', 'created_at')
         )
-        template_choice = str(tracking.template_choice or 'cold_applied').strip() or 'cold_applied'
-        template_subject = str(tracking.template_subject or '')
-        template_message = str(tracking.template_message or '')
+        template_choice = 'follow_up_applied' if str(tracking.mail_type or 'fresh').strip() == 'followed_up' else 'cold_applied'
         mailed_at_value = _mail_tracking_sent_at(mail_tracking)
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
@@ -2405,10 +2617,14 @@ class ApplicationTrackingListCreateView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(job.is_closed) if job else False,
             'is_removed': bool(job.is_removed) if job else False,
-            'mailed': bool(tracking.mailed),
+            'mailed': False if is_currently_scheduled else bool(mailed_at_value or tracking.mailed or action_delivery_fallback['mailed']),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
-                delivery_events,
-                fallback_status=tracking.mail_delivery_status,
+                [] if is_currently_scheduled else delivery_events,
+                fallback_status='pending' if is_currently_scheduled else (
+                    'complete_sent'
+                    if mailed_at_value or tracking.mailed or action_delivery_fallback['mailed']
+                    else action_delivery_fallback['status']
+                ),
             ),
             'applied_date': job.applied_at.isoformat() if job and job.applied_at else None,
             'posting_date': job.date_of_posting.isoformat() if job and job.date_of_posting else None,
@@ -2462,12 +2678,12 @@ class ApplicationTrackingListCreateView(APIView):
                 if tracking.personalized_template_id and tracking.personalized_template else None
             ),
             'template_choice': template_choice,
-            'template_subject': template_subject,
-            'template_message': template_message,
-            'compose_mode': self._resolve_compose_mode({}, template_choice, getattr(tracking, 'compose_mode', 'hardcoded')),
-            'hardcoded_follow_up': self._resolve_compose_mode({}, template_choice, getattr(tracking, 'compose_mode', 'hardcoded')) != 'complete_ai',
+            'template_subject': '',
+            'template_message': '',
+            'compose_mode': 'hardcoded',
+            'hardcoded_follow_up': True,
             'schedule_time': tracking.schedule_time.isoformat() if tracking.schedule_time else None,
-            'template_name': (template_message if template_choice == 'custom' else template_choice),
+            'template_name': template_choice,
             'delivery_summary': delivery_summary,
             'mail_type': str(tracking.mail_type or 'fresh'),
             'action': str(tracking.mail_type or 'fresh'),
@@ -2516,7 +2732,6 @@ class ApplicationTrackingListCreateView(APIView):
 
     def post(self, request):
         payload = request.data or {}
-        template_choice, template_subject, template_message = self._extract_template_fields(payload)
         schedule_time = self._to_datetime(payload.get('schedule_time'))
         mail_type = str(payload.get('mail_type') or payload.get('action') or 'fresh').strip().lower()
         if mail_type not in {'fresh', 'followed_up'}:
@@ -2559,37 +2774,75 @@ class ApplicationTrackingListCreateView(APIView):
             personalized_template = Template.objects.filter(id=personalized_template_id, user=request.user, category='personalized').first()
             if not personalized_template:
                 return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
-        tracking = Tracking.objects.create(
+        selected_targets = self._resolve_selected_hrs(
+            request,
+            job.company_id if job and job.company_id else None,
+            payload,
+        )
+        selected_employees = list(selected_targets) if selected_targets is not None else []
+        selected_employee_ids = sorted([emp.id for emp in selected_employees if emp.id])
+
+        reuse_existing_row = None
+        if mail_type == 'fresh':
+            reuse_existing_row = _same_day_job_tracking_row(request.user, job, timezone.localdate())
+            if reuse_existing_row:
+                existing_selected_ids = sorted(list(reuse_existing_row.selected_hrs.values_list('id', flat=True)))
+                overlap = [
+                    str(emp.name or '').strip() or f'Employee #{emp.id}'
+                    for emp in selected_employees
+                    if emp.id in existing_selected_ids
+                ]
+                if overlap:
+                    return Response(
+                        {'detail': f'Fresh tracking already exists today for this job and: {", ".join(overlap)}. Choose different employees or use Follow Up.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+        tracking = reuse_existing_row or Tracking.objects.create(
             user=request.user,
             job=job,
             template=template,
             template_ids_ordered=[item.id for item in templates],
             personalized_template=personalized_template,
             resume=resume,
-            template_choice=template_choice,
-            template_subject=template_subject,
-            template_message=template_message,
-            compose_mode='hardcoded',
-            hardcoded_follow_up=True,
             use_hardcoded_personalized_intro=self._to_bool(payload.get('use_hardcoded_personalized_intro'), default=False),
             schedule_time=schedule_time,
             mail_delivery_status='pending',
             mailed=self._to_bool(payload.get('mailed'), default=False),
             mail_type=mail_type,
         )
-        if tailored_resume:
-            tracking.resume = tailored_resume
-            tracking.save(update_fields=['resume', 'updated_at'])
-        self._sync_selected_hrs(request, tracking, payload)
-        template_department_error = _validate_template_against_employees(
-            tracking.template_choice,
-            tracking.selected_hrs.all(),
-        )
-        if template_department_error:
-            tracking.hard_delete()
-            return Response({'detail': template_department_error}, status=status.HTTP_400_BAD_REQUEST)
+        tracking.job = job
+        tracking.template = template
+        tracking.template_ids_ordered = [item.id for item in templates]
+        tracking.personalized_template = personalized_template
+        tracking.resume = tailored_resume or resume
+        tracking.use_hardcoded_personalized_intro = self._to_bool(payload.get('use_hardcoded_personalized_intro'), default=False)
+        tracking.schedule_time = schedule_time
+        tracking.mail_type = mail_type
+        tracking.mailed = self._to_bool(payload.get('mailed'), default=tracking.mailed if reuse_existing_row else False)
+        tracking.save()
+        if selected_targets is not None:
+            tracking.selected_hrs.set(selected_targets)
+        if mail_type == 'fresh':
+            selected_employees = list(tracking.selected_hrs.all())
+            selected_employee_ids = sorted([emp.id for emp in selected_employees if emp.id])
+            existing_fresh_today = _user_fresh_tracking_employee_map_for_day(
+                request.user,
+                employee_ids=selected_employee_ids,
+                exclude_tracking_id=tracking.id,
+                day=timezone.localdate(),
+            )
+            overlap = [existing_fresh_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in existing_fresh_today]
+            if overlap:
+                if not reuse_existing_row:
+                    tracking.hard_delete()
+                return Response(
+                    {'detail': f'Fresh tracking already exists today for: {", ".join(overlap)}. Use Follow Up, choose different employees, or try tomorrow.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if not self._has_company_mail_pattern(company):
-            tracking.hard_delete()
+            if not reuse_existing_row:
+                tracking.hard_delete()
             return Response(
                 {'detail': 'Company mail pattern is required to create tracking.'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -2605,7 +2858,7 @@ class ApplicationTrackingListCreateView(APIView):
                 Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__resumes').select_related('job__company', 'resume', 'mail_tracking_record', 'template').first(),
                 available_hr_map,
             ),
-            status=status.HTTP_201_CREATED,
+            status=status.HTTP_200_OK if reuse_existing_row else status.HTTP_201_CREATED,
         )
 
 
@@ -2659,57 +2912,6 @@ class ApplicationTrackingDetailView(APIView):
             return dt
         except Exception:
             return None
-
-    def _extract_template_fields(self, payload):
-        allowed = {
-            'cold_applied',
-            'referral',
-            'job_inquire',
-            'follow_up_applied',
-            'follow_up_referral',
-            'follow_up_call',
-            'follow_up_interview',
-            'custom',
-        }
-        choice = str(payload.get('template_choice') or '').strip().lower()
-        subject = str(payload.get('template_subject') or payload.get('custom_subject') or '').strip()
-        message = str(payload.get('template_message') or '').strip()
-        legacy = str(payload.get('template_name') or '').strip()
-
-        if choice and choice not in allowed:
-            choice = ''
-        if not choice:
-            if legacy in allowed:
-                choice = legacy
-            elif legacy:
-                choice = 'custom'
-                message = message or legacy
-        if choice == 'custom' and not message and legacy and legacy not in allowed:
-            message = legacy
-        if not choice:
-            choice = 'cold_applied'
-        if choice == 'custom' and (not subject or not message):
-            raise ValidationError({'detail': 'Custom mail requires both subject and body.'})
-        if choice != 'custom':
-            subject = ''
-            message = ''
-        return choice, subject, message
-
-    def _is_follow_up_template(self, choice):
-        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
-
-    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
-        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
-        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
-
-        if choice == 'custom':
-            return 'complete_ai'
-        if choice == 'cold_applied':
-            if compose_mode == 'partial_ai':
-                return 'partial_ai'
-            current = str(current_value or '').strip().lower()
-            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
-        return 'hardcoded'
 
     def _serialize_tracking_row(self, row):
         company = row.job.company if row.job_id and row.job and row.job.company_id else None
@@ -2769,8 +2971,10 @@ class ApplicationTrackingDetailView(APIView):
                 'type': item.action_type,
                 'mode': item.send_mode,
                 'at': item.action_at.isoformat() if item.action_at else '',
+                'notes': _tracking_action_note_meta(item.notes).get('label') or '',
+                'count': _tracking_action_note_meta(item.notes).get('count') or 1,
             }
-            for item in row.actions.all().order_by('created_at')[:10]
+            for item in row.actions.all().order_by('created_at')[:20]
         ]
         selected_employees = [
             {
@@ -2808,19 +3012,19 @@ class ApplicationTrackingDetailView(APIView):
                     'send_mode': str(item.send_mode or '').strip(),
                     'status': str(item.status or '').strip(),
                     'action_at': item.action_at.isoformat() if item.action_at else '',
-                    'got_replied': bool(item.got_replied),
+                    'got_replied': _event_got_replied(item),
                     'notes': str(item.notes or '').strip(),
                     'subject': subject,
                     'message': message,
                     'to_email': receiver,
                 }
             )
-        template_choice = str(row.template_choice or 'cold_applied').strip() or 'cold_applied'
-        template_subject = str(row.template_subject or '')
-        template_message = str(row.template_message or '')
+        template_choice = 'follow_up_applied' if str(row.mail_type or 'fresh').strip() == 'followed_up' else 'cold_applied'
         mailed_at_value = _mail_tracking_sent_at(mail_tracking)
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
+        action_delivery_fallback = _tracking_action_delivery_fallback(row)
+        is_currently_scheduled = bool(row.schedule_time)
         delivery_summary = _build_tracking_delivery_summary(event_rows)
         employee_delivery_overview = _build_tracking_employee_delivery_overview(selected_employees, mail_tracking)
         return {
@@ -2839,10 +3043,14 @@ class ApplicationTrackingDetailView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(row.job.is_closed) if row.job_id and row.job else False,
             'is_removed': bool(row.job.is_removed) if row.job_id and row.job else False,
-            'mailed': bool(row.mailed),
+            'mailed': False if is_currently_scheduled else bool(mailed_at_value or row.mailed or action_delivery_fallback['mailed']),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
-                event_rows,
-                fallback_status=row.mail_delivery_status,
+                [] if is_currently_scheduled else event_rows,
+                fallback_status='pending' if is_currently_scheduled else (
+                    'complete_sent'
+                    if mailed_at_value or row.mailed or action_delivery_fallback['mailed']
+                    else action_delivery_fallback['status']
+                ),
             ),
             'applied_date': row.job.applied_at.isoformat() if row.job_id and row.job and row.job.applied_at else None,
             'posting_date': row.job.date_of_posting.isoformat() if row.job_id and row.job and row.job.date_of_posting else None,
@@ -2897,12 +3105,12 @@ class ApplicationTrackingDetailView(APIView):
             ),
             'selected_employees': selected_employees,
             'template_choice': template_choice,
-            'template_subject': template_subject,
-            'template_message': template_message,
-            'compose_mode': self._resolve_compose_mode({}, template_choice, getattr(row, 'compose_mode', 'hardcoded')),
-            'hardcoded_follow_up': self._resolve_compose_mode({}, template_choice, getattr(row, 'compose_mode', 'hardcoded')) != 'complete_ai',
+            'template_subject': '',
+            'template_message': '',
+            'compose_mode': 'hardcoded',
+            'hardcoded_follow_up': True,
             'schedule_time': row.schedule_time.isoformat() if row.schedule_time else None,
-            'template_name': (template_message if template_choice == 'custom' else template_choice),
+            'template_name': template_choice,
             'mail_events': mail_events,
             'delivery_summary': delivery_summary,
             'employee_delivery_overview': employee_delivery_overview,
@@ -3031,27 +3239,15 @@ class ApplicationTrackingDetailView(APIView):
                 if not selected_personalized:
                     return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.personalized_template = selected_personalized
-        if any(key in payload for key in ['template_choice', 'template_subject', 'custom_subject', 'template_message', 'template_name']):
-            template_choice, template_subject, template_message = self._extract_template_fields(payload)
-            row.template_choice = template_choice
-            row.template_subject = template_subject
-            row.template_message = template_message
-            row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
-        elif 'compose_mode' in payload:
-            row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
         if 'mail_type' in payload or 'action' in payload:
             action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
             if action_text in {'fresh', 'followed_up'}:
                 row.mail_type = action_text
-                row.template_choice = 'follow_up_applied' if action_text == 'followed_up' else 'cold_applied'
         if 'use_hardcoded_personalized_intro' in payload:
             row.use_hardcoded_personalized_intro = self._to_bool(
                 payload.get('use_hardcoded_personalized_intro'),
                 default=row.use_hardcoded_personalized_intro,
             )
-        if 'hardcoded_follow_up' in payload:
-            row.hardcoded_follow_up = self._to_bool(payload.get('hardcoded_follow_up'), default=row.hardcoded_follow_up)
-        row.hardcoded_follow_up = self._resolve_compose_mode({}, row.template_choice, getattr(row, 'compose_mode', 'hardcoded')) != 'complete_ai'
         if not any(key in payload for key in ['template', 'template_id', 'template_ids_ordered', 'achievement', 'achievement_id', 'achievement_ids_ordered']):
             template_error = _validate_tracking_templates(
                 _resolve_tracking_templates(
@@ -3066,13 +3262,14 @@ class ApplicationTrackingDetailView(APIView):
                 return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
         if 'schedule_time' in payload:
             row.schedule_time = self._to_datetime(payload.get('schedule_time'))
-        if self._is_follow_up_template(row.template_choice) and not row.schedule_time:
-            row.schedule_time = timezone.now()
+            if row.schedule_time:
+                row.mailed = False
+                row.mail_delivery_status = 'pending'
         if 'is_freezed' in payload:
             next_freezed = self._to_bool(payload.get('is_freezed'), default=row.is_freezed)
             row.is_freezed = next_freezed
             row.freezed_at = timezone.now() if next_freezed else None
-        if any(key in payload for key in ['maild_at', 'mailed_at', 'replied_at', 'got_replied', 'mailed']):
+        if any(key in payload for key in ['maild_at', 'mailed_at', 'replied_at', 'mailed']):
             mail_tracking = _mail_tracking_for_row(row)
             if not mail_tracking:
                 mail_tracking = MailTracking.objects.create(user=request.user, tracking=row, resume=row.resume)
@@ -3099,13 +3296,24 @@ class ApplicationTrackingDetailView(APIView):
             company_id_ref = row.job.company_id if row.job_id and row.job and row.job.company_id else None
             next_selected = Employee.objects.filter(user=request.user, company_id=company_id_ref, working_mail=True, name__in=target_names)
 
-        selected_for_validation = next_selected if next_selected is not None else row.selected_hrs.all()
-        template_department_error = _validate_template_against_employees(row.template_choice, selected_for_validation)
-        if template_department_error:
-            return Response({'detail': template_department_error}, status=status.HTTP_400_BAD_REQUEST)
-
         if next_selected is not None:
             row.selected_hrs.set(next_selected)
+
+        if row.mail_type == 'fresh':
+            selected_employees = list(row.selected_hrs.all())
+            selected_employee_ids = sorted([emp.id for emp in selected_employees if emp.id])
+            existing_fresh_today = _user_fresh_tracking_employee_map_for_day(
+                request.user,
+                employee_ids=selected_employee_ids,
+                exclude_tracking_id=row.id,
+                day=timezone.localdate(),
+            )
+            overlap = [existing_fresh_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in existing_fresh_today]
+            if overlap:
+                return Response(
+                    {'detail': f'Fresh tracking already exists today for: {", ".join(overlap)}. Use Follow Up, choose different employees, or try tomorrow.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         row.save()
 
@@ -3121,16 +3329,106 @@ class ApplicationTrackingDetailView(APIView):
             action_type = str(append_action.get('type') or '').strip().lower()
             if action_type not in {'fresh', 'followup'}:
                 return Response({'detail': 'Invalid action type.'}, status=status.HTTP_400_BAD_REQUEST)
-            if action_type == 'followup' and not row.actions.filter(action_type='fresh').exists():
-                return Response({'detail': 'Fresh mail must be done first before follow up.'}, status=status.HTTP_400_BAD_REQUEST)
             send_mode = str(append_action.get('send_mode') or 'now').strip().lower()
             mode = 'sent' if send_mode == 'now' else 'scheduled'
             action_at = self._to_datetime(append_action.get('action_at')) or timezone.now()
+            existing_actions = row.actions.all()
+            has_any_action = existing_actions.exists()
+            has_fresh_action = existing_actions.filter(action_type='fresh').exists()
+            selected_employee_ids = sorted([emp.id for emp in row.selected_hrs.all() if emp.id])
+            if not has_any_action:
+                action_type = 'fresh'
+            elif action_type == 'followup' and not has_fresh_action:
+                return Response({'detail': 'First milestone must be Fresh before any Follow Up.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            notes = _build_tracking_action_notes(employee_ids=selected_employee_ids)
+            last_action = existing_actions.order_by('-created_at').first()
+            if last_action and str(last_action.action_type or '') == action_type:
+                last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+                current_day = timezone.localdate(action_at)
+                last_meta = _tracking_action_note_meta(last_action.notes)
+                last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+                if last_day == current_day and (not last_employee_ids or last_employee_ids == selected_employee_ids):
+                    next_count = int(last_meta.get('count') or 1) + 1
+                    last_action.notes = _build_tracking_action_notes(
+                        label=last_meta.get('label') or '',
+                        employee_ids=selected_employee_ids,
+                        count=next_count,
+                    )
+                    last_action.action_at = action_at
+                    last_action.save(update_fields=['notes', 'action_at', 'updated_at'])
+                    row.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
+                    if action_type == 'fresh':
+                        row.mailed = True
+                        row.save(update_fields=['mail_type', 'mailed', 'updated_at'])
+                    else:
+                        row.save(update_fields=['mail_type', 'updated_at'])
+                    fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'mail_tracking_record', 'template', 'personalized_template').prefetch_related('selected_hrs', 'actions', 'job__resumes').first()
+                    return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
+            if action_type == 'fresh':
+                selected_employees = list(row.selected_hrs.all())
+                action_history_today = _fresh_action_employee_map_for_day(
+                    row,
+                    action_at,
+                    employee_ids=selected_employee_ids,
+                )
+                overlap = [action_history_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in action_history_today]
+                if overlap:
+                    return Response(
+                        {'detail': f'Fresh mail already used these employees earlier today in this tracking: {", ".join(overlap)}. Choose fully different employees, use Follow Up, or send tomorrow.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                same_job_fresh_today = _job_fresh_tracking_employee_map_for_day(
+                    row.user,
+                    row.job,
+                    exclude_tracking_id=row.id,
+                    day=timezone.localdate(action_at),
+                )
+                cross_sent_today = _user_sent_employee_map_for_day(
+                    row.user,
+                    'fresh',
+                    action_at,
+                    employee_ids=selected_employee_ids,
+                    exclude_tracking_id=row.id,
+                )
+                overlap = [cross_sent_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in cross_sent_today]
+                if overlap:
+                    return Response(
+                        {'detail': f'Already sent Fresh mail today to: {", ".join(overlap)}. Use follow up, choose different employees, or send tomorrow.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                sent_today = _tracking_sent_employee_map_for_day(row, 'fresh', action_at)
+                overlap = [sent_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in sent_today]
+                if overlap:
+                    return Response(
+                        {'detail': f'Already sent Fresh mail today to: {", ".join(overlap)}. Use different employees today or send tomorrow.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if sent_today and selected_employees:
+                    notes = _build_tracking_action_notes(label='Emp Changed', employee_ids=selected_employee_ids)
+                elif last_action and str(last_action.action_type or '') == 'fresh':
+                    last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+                    current_day = timezone.localdate(action_at)
+                    last_meta = _tracking_action_note_meta(last_action.notes)
+                    last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+                    if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
+                        notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                elif same_job_fresh_today and selected_employees:
+                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+            elif action_type == 'followup':
+                if last_action and str(last_action.action_type or '') == 'followup':
+                    last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
+                    current_day = timezone.localdate(action_at)
+                    last_meta = _tracking_action_note_meta(last_action.notes)
+                    last_employee_ids = sorted(last_meta.get('employee_ids') or [])
+                    if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
+                        notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
             TrackingAction.objects.create(
                 tracking=row,
                 action_type=action_type,
                 send_mode=mode,
                 action_at=action_at,
+                notes=notes,
             )
             row.mail_type = 'followed_up' if action_type == 'followup' else 'fresh'
             if action_type == 'fresh':
@@ -3145,13 +3443,8 @@ class ApplicationTrackingDetailView(APIView):
             row = self._get_object_any(request, tracking_id)
         except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
-        if self._is_hard_delete(request):
-            row.hard_delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        row.is_freezed = True
-        row.freezed_at = row.freezed_at or timezone.now()
-        row.save(update_fields=['is_freezed', 'freezed_at', 'updated_at'])
-        return Response({'status': 'freezed', 'id': row.id}, status=status.HTTP_200_OK)
+        row.hard_delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class ApplicationTrackingMailTestView(APIView):

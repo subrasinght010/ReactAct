@@ -854,7 +854,7 @@ class Command(BaseCommand):
                 allow_generate=bool(use_ai),
             )
 
-        subject = str(getattr(row, "template_subject", "") or "").strip() or self._default_subject_for_template(
+        subject = self._default_subject_for_template(
             choice,
             role or "role",
             company_name,

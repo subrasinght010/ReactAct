@@ -151,7 +151,6 @@ def log_mail_event(
         send_mode=str(send_mode or resolve_tracking_send_mode(tracking)),
         status=normalized_status,
         action_at=event_time,
-        got_replied=bool(got_replied),
         notes=str(notes or "").strip(),
         source_uid=str(source_uid or '').strip(),
         source_message_id=str(source_message_id or '').strip(),

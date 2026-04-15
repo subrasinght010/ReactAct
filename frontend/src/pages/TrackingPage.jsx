@@ -11,12 +11,20 @@ import {
   fetchCompanies,
   fetchEmployees,
   fetchJobs,
+  fetchTrackingRow,
   fetchResumes,
   fetchTrackingRows,
   updateTrackingRow,
 } from '../api'
 
-const EMPTY_MILESTONE_DOTS = 10
+const EMPTY_MILESTONE_DOTS = 20
+const WAVE_INSET_PX = 88
+const WAVE_POINT_SPACING_PX = 50
+const WAVE_SVG_TOP_PX = 11
+const WAVE_SVG_HEIGHT_PX = 16
+const WAVE_DOT_SIZE_PX = 8
+const WAVE_VIEWBOX_WIDTH = 1000
+const WAVE_VIEWBOX_HEIGHT = 44
 
 function DetailIcon() {
   return (
@@ -93,7 +101,17 @@ function formatMilestoneLabel(item) {
   const timeText = date && !Number.isNaN(date.getTime())
     ? `${toDateInput(item.at)} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
     : '--'
-  return `${type} | ${timeText}`
+  const notes = String(item.notes || '').trim()
+  const count = Number(item.count || 1)
+  const countText = count > 1 ? `x${count}` : ''
+  return [type, timeText, notes, countText].filter(Boolean).join(' | ')
+}
+
+function formatMilestoneCode(item) {
+  if (!item) return '--'
+  const base = item.type === 'followup' ? 'FU' : 'F'
+  const count = Number(item.count || 1)
+  return count > 1 ? `${base} x${count}` : base
 }
 
 function rowHasFreshMilestone(row) {
@@ -114,6 +132,7 @@ function rowLastActionType(row) {
 }
 
 function rowLastSendMode(row) {
+  if (row?.schedule_time) return 'scheduled'
   const items = row?.milestones || []
   if (items.length) {
     const mode = String(items[items.length - 1]?.mode || '').trim().toLowerCase()
@@ -374,6 +393,20 @@ function updateHardcodedAchievementIds(values, index, nextValue) {
   return nextIds
 }
 
+function initialDepartmentFromRow(row) {
+  const selectedEmployees = Array.isArray(row?.selected_employees) ? row.selected_employees : []
+  const firstDepartment = String(selectedEmployees[0]?.department || '').trim()
+  if (firstDepartment) return firstDepartment
+  return ''
+}
+
+function arraysMatchAsStrings(left, right) {
+  const a = uniqueArray(left)
+  const b = uniqueArray(right)
+  if (a.length !== b.length) return false
+  return a.every((value, index) => String(value) === String(b[index]))
+}
+
 function TrackingPage() {
   const access = localStorage.getItem('access') || ''
   const navigate = useNavigate()
@@ -391,7 +424,6 @@ function TrackingPage() {
     jobId: '',
     appliedDate: '',
     mailed: 'all',
-    gotReplied: 'all',
     lastAction: 'all',
   })
   const [ordering, setOrdering] = useState('-applied_at')
@@ -403,6 +435,7 @@ function TrackingPage() {
   const [resumeOptions, setResumeOptions] = useState([])
   const [achievementOptions, setAchievementOptions] = useState([])
   const [previewResume, setPreviewResume] = useState(null)
+  const [employeePreview, setEmployeePreview] = useState(null)
 
   const tailoredOptionsForJob = (jobId) => {
     const job = jobOptions.find((item) => String(item.id) === String(jobId || ''))
@@ -536,7 +569,6 @@ function TrackingPage() {
       tailored_resume_id: '',
       is_freezed: false,
       mailed: false,
-      got_replied: false,
       applied_date: toDateInput(new Date().toISOString()),
       posting_date: toDateInput(new Date().toISOString()),
       is_open: true,
@@ -615,7 +647,6 @@ function TrackingPage() {
         tailored_resume: createForm.has_attachment ? (createForm.tailored_resume_id || null) : null,
         is_freezed: Boolean(createForm.is_freezed),
         mailed: createForm.send_mode === 'sent' ? true : Boolean(createForm.mailed),
-        got_replied: Boolean(createForm.got_replied),
         applied_date: createForm.applied_date || null,
         posting_date: createForm.posting_date || null,
         is_open: Boolean(createForm.is_open),
@@ -623,7 +654,7 @@ function TrackingPage() {
       }
       if (createForm.send_mode === 'sent') {
         payload.append_action = {
-          type: mailTypeToActionType(createForm.mail_type),
+          type: 'fresh',
           send_mode: 'now',
           action_at: new Date().toISOString(),
         }
@@ -637,49 +668,55 @@ function TrackingPage() {
     }
   }
 
-  const openEditForm = (row) => {
+  const openEditForm = async (row) => {
     setEditFormError('')
-    setEditForm({
-      id: row.id,
-      company: row.company || '',
-      job: row.job || '',
-      department: '',
-      company_name: row.company_name || '',
-      job_id: row.job_id || '',
-      role: row.role || '',
-      job_url: row.job_url || '',
-      mail_type: String(row.mail_type || 'fresh').trim() || 'fresh',
-      send_mode: row.schedule_time ? 'scheduled' : 'sent',
-      initial_action_type: rowLastActionType(row) || '',
-      initial_send_mode: row.schedule_time ? 'scheduled' : 'sent',
-      initial_milestone_count: Array.isArray(row.milestones) ? row.milestones.length : 0,
-      has_fresh_milestone: rowHasFreshMilestone(row),
-      schedule_time: toDateTimeLocalInput(row.schedule_time),
-      has_attachment: Boolean(row.resume_preview || row.tailored_resume),
-      achievement_id: row.achievement_id ? String(row.achievement_id) : '',
-      achievement_ids_ordered: Array.isArray(row.achievement_ids_ordered)
-        ? row.achievement_ids_ordered.map((id) => String(id))
-        : (row.achievement_id ? [String(row.achievement_id)] : []),
-      template_ids_ordered: Array.isArray(row.template_ids_ordered)
-        ? row.template_ids_ordered.map((id) => String(id))
-        : (Array.isArray(row.achievement_ids_ordered)
-          ? row.achievement_ids_ordered.map((id) => String(id))
-          : (row.achievement_id ? [String(row.achievement_id)] : [])),
-      personalized_template_id: row.personalized_template_id ? String(row.personalized_template_id) : '',
-      use_hardcoded_personalized_intro: Boolean(row.use_hardcoded_personalized_intro),
-      achievement_name: row.achievement_name || '',
-      achievement_text: row.achievement_text || '',
-      resume_id: row.resume_preview?.id ? String(row.resume_preview.id) : '',
-      tailored_resume_id: row.tailored_resume ? String(row.tailored_resume) : '',
-      is_freezed: Boolean(row.is_freezed),
-      mailed: Boolean(row.mailed),
-      applied_date: toDateInput(row.applied_date),
-      posting_date: toDateInput(row.posting_date),
-      is_open: Boolean(row.is_open),
-      selected_hr_ids: Array.isArray(row.selected_hr_ids) ? row.selected_hr_ids.map((id) => String(id)) : [],
-      got_replied: Boolean(row.got_replied),
-    })
-    hydrateCompanyDependent(row.company || '')
+    try {
+      const fullRow = await fetchTrackingRow(access, row.id).catch(() => row)
+      setEditForm({
+        id: fullRow.id,
+        company: fullRow.company || '',
+        job: fullRow.job || '',
+        department: initialDepartmentFromRow(fullRow),
+        company_name: fullRow.company_name || '',
+        job_id: fullRow.job_id || '',
+        role: fullRow.role || '',
+        job_url: fullRow.job_url || '',
+        mail_type: String(fullRow.mail_type || 'fresh').trim() || 'fresh',
+        send_mode: fullRow.schedule_time ? 'scheduled' : 'sent',
+        initial_action_type: rowLastActionType(fullRow) || '',
+        initial_send_mode: fullRow.schedule_time ? 'scheduled' : 'sent',
+        initial_milestone_count: Array.isArray(fullRow.milestones) ? fullRow.milestones.length : 0,
+        has_fresh_milestone: rowHasFreshMilestone(fullRow),
+        initial_mail_type: String(fullRow.mail_type || 'fresh').trim() || 'fresh',
+        initial_selected_hr_ids: Array.isArray(fullRow.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
+        schedule_time: toDateTimeLocalInput(fullRow.schedule_time),
+        has_attachment: Boolean(fullRow.resume_preview || fullRow.tailored_resume),
+        achievement_id: fullRow.achievement_id ? String(fullRow.achievement_id) : '',
+        achievement_ids_ordered: Array.isArray(fullRow.achievement_ids_ordered)
+          ? fullRow.achievement_ids_ordered.map((id) => String(id))
+          : (fullRow.achievement_id ? [String(fullRow.achievement_id)] : []),
+        template_ids_ordered: Array.isArray(fullRow.template_ids_ordered)
+          ? fullRow.template_ids_ordered.map((id) => String(id))
+          : (Array.isArray(fullRow.achievement_ids_ordered)
+            ? fullRow.achievement_ids_ordered.map((id) => String(id))
+            : (fullRow.achievement_id ? [String(fullRow.achievement_id)] : [])),
+        personalized_template_id: fullRow.personalized_template_id ? String(fullRow.personalized_template_id) : '',
+        use_hardcoded_personalized_intro: Boolean(fullRow.use_hardcoded_personalized_intro),
+        achievement_name: fullRow.achievement_name || '',
+        achievement_text: fullRow.achievement_text || '',
+        resume_id: fullRow.resume_preview?.id ? String(fullRow.resume_preview.id) : '',
+        tailored_resume_id: fullRow.tailored_resume ? String(fullRow.tailored_resume) : '',
+        is_freezed: Boolean(fullRow.is_freezed),
+        mailed: Boolean(fullRow.mailed),
+        applied_date: toDateInput(fullRow.applied_date),
+        posting_date: toDateInput(fullRow.posting_date),
+        is_open: Boolean(fullRow.is_open),
+        selected_hr_ids: Array.isArray(fullRow.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
+      })
+      hydrateCompanyDependent(fullRow.company || '')
+    } catch (err) {
+      setEditFormError(err.message || 'Could not load tracking row.')
+    }
   }
 
   const saveEditForm = async () => {
@@ -751,12 +788,10 @@ function TrackingPage() {
       resume: editForm.resume_id || null,
       tailored_resume: editForm.tailored_resume_id || null,
       is_freezed: Boolean(editForm.is_freezed),
-      mailed: editForm.send_mode === 'sent' ? true : editForm.mailed,
       applied_date: editForm.applied_date || null,
       posting_date: editForm.posting_date || null,
       is_open: editForm.is_open,
       selected_hr_ids: selectedHrIds,
-      got_replied: editForm.got_replied,
     }
     try {
       setEditFormError('')
@@ -765,13 +800,11 @@ function TrackingPage() {
         resume: editForm.has_attachment ? (editForm.resume_id || null) : null,
         tailored_resume: editForm.has_attachment ? (editForm.tailored_resume_id || null) : null,
       }
-      const nextActionType = mailTypeToActionType(editForm.mail_type)
-      const shouldAppendOnTimeAction = editForm.send_mode === 'sent' && (
-        Number(editForm.initial_milestone_count || 0) === 0
-        || String(editForm.initial_send_mode || '') !== 'sent'
-        || String(editForm.initial_action_type || '') !== nextActionType
-      )
-      if (shouldAppendOnTimeAction) {
+      const nextActionType = Number(editForm.initial_milestone_count || 0) === 0
+        ? 'fresh'
+        : mailTypeToActionType(editForm.mail_type)
+      const shouldAppendAction = String(editForm.send_mode || 'sent') === 'sent'
+      if (shouldAppendAction) {
         payload.append_action = {
           type: nextActionType,
           send_mode: 'now',
@@ -827,8 +860,6 @@ function TrackingPage() {
       if (filters.appliedDate && toDateInput(row.applied_date) !== filters.appliedDate) return false
       if (filters.mailed === 'yes' && !row.mailed) return false
       if (filters.mailed === 'no' && row.mailed) return false
-      if (filters.gotReplied === 'yes' && !row.got_replied) return false
-      if (filters.gotReplied === 'no' && row.got_replied) return false
       const actionType = rowLastActionType(row)
       if (filters.lastAction !== 'all' && actionType !== filters.lastAction) return false
       return true
@@ -1038,7 +1069,6 @@ function TrackingPage() {
         <label>Job ID<input value={filters.jobId} placeholder="Search job ID" onChange={(event) => setFilters((prev) => ({ ...prev, jobId: event.target.value }))} /></label>
         <label>Applied Date<input type="date" value={filters.appliedDate} onChange={(event) => setFilters((prev) => ({ ...prev, appliedDate: event.target.value }))} /></label>
         <label>Mailed<select value={filters.mailed} onChange={(event) => setFilters((prev) => ({ ...prev, mailed: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
-        <label>Replied (got_replied)<select value={filters.gotReplied} onChange={(event) => setFilters((prev) => ({ ...prev, gotReplied: event.target.value }))}><option value="all">All</option><option value="yes">Yes</option><option value="no">No</option></select></label>
         <label>Last Action<select value={filters.lastAction} onChange={(event) => setFilters((prev) => ({ ...prev, lastAction: event.target.value }))}><option value="all">All</option><option value="fresh">Fresh</option><option value="followup">Follow Up</option></select></label>
         <label>
           Sort
@@ -1071,7 +1101,6 @@ function TrackingPage() {
               <th>Employee</th>
               <th>Status</th>
               <th>Mailed</th>
-              <th>Replied</th>
               <th>Mail Type</th>
               <th>Send</th>
               <th>Freeze</th>
@@ -1084,6 +1113,8 @@ function TrackingPage() {
             {filteredRows.map((row) => {
               const milestones = Array.isArray(row.milestones) ? row.milestones : []
               const selectedHrValues = uniqueArray(row.selected_hrs)
+              const visibleEmployeeNames = selectedHrValues.slice(0, 2)
+              const hiddenEmployeeCount = Math.max(0, selectedHrValues.length - visibleEmployeeNames.length)
               const linkedPreviewResume = row.resume_preview || row.tailored_resume_preview || null
               const failedEmployees = Array.isArray(row?.delivery_summary?.failed) ? row.delivery_summary.failed : []
 
@@ -1100,7 +1131,24 @@ function TrackingPage() {
                     <td className="tracking-primary-cell">{row.company_name || '-'}</td>
                     <td className="tracking-mono-cell">{row.job_id || '-'}</td>
                     <td className="tracking-employee-cell">
-                      <div>{selectedHrValues.length ? selectedHrValues.join(', ') : '-'}</div>
+                      <div className="tracking-employee-summary">
+                        <span className="tracking-employee-summary-text">
+                          {selectedHrValues.length ? visibleEmployeeNames.join(', ') : '-'}
+                        </span>
+                        {hiddenEmployeeCount ? (
+                          <button
+                            type="button"
+                            className="tracking-employee-more-btn"
+                            onClick={() => setEmployeePreview({
+                              companyName: row.company_name || '',
+                              jobId: row.job_id || '',
+                              employees: selectedHrValues,
+                            })}
+                          >
+                            +{hiddenEmployeeCount}
+                          </button>
+                        ) : null}
+                      </div>
                       {failedEmployees.length ? (
                         <div className="tracking-employee-issue-list">
                           {failedEmployees.slice(0, 2).map((item, index) => (
@@ -1115,7 +1163,6 @@ function TrackingPage() {
                     </td>
                     <td><span className="tracking-badge tracking-badge-status">{formatStatusLabel(row.mail_delivery_status)}</span></td>
                     <td><span className={`tracking-badge ${row.mailed ? 'is-positive' : 'is-muted'}`}>{row.mailed ? 'Yes' : 'No'}</span></td>
-                    <td><span className={`tracking-badge ${row.got_replied ? 'is-positive' : 'is-muted'}`}>{row.got_replied ? 'Yes' : 'No'}</span></td>
                     <td><span className="tracking-badge tracking-badge-type">{formatMailTypeLabel(rowLastActionType(row) || row.mail_type)}</span></td>
                     <td><span className="tracking-badge tracking-badge-send">{formatSendModeLabel(rowLastSendMode(row))}</span></td>
                     <td><span className={`tracking-badge ${row.is_freezed ? 'is-warning' : 'is-muted'}`}>{row.is_freezed ? 'Yes' : 'No'}</span></td>
@@ -1144,32 +1191,67 @@ function TrackingPage() {
                     </td>
                   </tr>
                   <tr className="tracking-milestone-row">
-                    <td colSpan={13}>
-                      <div className="tracking-wave-wrap">
-                        <svg className="tracking-wave-svg" viewBox="0 0 1000 44" preserveAspectRatio="none" aria-hidden="true">
-                          <path
-                            d="M0 22 Q25 4 50 22 T100 22 T150 22 T200 22 T250 22 T300 22 T350 22 T400 22 T450 22 T500 22 T550 22 T600 22 T650 22 T700 22 T750 22 T800 22 T850 22 T900 22 T950 22 T1000 22"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.4"
-                          />
-                        </svg>
-                        <div className="tracking-wave-points">
-                          {Array.from({ length: EMPTY_MILESTONE_DOTS }).map((_, index) => {
-                            const milestone = milestones[index]
-                            return (
-                              <div
-                                key={`${row.id}-wave-${index}`}
-                                className="tracking-wave-point"
-                                style={{ left: `${(index / (EMPTY_MILESTONE_DOTS - 1)) * 100}%` }}
-                                title={milestone ? `${milestone.type} | ${milestone.mode} | ${milestone.at}` : `Step ${index + 1}`}
-                              >
-                                <span className={`tracking-wave-circle ${milestone ? 'is-on' : ''}`} />
-                                <span className="tracking-wave-label">{formatMilestoneLabel(milestone)}</span>
-                              </div>
-                            )
-                          })}
+                    <td colSpan={12}>
+                      <div className="tracking-wave-scroll">
+                        {(() => {
+                          const totalPoints = Math.max(EMPTY_MILESTONE_DOTS, milestones.length || 0)
+                          const waveStartX = WAVE_INSET_PX
+                          const minimumTrackWidth = (WAVE_INSET_PX * 2) + (Math.max(totalPoints - 1, 0) * WAVE_POINT_SPACING_PX)
+
+                          return (
+                            <div
+                              className="tracking-wave-wrap"
+                              style={{
+                                width: '100%',
+                                minWidth: `${minimumTrackWidth}px`,
+                                '--wave-inset': `${waveStartX}px`,
+                                '--wave-svg-top': `${WAVE_SVG_TOP_PX}px`,
+                              }}
+                            >
+                          <svg className="tracking-wave-svg" viewBox="0 0 1000 44" preserveAspectRatio="none" aria-hidden="true">
+                            <path
+                              d="M0 22 C20 2 40 2 60 22 S100 42 120 22 S160 2 180 22 S220 42 240 22 S280 2 300 22 S340 42 360 22 S400 2 420 22 S460 42 480 22 S520 2 540 22 S580 42 600 22 S640 2 660 22 S700 42 720 22 S760 2 780 22 S820 42 840 22 S880 2 900 22 S940 42 960 22 S980 2 1000 22"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.8"
+                            />
+                          </svg>
+                          <div className="tracking-wave-points">
+                            {Array.from({ length: totalPoints }).map((_, index) => {
+                              const milestone = milestones[index]
+                              const progress = totalPoints <= 1 ? 0 : (index / (totalPoints - 1))
+                              const viewBoxX = progress * WAVE_VIEWBOX_WIDTH
+                              const viewBoxY = 22 - (20 * Math.sin((Math.PI / 60) * viewBoxX))
+                              const pointCenterY = WAVE_SVG_TOP_PX + ((viewBoxY / WAVE_VIEWBOX_HEIGHT) * WAVE_SVG_HEIGHT_PX)
+                              const pointTop = pointCenterY - (WAVE_DOT_SIZE_PX / 2)
+                              const pointLeft = totalPoints <= 1
+                                ? `${waveStartX}px`
+                                : `calc(${waveStartX}px + ${progress} * (100% - ${waveStartX * 2}px))`
+                              return (
+                                <div
+                                  key={`${row.id}-wave-${index}`}
+                                  className={`tracking-wave-point${index === 0 ? ' is-edge-start' : ''}${index === totalPoints - 1 ? ' is-edge-end' : ''}`}
+                                  style={{ left: pointLeft, top: `${pointTop}px` }}
+                                >
+                                  <div
+                                    className="tracking-wave-point-button"
+                                    title={milestone ? formatMilestoneLabel(milestone) : `Step ${index + 1}`}
+                                  >
+                                    <span className={`tracking-wave-circle ${milestone ? 'is-on' : ''}`} />
+                                    <span className="tracking-wave-label">{formatMilestoneCode(milestone)}</span>
+                                  </div>
+                                  {milestone ? (
+                                    <div className="tracking-wave-popup">
+                                      {formatMilestoneLabel(milestone)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
+                          )
+                        })()}
                       </div>
                     </td>
                   </tr>
@@ -1269,6 +1351,9 @@ function TrackingPage() {
                   onChange={(event) => setCreateForm((prev) => ({ ...prev, schedule_time: event.target.value }))}
                 />
               </label>
+            ) : null}
+            {createForm.mail_type === 'followed_up' && createForm.send_mode === 'sent' ? (
+              <p className="hint tracking-form-span-2">Follow Up can be sent multiple times, but it is better not to send the same employee too frequently. Recommended: keep at least a day gap, or at most 2 same-day follow ups with time between them.</p>
             ) : null}
             <div className="tracking-form-span-2 tracking-template-stack">
               <div className="tracking-form-section-title">Templates</div>
@@ -1460,13 +1545,8 @@ function TrackingPage() {
                 value={editForm.job || ''}
                 placeholder="Select job"
                 options={jobOptions.map((job) => ({ value: String(job.id), label: `${job.job_id || ''} - ${job.role || ''}` }))}
-                onChange={(value) => {
-                  setEditForm((prev) => ({
-                    ...prev,
-                    job: value,
-                    tailored_resume_id: '',
-                  }))
-                }}
+                disabled
+                onChange={() => {}}
               />
             </label>
             <label>
@@ -1500,6 +1580,9 @@ function TrackingPage() {
                   onChange={(event) => setEditForm((prev) => ({ ...prev, schedule_time: event.target.value }))}
                 />
               </label>
+            ) : null}
+            {editForm.mail_type === 'followed_up' && editForm.send_mode === 'sent' ? (
+              <p className="hint tracking-form-span-2">Follow Up can be sent multiple times, but it is better not to send the same employee too frequently. Recommended: keep at least a day gap, or at most 2 same-day follow ups with time between them.</p>
             ) : null}
             <div className="tracking-form-span-2 tracking-template-stack">
               <div className="tracking-form-section-title">Templates</div>
@@ -1656,6 +1739,16 @@ function TrackingPage() {
             <div className="actions">
               <button type="button" className="secondary" onClick={() => setPreviewResume(null)}>Close</button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {employeePreview ? (
+        <div className="modal-overlay" onClick={() => setEmployeePreview(null)}>
+          <div className="modal-panel tracking-employee-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <p className="tracking-employee-preview-text">
+              {(Array.isArray(employeePreview.employees) ? employeePreview.employees : []).join(', ') || 'No employees'}
+            </p>
           </div>
         </div>
       ) : null}

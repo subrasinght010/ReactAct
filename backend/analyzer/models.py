@@ -216,11 +216,6 @@ class MailTracking(BaseModel):
 
 
 class Tracking(BaseModel):
-    COMPOSE_MODE_CHOICES = [
-        ('hardcoded', 'Hardcoded'),
-        ('partial_ai', 'Partial AI'),
-        ('complete_ai', 'Complete AI'),
-    ]
     actions_choices = [
         ('fresh', 'Fresh'),
         ('followed_up', 'Followed Up'),
@@ -256,12 +251,6 @@ class Tracking(BaseModel):
         related_name='tracking_rows',
     )
     schedule_time = models.DateTimeField(blank=True, null=True)
- 
-    template_choice = models.CharField(max_length=40, blank=True, default='cold_applied')
-    template_subject = models.CharField(max_length=255, blank=True, default='')
-    template_message = models.TextField(blank=True, default='')
-    compose_mode = models.CharField(max_length=20, choices=COMPOSE_MODE_CHOICES, default='hardcoded')
-    hardcoded_follow_up = models.BooleanField(default=True)
     use_hardcoded_personalized_intro = models.BooleanField(default=False)
     mail_delivery_status = models.CharField(
         max_length=20,
@@ -377,7 +366,6 @@ class MailTrackingEvent(BaseModel):
     send_mode = models.CharField(max_length=20, choices=SEND_MODE_CHOICES, default='sent')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
     action_at = models.DateTimeField()
-    got_replied = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
     source_uid = models.CharField(max_length=255, blank=True, default='')
     source_message_id = models.CharField(max_length=1000, blank=True, default='')
