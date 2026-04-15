@@ -302,35 +302,25 @@ function mergeAchievementOptions(baseOptions, selectedMeta) {
 }
 
 function filterAchievementOptionsForMode(options) {
-  return Array.isArray(options) ? options : []
+  return (Array.isArray(options) ? options : []).filter((item) => String(item?.category || '').trim().toLowerCase() !== 'personalized')
 }
 
 function templateSelectionError(templateChoice, values, options) {
   const ids = orderedAchievementIds(values)
-  if (String(templateChoice || '').trim() === 'custom') return ''
-  if (!ids.length) return 'Select templates in order.'
+  const normalizedMailType = String(templateChoice || 'fresh').trim().toLowerCase() || 'fresh'
+  if (!ids.length) return 'Select at least one template.'
   if (ids.length > 5) return 'Select at most 5 templates.'
   const rows = ids
     .map((id) => (Array.isArray(options) ? options.find((item) => String(item?.id || '') === String(id)) : null))
     .filter(Boolean)
   if (rows.length !== ids.length) return 'One or more selected templates were not found.'
-  const isFollowUp = isFollowUpTemplate(templateChoice)
-  const firstCategory = String(rows[0]?.category || 'general').trim().toLowerCase()
-  const lastCategory = String(rows[rows.length - 1]?.category || 'general').trim().toLowerCase()
-  if (isFollowUp) {
-    if (rows.length < 2) return 'For follow-up mail, select at least 2 templates: one paragraph and one closing.'
-    if (lastCategory !== 'closing') return 'For follow-up mail, the last selected template must be Closing.'
-    if (!rows.slice(0, -1).some((item) => String(item?.category || 'general').trim().toLowerCase() !== 'closing')) {
-      return 'For follow-up mail, add at least one template before the closing.'
-    }
+  if (normalizedMailType === 'followed_up') {
     return ''
   }
-  if (rows.length < 3) return 'For non-follow-up mail, select at least 3 templates: opening, body, and closing.'
-  if (firstCategory !== 'opening') return 'For non-follow-up mail, the first selected template must be Opening.'
-  if (lastCategory !== 'closing') return 'For non-follow-up mail, the last selected template must be Closing.'
-  if (!rows.slice(1, -1).some((item) => ['experience', 'general'].includes(String(item?.category || 'general').trim().toLowerCase()))) {
-    return 'For non-follow-up mail, add at least one Experience or General template between opening and closing.'
-  }
+  if (rows.length < 3) return 'For fresh mail, select at least 3 templates.'
+  const categories = rows.map((item) => String(item?.category || 'general').trim().toLowerCase())
+  if (!categories.includes('opening')) return 'For fresh mail, include at least one Opening template.'
+  if (!categories.includes('closing')) return 'For fresh mail, include at least one Closing template.'
   return ''
 }
 
@@ -531,18 +521,15 @@ function TrackingPage() {
       company: '',
       job: '',
       department: '',
-      template_name: '',
-      template_subject: '',
-      template_choice: '',
       mail_type: 'fresh',
       send_mode: 'sent',
-      compose_mode: 'hardcoded',
-      hardcoded_follow_up: true,
       schedule_time: '',
       has_attachment: false,
       achievement_id: '',
       achievement_ids_ordered: [],
       template_ids_ordered: [],
+      personalized_template_id: '',
+      use_hardcoded_personalized_intro: false,
       achievement_name: '',
       achievement_text: '',
       resume_id: '',
@@ -590,48 +577,19 @@ function TrackingPage() {
     const jobId = String(selectedJob?.job_id || '').trim()
     const role = String(selectedJob?.role || '').trim()
     const jobUrl = String(selectedJob?.job_link || '').trim()
-    const resolvedTemplate = createForm.template_choice === 'custom'
-      ? String(createForm.template_name || '').trim()
-      : String(createForm.template_choice || '').trim()
-    const resolvedTemplateSubject = createForm.template_choice === 'custom'
-      ? String(createForm.template_subject || '').trim()
-      : ''
-    const resolvedTemplateChoice = String(createForm.template_choice || '').trim() || 'cold_applied'
-    const resolvedTemplateMessage = resolvedTemplateChoice === 'custom' ? resolvedTemplate : ''
-    const resolvedComposeMode = resolvedTemplateChoice === 'custom'
-      ? 'complete_ai'
-      : resolveComposeModeForTemplate(resolvedTemplateChoice, createForm.compose_mode)
-    const createTemplateError = templateSelectionError(resolvedTemplateChoice, createAchievementIds, createAchievementOptionsForMode)
+    const createTemplateError = templateSelectionError(createForm.mail_type, createAchievementIds, createAchievementOptionsForMode)
     if (createTemplateError) {
       setCreateFormError(createTemplateError)
       return
     }
-    const templateRestrictionError = getTemplateRestrictionError(
-      resolvedTemplateChoice,
-      createDepartmentBuckets,
-      createForm.mail_type,
-    )
-    if (templateRestrictionError) {
-      setCreateFormError(templateRestrictionError)
-      return
-    }
-    if (resolvedTemplateChoice === 'custom' && (!resolvedTemplateSubject || !resolvedTemplateMessage)) {
-      setCreateFormError('Custom mail requires both subject and body.')
-      return
-    }
-    if (!createForm.has_attachment) {
-      setCreateFormError('Attachment is mandatory. Check Attachment and select one resume or tailored resume.')
-      return
-    }
-    if (!createForm.resume_id && !createForm.tailored_resume_id) {
-      setCreateFormError('Attachment is mandatory. Select one resume or tailored resume.')
+    if (createForm.use_hardcoded_personalized_intro && !String(createForm.personalized_template_id || '').trim()) {
+      setCreateFormError('Select one Personalized template when hardcoded personalized is checked.')
       return
     }
     if (createForm.mail_type === 'followed_up') {
       setCreateFormError('First time mail must be Fresh before any Folloup mail.')
       return
     }
-    const resolvedHardcodedFollowUp = resolvedComposeMode !== 'complete_ai'
     const resolvedScheduleTime = createForm.send_mode === 'scheduled'
       ? (createForm.schedule_time || nowDateTimeLocalValue())
       : null
@@ -643,19 +601,15 @@ function TrackingPage() {
         template: createAchievementIds[0] || null,
         template_id: createAchievementIds[0] || null,
         template_ids_ordered: createAchievementIds,
+        personalized_template: createForm.use_hardcoded_personalized_intro ? (createForm.personalized_template_id || null) : null,
+        use_hardcoded_personalized_intro: Boolean(createForm.use_hardcoded_personalized_intro),
         achievement: createAchievementIds[0] || null,
         achievement_ids_ordered: createAchievementIds,
         company_name: companyName,
         job_id: jobId,
         role,
         job_url: jobUrl,
-        template_choice: resolvedTemplateChoice,
-        template_subject: resolvedTemplateSubject,
-        template_message: resolvedTemplateMessage,
-        compose_mode: resolvedComposeMode,
-        hardcoded_follow_up: resolvedHardcodedFollowUp,
         schedule_time: resolvedScheduleTime,
-        template_name: resolvedTemplate,
         mail_type: createForm.mail_type || 'fresh',
         resume: createForm.has_attachment ? (createForm.resume_id || null) : null,
         tailored_resume: createForm.has_attachment ? (createForm.tailored_resume_id || null) : null,
@@ -685,20 +639,6 @@ function TrackingPage() {
 
   const openEditForm = (row) => {
     setEditFormError('')
-    const incomingTemplateChoice = String(row.template_choice || '').trim()
-    const computedChoice = ['cold_applied', 'referral', 'job_inquire', 'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview', 'custom'].includes(incomingTemplateChoice)
-      ? incomingTemplateChoice
-      : (
-        ['cold_applied', 'referral', 'job_inquire', 'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'].includes(String(row.template_name || '').trim())
-          ? String(row.template_name || '').trim()
-          : 'custom'
-      )
-    const customTemplateText = computedChoice === 'custom'
-      ? String(row.template_message || row.template_name || '')
-      : ''
-    const customTemplateSubject = computedChoice === 'custom'
-      ? String(row.template_subject || '')
-      : ''
     setEditForm({
       id: row.id,
       company: row.company || '',
@@ -708,22 +648,12 @@ function TrackingPage() {
       job_id: row.job_id || '',
       role: row.role || '',
       job_url: row.job_url || '',
-      template_name: customTemplateText,
-      template_subject: customTemplateSubject,
-      template_choice: computedChoice,
       mail_type: String(row.mail_type || 'fresh').trim() || 'fresh',
       send_mode: row.schedule_time ? 'scheduled' : 'sent',
       initial_action_type: rowLastActionType(row) || '',
       initial_send_mode: row.schedule_time ? 'scheduled' : 'sent',
       initial_milestone_count: Array.isArray(row.milestones) ? row.milestones.length : 0,
       has_fresh_milestone: rowHasFreshMilestone(row),
-      compose_mode: String(
-        row.compose_mode
-        || (computedChoice === 'custom'
-          ? 'complete_ai'
-          : resolveComposeModeForTemplate(computedChoice, row.compose_mode || (Boolean(row.hardcoded_follow_up ?? true) ? 'hardcoded' : 'complete_ai')))
-      ).trim() || 'hardcoded',
-      hardcoded_follow_up: resolveComposeModeForTemplate(computedChoice, row.compose_mode || (Boolean(row.hardcoded_follow_up ?? true) ? 'hardcoded' : 'complete_ai')) !== 'complete_ai',
       schedule_time: toDateTimeLocalInput(row.schedule_time),
       has_attachment: Boolean(row.resume_preview || row.tailored_resume),
       achievement_id: row.achievement_id ? String(row.achievement_id) : '',
@@ -735,6 +665,8 @@ function TrackingPage() {
         : (Array.isArray(row.achievement_ids_ordered)
           ? row.achievement_ids_ordered.map((id) => String(id))
           : (row.achievement_id ? [String(row.achievement_id)] : [])),
+      personalized_template_id: row.personalized_template_id ? String(row.personalized_template_id) : '',
+      use_hardcoded_personalized_intro: Boolean(row.use_hardcoded_personalized_intro),
       achievement_name: row.achievement_name || '',
       achievement_text: row.achievement_text || '',
       resume_id: row.resume_preview?.id ? String(row.resume_preview.id) : '',
@@ -783,48 +715,19 @@ function TrackingPage() {
     const jobId = String(selectedJob?.job_id || editForm.job_id || '').trim()
     const role = String(selectedJob?.role || editForm.role || '').trim()
     const jobUrl = String(selectedJob?.job_link || editForm.job_url || '').trim()
-    const resolvedTemplate = editForm.template_choice === 'custom'
-      ? String(editForm.template_name || '').trim()
-      : String(editForm.template_choice || '').trim()
-    const resolvedTemplateSubject = editForm.template_choice === 'custom'
-      ? String(editForm.template_subject || '').trim()
-      : ''
-    const resolvedTemplateChoice = String(editForm.template_choice || '').trim() || 'cold_applied'
-    const resolvedTemplateMessage = resolvedTemplateChoice === 'custom' ? resolvedTemplate : ''
-    const resolvedComposeMode = resolvedTemplateChoice === 'custom'
-      ? 'complete_ai'
-      : resolveComposeModeForTemplate(resolvedTemplateChoice, editForm.compose_mode)
-    const editTemplateError = templateSelectionError(resolvedTemplateChoice, editAchievementIds, editAchievementOptionsForMode)
+    const editTemplateError = templateSelectionError(editForm.mail_type, editAchievementIds, editAchievementOptionsForMode)
     if (editTemplateError) {
       setEditFormError(editTemplateError)
       return
     }
-    const templateRestrictionError = getTemplateRestrictionError(
-      resolvedTemplateChoice,
-      editDepartmentBuckets,
-      editForm.mail_type,
-    )
-    if (templateRestrictionError) {
-      setEditFormError(templateRestrictionError)
-      return
-    }
-    if (resolvedTemplateChoice === 'custom' && (!resolvedTemplateSubject || !resolvedTemplateMessage)) {
-      setEditFormError('Custom mail requires both subject and body.')
-      return
-    }
-    if (!editForm.has_attachment) {
-      setEditFormError('Attachment is mandatory. Check Attachment and select one resume or tailored resume.')
-      return
-    }
-    if (!editForm.resume_id && !editForm.tailored_resume_id) {
-      setEditFormError('Attachment is mandatory. Select one resume or tailored resume.')
+    if (editForm.use_hardcoded_personalized_intro && !String(editForm.personalized_template_id || '').trim()) {
+      setEditFormError('Select one Personalized template when hardcoded personalized is checked.')
       return
     }
     if (editForm.mail_type === 'followed_up' && !editHasFreshMilestone) {
       setEditFormError('First time mail must be Fresh before any Folloup mail.')
       return
     }
-    const resolvedHardcodedFollowUp = resolvedComposeMode !== 'complete_ai'
     const resolvedScheduleTime = editForm.send_mode === 'scheduled'
       ? (editForm.schedule_time || nowDateTimeLocalValue())
       : null
@@ -835,19 +738,15 @@ function TrackingPage() {
       template: editAchievementIds[0] || null,
       template_id: editAchievementIds[0] || null,
       template_ids_ordered: editAchievementIds,
+      personalized_template: editForm.use_hardcoded_personalized_intro ? (editForm.personalized_template_id || null) : null,
+      use_hardcoded_personalized_intro: Boolean(editForm.use_hardcoded_personalized_intro),
       achievement: editAchievementIds[0] || null,
       achievement_ids_ordered: editAchievementIds,
       company_name: companyName,
       job_id: jobId,
       role,
       job_url: jobUrl,
-      template_choice: resolvedTemplateChoice,
-      template_subject: resolvedTemplateSubject,
-      template_message: resolvedTemplateMessage,
-      compose_mode: resolvedComposeMode,
-      hardcoded_follow_up: resolvedHardcodedFollowUp,
       schedule_time: resolvedScheduleTime,
-      template_name: resolvedTemplate,
       mail_type: editForm.mail_type || 'fresh',
       resume: editForm.resume_id || null,
       tailored_resume: editForm.tailored_resume_id || null,
@@ -1061,6 +960,15 @@ function TrackingPage() {
   const editAchievementOptionsForMode = useMemo(
     () => filterAchievementOptionsForMode(editAchievementDropdownOptions),
     [editAchievementDropdownOptions],
+  )
+  const personalizedTemplateOptions = useMemo(
+    () => (Array.isArray(achievementOptions) ? achievementOptions : [])
+      .filter((item) => String(item?.category || '').trim().toLowerCase() === 'personalized')
+      .map((item) => ({
+        value: String(item.id),
+        label: `${String(item.name || 'Template')} | Personalized`,
+      })),
+    [achievementOptions],
   )
   const allSelected = filteredRows.length > 0 && filteredRows.every((row) => selectedIds.includes(row.id))
   useEffect(() => {
@@ -1362,109 +1270,70 @@ function TrackingPage() {
                 />
               </label>
             ) : null}
-            <label>
-              Template
-              <SingleSelectDropdown
-                value={createForm.template_choice || ''}
-                placeholder="Select template"
-                options={createTemplateOptions}
-                onChange={(nextValue) => setCreateForm((prev) => ({
+            <div className="tracking-form-span-2 tracking-template-stack">
+              <div className="tracking-form-section-title">Templates</div>
+              <p className="hint">Fresh mail: minimum 3 templates with at least one Opening and one Closing. Follow up: minimum 1 template. Duplicate selection is blocked.</p>
+              <div className="tracking-template-stack-list">
+                {[0, 1, 2, 3, 4].map((index) => (
+                  <label key={`create-template-${index}`} className="tracking-template-stack-item">
+                    {`Template ${index + 1}`}
+                    <SingleSelectDropdown
+                      value={Array.isArray(createForm.achievement_ids_ordered) ? (createForm.achievement_ids_ordered[index] || '') : ''}
+                      placeholder="Search and select template"
+                      searchPlaceholder="Type template name or category"
+                      clearLabel="No template selected"
+                      options={hardcodedAchievementOptionsForIndex(
+                        createAchievementOptionsForMode,
+                        createForm.achievement_ids_ordered,
+                        index,
+                      ).map((item) => ({
+                        value: String(item.id),
+                        label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
+                      }))}
+                      disabled={hardcodedAchievementSlotDisabled(createForm.achievement_ids_ordered, index)}
+                      onChange={(nextValue) => {
+                        setCreateForm((prev) => {
+                          const nextIds = updateHardcodedAchievementIds(prev.achievement_ids_ordered, index, nextValue)
+                          return syncLegacyAchievementFields({
+                            ...prev,
+                            achievement_ids_ordered: nextIds,
+                            template_ids_ordered: nextIds,
+                          }, createAchievementOptionsForMode)
+                        })
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label className="tracking-check-row tracking-form-span-2">
+              <input
+                type="checkbox"
+                checked={Boolean(createForm.use_hardcoded_personalized_intro)}
+                onChange={(event) => setCreateForm((prev) => ({
                   ...prev,
-                  template_choice: nextValue || '',
-                  compose_mode: resolveComposeModeForTemplate(nextValue || '', prev.compose_mode || 'hardcoded'),
-                  hardcoded_follow_up: resolveComposeModeForTemplate(nextValue || '', prev.compose_mode || 'hardcoded') !== 'complete_ai',
-                  achievement_ids_ordered: [],
-                  template_ids_ordered: [],
-                  achievement_id: '',
-                  achievement_name: '',
-                  achievement_text: '',
-                  template_subject: nextValue === 'custom' ? prev.template_subject : '',
-                  template_name: nextValue === 'custom' ? prev.template_name : '',
+                  use_hardcoded_personalized_intro: event.target.checked,
+                  personalized_template_id: event.target.checked ? prev.personalized_template_id : '',
                 }))}
               />
+              {' '}
+              Hardcoded Personalized For Employee
             </label>
-            {!createTemplateOptions.length ? (
-              <p className="hint tracking-form-span-2">No template available for selected department/employee.</p>
-            ) : null}
-            {createForm.template_choice ? (
+            {createForm.use_hardcoded_personalized_intro ? (
               <label className="tracking-form-span-2">
-                Mail Compose Mode
+                Personalized Template
                 <SingleSelectDropdown
-                  value={resolveComposeModeForTemplate(createForm.template_choice, createForm.compose_mode || 'hardcoded')}
-                  placeholder="Select compose mode"
-                  options={composerOptionsForTemplate(createForm.template_choice)}
-                  disabled={createForm.template_choice === 'custom'}
-                  onChange={(nextValue) => setCreateForm((prev) => ({
-                    ...prev,
-                    compose_mode: resolveComposeModeForTemplate(prev.template_choice, nextValue || 'hardcoded'),
-                    hardcoded_follow_up: resolveComposeModeForTemplate(prev.template_choice, nextValue || 'hardcoded') !== 'complete_ai',
-                    achievement_ids_ordered: [],
-                    template_ids_ordered: [],
-                    achievement_id: '',
-                    achievement_name: '',
-                    achievement_text: '',
-                  }))}
+                  value={createForm.personalized_template_id || ''}
+                  placeholder="Search and select personalized template"
+                  searchPlaceholder="Type personalized template name"
+                  clearLabel="No personalized template selected"
+                  options={personalizedTemplateOptions}
+                  onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
                 />
               </label>
-            ) : null}
-            {createForm.template_choice ? (
-              <div className="tracking-form-span-2">
-                <div className="tracking-form-section-title">Templates</div>
-                <p className="hint">Choose up to 5 templates in order. Non-follow-up: Opening first, Closing last. Follow-up: one body template plus Closing last.</p>
-                <div className="tracking-form-grid">
-                  {[0, 1, 2, 3, 4].map((index) => (
-                    <label key={`create-template-${index}`}>
-                      {`Template ${index + 1}`}
-                      <SingleSelectDropdown
-                        value={Array.isArray(createForm.achievement_ids_ordered) ? (createForm.achievement_ids_ordered[index] || '') : ''}
-                        placeholder="Select template"
-                        options={hardcodedAchievementOptionsForIndex(
-                          createAchievementOptionsForMode,
-                          createForm.achievement_ids_ordered,
-                          index,
-                        ).map((item) => ({
-                          value: String(item.id),
-                          label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
-                        }))}
-                        disabled={hardcodedAchievementSlotDisabled(createForm.achievement_ids_ordered, index)}
-                        onChange={(nextValue) => {
-                          setCreateForm((prev) => {
-                            const nextIds = updateHardcodedAchievementIds(prev.achievement_ids_ordered, index, nextValue)
-                            return syncLegacyAchievementFields({
-                              ...prev,
-                              achievement_ids_ordered: nextIds,
-                              template_ids_ordered: nextIds,
-                            }, createAchievementOptionsForMode)
-                          })
-                        }}
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {createForm.template_choice === 'custom' ? (
-              <>
-                <label className="tracking-form-span-2">
-                  Subject line
-                  <textarea
-                    value={createForm.template_subject || ''}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, template_subject: event.target.value }))}
-                    placeholder="Paste custom subject line"
-                    rows={2}
-                  />
-                </label>
-                <label className="tracking-form-span-2">
-                  Custom Template
-                  <textarea
-                    value={createForm.template_name || ''}
-                    onChange={(event) => setCreateForm((prev) => ({ ...prev, template_name: event.target.value }))}
-                    placeholder="Paste custom mail template"
-                    rows={8}
-                  />
-                </label>
-              </>
-            ) : null}
+            ) : (
+              <p className="hint tracking-form-span-2">AI will generate only the employee personalized content. The rest of the mail comes from your selected templates.</p>
+            )}
             <div className="tracking-form-section-title tracking-form-span-2">Attachments & Flags</div>
             <label className="tracking-check-row tracking-form-span-2">
               <input
@@ -1632,109 +1501,70 @@ function TrackingPage() {
                 />
               </label>
             ) : null}
-            <label>
-              Template
-              <SingleSelectDropdown
-                value={editForm.template_choice || 'cold_applied'}
-                placeholder="Select template"
-                options={editTemplateOptions}
-                onChange={(value) => setEditForm((prev) => ({
+            <div className="tracking-form-span-2 tracking-template-stack">
+              <div className="tracking-form-section-title">Templates</div>
+              <p className="hint">Fresh mail: minimum 3 templates with at least one Opening and one Closing. Follow up: minimum 1 template. Duplicate selection is blocked.</p>
+              <div className="tracking-template-stack-list">
+                {[0, 1, 2, 3, 4].map((index) => (
+                  <label key={`edit-template-${index}`} className="tracking-template-stack-item">
+                    {`Template ${index + 1}`}
+                    <SingleSelectDropdown
+                      value={Array.isArray(editForm.achievement_ids_ordered) ? (editForm.achievement_ids_ordered[index] || '') : ''}
+                      placeholder="Search and select template"
+                      searchPlaceholder="Type template name or category"
+                      clearLabel="No template selected"
+                      options={hardcodedAchievementOptionsForIndex(
+                        editAchievementOptionsForMode,
+                        editForm.achievement_ids_ordered,
+                        index,
+                      ).map((item) => ({
+                        value: String(item.id),
+                        label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
+                      }))}
+                      disabled={hardcodedAchievementSlotDisabled(editForm.achievement_ids_ordered, index)}
+                      onChange={(nextValue) => {
+                        setEditForm((prev) => {
+                          const nextIds = updateHardcodedAchievementIds(prev.achievement_ids_ordered, index, nextValue)
+                          return syncLegacyAchievementFields({
+                            ...prev,
+                            achievement_ids_ordered: nextIds,
+                            template_ids_ordered: nextIds,
+                          }, editAchievementOptionsForMode)
+                        })
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label className="tracking-check-row tracking-form-span-2">
+              <input
+                type="checkbox"
+                checked={Boolean(editForm.use_hardcoded_personalized_intro)}
+                onChange={(event) => setEditForm((prev) => ({
                   ...prev,
-                  template_choice: value || 'cold_applied',
-                  compose_mode: resolveComposeModeForTemplate(value || '', prev.compose_mode || 'hardcoded'),
-                  hardcoded_follow_up: resolveComposeModeForTemplate(value || '', prev.compose_mode || 'hardcoded') !== 'complete_ai',
-                  achievement_ids_ordered: [],
-                  template_ids_ordered: [],
-                  achievement_id: '',
-                  achievement_name: '',
-                  achievement_text: '',
-                  template_subject: value === 'custom' ? prev.template_subject : '',
-                  template_name: value === 'custom' ? prev.template_name : '',
+                  use_hardcoded_personalized_intro: event.target.checked,
+                  personalized_template_id: event.target.checked ? prev.personalized_template_id : '',
                 }))}
               />
+              {' '}
+              Hardcoded Personalized For Employee
             </label>
-            {!editTemplateOptions.length ? (
-              <p className="hint tracking-form-span-2">No template available for selected department/employee.</p>
-            ) : null}
-            {editForm.template_choice ? (
+            {editForm.use_hardcoded_personalized_intro ? (
               <label className="tracking-form-span-2">
-                Mail Compose Mode
+                Personalized Template
                 <SingleSelectDropdown
-                  value={resolveComposeModeForTemplate(editForm.template_choice, editForm.compose_mode || 'hardcoded')}
-                  placeholder="Select compose mode"
-                  options={composerOptionsForTemplate(editForm.template_choice)}
-                  disabled={editForm.template_choice === 'custom'}
-                  onChange={(nextValue) => setEditForm((prev) => ({
-                    ...prev,
-                    compose_mode: resolveComposeModeForTemplate(prev.template_choice, nextValue || 'hardcoded'),
-                    hardcoded_follow_up: resolveComposeModeForTemplate(prev.template_choice, nextValue || 'hardcoded') !== 'complete_ai',
-                    achievement_ids_ordered: [],
-                    template_ids_ordered: [],
-                    achievement_id: '',
-                    achievement_name: '',
-                    achievement_text: '',
-                  }))}
+                  value={editForm.personalized_template_id || ''}
+                  placeholder="Search and select personalized template"
+                  searchPlaceholder="Type personalized template name"
+                  clearLabel="No personalized template selected"
+                  options={personalizedTemplateOptions}
+                  onChange={(nextValue) => setEditForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
                 />
               </label>
-            ) : null}
-            {editForm.template_choice ? (
-              <div className="tracking-form-span-2">
-                <div className="tracking-form-section-title">Templates</div>
-                <p className="hint">Choose up to 5 templates in order. Non-follow-up: Opening first, Closing last. Follow-up: one body template plus Closing last.</p>
-                <div className="tracking-form-grid">
-                  {[0, 1, 2, 3, 4].map((index) => (
-                    <label key={`edit-template-${index}`}>
-                      {`Template ${index + 1}`}
-                      <SingleSelectDropdown
-                        value={Array.isArray(editForm.achievement_ids_ordered) ? (editForm.achievement_ids_ordered[index] || '') : ''}
-                        placeholder="Select template"
-                        options={hardcodedAchievementOptionsForIndex(
-                          editAchievementOptionsForMode,
-                          editForm.achievement_ids_ordered,
-                          index,
-                        ).map((item) => ({
-                          value: String(item.id),
-                          label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
-                        }))}
-                        disabled={hardcodedAchievementSlotDisabled(editForm.achievement_ids_ordered, index)}
-                        onChange={(nextValue) => {
-                          setEditForm((prev) => {
-                            const nextIds = updateHardcodedAchievementIds(prev.achievement_ids_ordered, index, nextValue)
-                            return syncLegacyAchievementFields({
-                              ...prev,
-                              achievement_ids_ordered: nextIds,
-                              template_ids_ordered: nextIds,
-                            }, editAchievementOptionsForMode)
-                          })
-                        }}
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-            {editForm.template_choice === 'custom' ? (
-              <>
-                <label className="tracking-form-span-2">
-                  Subject line
-                  <textarea
-                    value={editForm.template_subject || ''}
-                    onChange={(event) => setEditForm((prev) => ({ ...prev, template_subject: event.target.value }))}
-                    placeholder="Paste custom subject line"
-                    rows={2}
-                  />
-                </label>
-                <label className="tracking-form-span-2">
-                  Custom Template
-                  <textarea
-                    value={editForm.template_name || ''}
-                    onChange={(event) => setEditForm((prev) => ({ ...prev, template_name: event.target.value }))}
-                    placeholder="Paste custom mail template"
-                    rows={8}
-                  />
-                </label>
-              </>
-            ) : null}
+            ) : (
+              <p className="hint tracking-form-span-2">AI will generate only the employee personalized content. The rest of the mail comes from your selected templates.</p>
+            )}
             <div className="tracking-form-section-title tracking-form-span-2">Attachments & Flags</div>
             <label className="tracking-check-row tracking-form-span-2">
               <input

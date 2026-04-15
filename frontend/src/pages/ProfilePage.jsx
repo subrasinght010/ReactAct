@@ -47,6 +47,15 @@ const EMPTY_ACH = {
   paragraph: '',
 }
 
+const TEMPLATE_CATEGORY_OPTIONS = [
+  { value: '', label: 'All Categories' },
+  { value: 'personalized', label: 'Personalized' },
+  { value: 'opening', label: 'Opening' },
+  { value: 'experience', label: 'Experience' },
+  { value: 'closing', label: 'Closing' },
+  { value: 'general', label: 'General' },
+]
+
 const PROGRESSION_STAGES = [
   { value: 'received_call', label: 'Received Call' },
   { value: 'assignment', label: 'Assignment' },
@@ -227,6 +236,7 @@ function ProfilePage() {
   const [previewResume, setPreviewResume] = useState(null)
 
   const [achievements, setAchievements] = useState([])
+  const [templateCategoryFilter, setTemplateCategoryFilter] = useState('')
   const [showAchForm, setShowAchForm] = useState(false)
   const [editingAchId, setEditingAchId] = useState(null)
   const [achForm, setAchForm] = useState(EMPTY_ACH)
@@ -280,6 +290,14 @@ function ProfilePage() {
     )
     return String(match?.name || '').trim()
   }, [interviewForm.location_ref, locationOptions])
+
+  const filteredAchievements = useMemo(() => {
+    const selectedCategory = String(templateCategoryFilter || '').trim().toLowerCase()
+    if (!selectedCategory) return Array.isArray(achievements) ? achievements : []
+    return (Array.isArray(achievements) ? achievements : []).filter(
+      (row) => String(row?.category || '').trim().toLowerCase() === selectedCategory,
+    )
+  }, [achievements, templateCategoryFilter])
 
   const loadAll = async () => {
     setLoading(true)
@@ -603,7 +621,17 @@ function ProfilePage() {
       <section className="dash-card">
         <div className="tracking-head profile-section-head">
           <h2>Templates</h2>
-          <div className="actions">
+          <div className="actions profile-template-head-actions">
+            <div className="profile-template-filter">
+              <SingleSelectDropdown
+                value={templateCategoryFilter}
+                placeholder="Category"
+                searchPlaceholder="Search category"
+                clearLabel="All Categories"
+                options={TEMPLATE_CATEGORY_OPTIONS}
+                onChange={(nextValue) => setTemplateCategoryFilter(nextValue || '')}
+              />
+            </div>
             <button type="button" className="secondary" onClick={() => { setShowAchForm((v) => !v); setEditingAchId(null); setAchForm(EMPTY_ACH) }}>{showAchForm ? 'Close Form' : 'Add Template'}</button>
           </div>
         </div>
@@ -611,7 +639,7 @@ function ProfilePage() {
           <>
             <div className="profile-form-grid">
               <label>Name<input value={achForm.name} onChange={(e) => setAchForm((p) => ({ ...p, name: e.target.value }))} /></label>
-              <label>Category<select value={achForm.category || 'general'} onChange={(e) => setAchForm((p) => ({ ...p, category: e.target.value }))}><option value="opening">Opening</option><option value="experience">Experience</option><option value="closing">Closing</option><option value="general">General</option></select></label>
+              <label>Category<select value={achForm.category || 'general'} onChange={(e) => setAchForm((p) => ({ ...p, category: e.target.value }))}><option value="personalized">Personalized</option><option value="opening">Opening</option><option value="experience">Experience</option><option value="closing">Closing</option><option value="general">General</option></select></label>
               <label className="md:col-span-2">Paragraph<textarea rows={4} value={achForm.paragraph} onChange={(e) => setAchForm((p) => ({ ...p, paragraph: e.target.value }))} /></label>
             </div>
             <div className="actions">
@@ -621,18 +649,21 @@ function ProfilePage() {
           </>
         ) : null}
         <div className="profile-ach-grid">
-          {achievements.map((row) => (
-            <article key={row.id} className="resume-card profile-card-shell">
-              <p className="resume-card-title"><strong>{row.name || '-'}</strong></p>
-              <p className="hint">{String(row.category || 'general').replaceAll('_', ' ')}</p>
-              <p className="resume-card-snippet">{row.paragraph || '-'}</p>
-              <div className="resume-card-actions">
+          {filteredAchievements.map((row) => (
+            <article key={row.id} className="profile-template-row">
+              <div className="profile-template-main">
+                <p className="profile-template-title"><strong>{row.name || '-'}</strong></p>
+                <p className="hint">{String(row.category || 'general').replaceAll('_', ' ')}</p>
+                <p className="profile-template-snippet">{row.paragraph || '-'}</p>
+              </div>
+              <div className="profile-template-actions">
                 <button type="button" className="secondary" onClick={() => editAchievement(row)}>Edit</button>
                 <button type="button" className="secondary" onClick={() => removeAchievement(row.id)}>Delete</button>
               </div>
             </article>
           ))}
           {!achievements.length ? <p className="hint">No templates yet.</p> : null}
+          {achievements.length && !filteredAchievements.length ? <p className="hint">No templates in this category.</p> : null}
         </div>
       </section>
 

@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
 from .company_utils import normalize_company_name, resolve_company_for_job
-from .models import Resume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, Achievement, Interview, Location
+from .models import Resume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, Template, Interview, Location
 from .serializers import (
     ResumeSerializer,
     TailoredResumeSerializer,
@@ -222,7 +222,7 @@ def _normalize_tracking_template_ids(payload, request_data=None):
 def _resolve_tracking_templates(user, template_ids):
     if not template_ids:
         return []
-    rows = list(Achievement.objects.filter(user=user, id__in=template_ids))
+    rows = list(Template.objects.filter(user=user, id__in=template_ids))
     row_map = {str(item.id): item for item in rows}
     return [row_map[item_id] for item_id in template_ids if item_id in row_map]
 
@@ -231,37 +231,24 @@ def _template_category(template_row):
     return str(getattr(template_row, 'category', 'general') or 'general').strip().lower() or 'general'
 
 
-def _validate_tracking_templates(templates, template_choice='cold_applied'):
-    choice = str(template_choice or 'cold_applied').strip().lower()
-    if choice == 'custom':
-        return ''
+def _validate_tracking_templates(templates, mail_type='fresh'):
+    normalized_mail_type = str(mail_type or 'fresh').strip().lower()
     rows = list(templates or [])
     if not rows:
-        return 'Select templates in order.'
+        return 'Select at least one template.'
     if len(rows) > 5:
         return 'Select at most 5 templates.'
 
-    is_follow_up = choice in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
-    first_category = _template_category(rows[0])
-    last_category = _template_category(rows[-1])
-
-    if is_follow_up:
-        if len(rows) < 2:
-            return 'For follow-up mail, select at least 2 templates: one paragraph and one closing.'
-        if last_category != 'closing':
-            return 'For follow-up mail, the last selected template must be Closing.'
-        if not any(_template_category(item) != 'closing' for item in rows[:-1]):
-            return 'For follow-up mail, add at least one template before the closing.'
+    if normalized_mail_type == 'followed_up':
         return ''
 
     if len(rows) < 3:
-        return 'For non-follow-up mail, select at least 3 templates: opening, body, and closing.'
-    if first_category != 'opening':
-        return 'For non-follow-up mail, the first selected template must be Opening.'
-    if last_category != 'closing':
-        return 'For non-follow-up mail, the last selected template must be Closing.'
-    if not any(_template_category(item) in {'experience', 'general'} for item in rows[1:-1]):
-        return 'For non-follow-up mail, add at least one Experience or General template between opening and closing.'
+        return 'For fresh mail, select at least 3 templates.'
+    categories = [_template_category(item) for item in rows]
+    if 'opening' not in categories:
+        return 'For fresh mail, include at least one Opening template.'
+    if 'closing' not in categories:
+        return 'For fresh mail, include at least one Closing template.'
     return ''
 
 
@@ -1179,7 +1166,7 @@ class TemplateListCreateView(APIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        rows = Achievement.objects.filter(user=request.user).order_by('-created_at')
+        rows = Template.objects.filter(user=request.user).order_by('-created_at')
         return Response(TemplateSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -1205,12 +1192,12 @@ class TemplateDetailView(APIView):
         return template_id if template_id is not None else achievement_id
 
     def _get_object(self, request, template_id=None, achievement_id=None):
-        return Achievement.objects.get(id=self._resolve_id(template_id, achievement_id), user=request.user)
+        return Template.objects.get(id=self._resolve_id(template_id, achievement_id), user=request.user)
 
     def put(self, request, template_id=None, achievement_id=None):
         try:
             row = self._get_object(request, template_id, achievement_id)
-        except Achievement.DoesNotExist:
+        except Template.DoesNotExist:
             return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
         serializer = TemplateSerializer(row, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
@@ -1221,7 +1208,7 @@ class TemplateDetailView(APIView):
     def delete(self, request, template_id=None, achievement_id=None):
         try:
             row = self._get_object(request, template_id, achievement_id)
-        except Achievement.DoesNotExist:
+        except Template.DoesNotExist:
             return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.hard_delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -2430,11 +2417,16 @@ class ApplicationTrackingListCreateView(APIView):
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
-            'achievement_id': tracking.achievement_id,
-            'achievement_name': str(tracking.achievement.name or '').strip() if tracking.achievement_id and tracking.achievement else '',
-            'achievement_text': str(tracking.achievement.achievement or '').strip() if tracking.achievement_id and tracking.achievement else '',
-            'achievement_ids_ordered': list(tracking.achievement_ids_ordered or []),
-            'template_ids_ordered': list(tracking.achievement_ids_ordered or []),
+            'template_id': tracking.template_id,
+            'template_name': str(tracking.template.name or '').strip() if tracking.template_id and tracking.template else '',
+            'template_text': str(tracking.template.achievement or '').strip() if tracking.template_id and tracking.template else '',
+            'template_ids_ordered': list(tracking.template_ids_ordered or []),
+            'personalized_template_id': tracking.personalized_template_id,
+            'use_hardcoded_personalized_intro': bool(tracking.use_hardcoded_personalized_intro),
+            'achievement_id': tracking.template_id,
+            'achievement_name': str(tracking.template.name or '').strip() if tracking.template_id and tracking.template else '',
+            'achievement_text': str(tracking.template.achievement or '').strip() if tracking.template_id and tracking.template else '',
+            'achievement_ids_ordered': list(tracking.template_ids_ordered or []),
             'selected_achievements': [
                 {
                     'id': item.id,
@@ -2445,7 +2437,7 @@ class ApplicationTrackingListCreateView(APIView):
                 }
                 for item in _resolve_tracking_templates(
                     tracking.user,
-                    tracking.achievement_ids_ordered if isinstance(tracking.achievement_ids_ordered, list) else [],
+                    tracking.template_ids_ordered if isinstance(tracking.template_ids_ordered, list) else [],
                 )
             ],
             'selected_templates': [
@@ -2457,9 +2449,18 @@ class ApplicationTrackingListCreateView(APIView):
                 }
                 for item in _resolve_tracking_templates(
                     tracking.user,
-                    tracking.achievement_ids_ordered if isinstance(tracking.achievement_ids_ordered, list) else [],
+                    tracking.template_ids_ordered if isinstance(tracking.template_ids_ordered, list) else [],
                 )
             ],
+            'selected_personalized_template': (
+                {
+                    'id': tracking.personalized_template.id,
+                    'name': str(tracking.personalized_template.name or '').strip(),
+                    'paragraph': str(tracking.personalized_template.achievement or '').strip(),
+                    'category': str(tracking.personalized_template.category or 'personalized').strip(),
+                }
+                if tracking.personalized_template_id and tracking.personalized_template else None
+            ),
             'template_choice': template_choice,
             'template_subject': template_subject,
             'template_message': template_message,
@@ -2490,7 +2491,7 @@ class ApplicationTrackingListCreateView(APIView):
     def get(self, request):
         queryset = (
             Tracking.objects.filter(user=request.user)
-            .select_related('job__company', 'resume', 'mail_tracking_record', 'achievement')
+            .select_related('job__company', 'resume', 'mail_tracking_record', 'template')
             .prefetch_related('selected_hrs', 'actions', 'job__resumes')
             .order_by('-created_at')
         )
@@ -2517,11 +2518,12 @@ class ApplicationTrackingListCreateView(APIView):
         payload = request.data or {}
         template_choice, template_subject, template_message = self._extract_template_fields(payload)
         schedule_time = self._to_datetime(payload.get('schedule_time'))
-        if self._is_follow_up_template(template_choice) and not schedule_time:
-            schedule_time = timezone.now()
         mail_type = str(payload.get('mail_type') or payload.get('action') or 'fresh').strip().lower()
         if mail_type not in {'fresh', 'followed_up'}:
             mail_type = 'fresh'
+        template_choice = 'follow_up_applied' if mail_type == 'followed_up' else 'cold_applied'
+        if mail_type == 'followed_up' and not schedule_time:
+            schedule_time = timezone.now()
         company = self._resolve_company(request, payload)
         if not company:
             return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -2539,9 +2541,6 @@ class ApplicationTrackingListCreateView(APIView):
                 tailored_resume = job.resumes.filter(user=request.user, is_tailored=True).order_by('created_at', 'id').first()
             if not tailored_resume:
                 return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
-        if not resume and not tailored_resume:
-            return Response({'detail': 'Attachment is mandatory. Select one resume or tailored resume.'}, status=status.HTTP_400_BAD_REQUEST)
-        compose_mode = self._resolve_compose_mode(payload, template_choice, 'hardcoded')
         template_ids_ordered = _normalize_tracking_template_ids(payload, request.data)
         if not template_ids_ordered:
             legacy_template_raw = str(payload.get('template') or payload.get('template_id') or payload.get('achievement') or payload.get('achievement_id') or '').strip()
@@ -2550,21 +2549,29 @@ class ApplicationTrackingListCreateView(APIView):
         templates = _resolve_tracking_templates(request.user, template_ids_ordered)
         if template_ids_ordered and len(templates) != len(template_ids_ordered):
             return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
-        template_error = _validate_tracking_templates(templates, template_choice)
+        template_error = _validate_tracking_templates(templates, mail_type)
         if template_error:
             return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
-        achievement = templates[0] if templates else None
+        template = templates[0] if templates else None
+        personalized_template = None
+        personalized_template_id = str(payload.get('personalized_template') or '').strip()
+        if personalized_template_id:
+            personalized_template = Template.objects.filter(id=personalized_template_id, user=request.user, category='personalized').first()
+            if not personalized_template:
+                return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
         tracking = Tracking.objects.create(
             user=request.user,
             job=job,
-            achievement=achievement,
-            achievement_ids_ordered=[item.id for item in templates],
+            template=template,
+            template_ids_ordered=[item.id for item in templates],
+            personalized_template=personalized_template,
             resume=resume,
             template_choice=template_choice,
             template_subject=template_subject,
             template_message=template_message,
-            compose_mode=compose_mode,
-            hardcoded_follow_up=(compose_mode != 'complete_ai'),
+            compose_mode='hardcoded',
+            hardcoded_follow_up=True,
+            use_hardcoded_personalized_intro=self._to_bool(payload.get('use_hardcoded_personalized_intro'), default=False),
             schedule_time=schedule_time,
             mail_delivery_status='pending',
             mailed=self._to_bool(payload.get('mailed'), default=False),
@@ -2595,7 +2602,7 @@ class ApplicationTrackingListCreateView(APIView):
         available_hr_map = {company.id: list(available)}
         return Response(
             self._serialize_tracking_row(
-                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__resumes').select_related('job__company', 'resume', 'mail_tracking_record', 'achievement').first(),
+                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__resumes').select_related('job__company', 'resume', 'mail_tracking_record', 'template').first(),
                 available_hr_map,
             ),
             status=status.HTTP_201_CREATED,
@@ -2844,11 +2851,16 @@ class ApplicationTrackingDetailView(APIView):
             'available_hr_ids': [emp.id for emp in available],
             'selected_hrs': [emp.name for emp in selected],
             'selected_hr_ids': [emp.id for emp in selected],
-            'achievement_id': row.achievement_id,
-            'achievement_name': str(row.achievement.name or '').strip() if row.achievement_id and row.achievement else '',
-            'achievement_text': str(row.achievement.achievement or '').strip() if row.achievement_id and row.achievement else '',
-            'achievement_ids_ordered': list(row.achievement_ids_ordered or []),
-            'template_ids_ordered': list(row.achievement_ids_ordered or []),
+            'template_id': row.template_id,
+            'template_name': str(row.template.name or '').strip() if row.template_id and row.template else '',
+            'template_text': str(row.template.achievement or '').strip() if row.template_id and row.template else '',
+            'template_ids_ordered': list(row.template_ids_ordered or []),
+            'personalized_template_id': row.personalized_template_id,
+            'use_hardcoded_personalized_intro': bool(row.use_hardcoded_personalized_intro),
+            'achievement_id': row.template_id,
+            'achievement_name': str(row.template.name or '').strip() if row.template_id and row.template else '',
+            'achievement_text': str(row.template.achievement or '').strip() if row.template_id and row.template else '',
+            'achievement_ids_ordered': list(row.template_ids_ordered or []),
             'selected_achievements': [
                 {
                     'id': item.id,
@@ -2859,7 +2871,7 @@ class ApplicationTrackingDetailView(APIView):
                 }
                 for item in _resolve_tracking_templates(
                     row.user,
-                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else [],
+                    row.template_ids_ordered if isinstance(row.template_ids_ordered, list) else [],
                 )
             ],
             'selected_templates': [
@@ -2871,9 +2883,18 @@ class ApplicationTrackingDetailView(APIView):
                 }
                 for item in _resolve_tracking_templates(
                     row.user,
-                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else [],
+                    row.template_ids_ordered if isinstance(row.template_ids_ordered, list) else [],
                 )
             ],
+            'selected_personalized_template': (
+                {
+                    'id': row.personalized_template.id,
+                    'name': str(row.personalized_template.name or '').strip(),
+                    'paragraph': str(row.personalized_template.achievement or '').strip(),
+                    'category': str(row.personalized_template.category or 'personalized').strip(),
+                }
+                if row.personalized_template_id and row.personalized_template else None
+            ),
             'selected_employees': selected_employees,
             'template_choice': template_choice,
             'template_subject': template_subject,
@@ -2906,7 +2927,7 @@ class ApplicationTrackingDetailView(APIView):
             row = (
                 Tracking.objects
                 .filter(id=tracking_id, user=request.user)
-                .select_related('job__company', 'mail_tracking_record', 'resume', 'achievement')
+                .select_related('job__company', 'mail_tracking_record', 'resume', 'template', 'personalized_template')
                 .prefetch_related('selected_hrs', 'actions', 'job__resumes')
                 .first()
             )
@@ -2984,8 +3005,6 @@ class ApplicationTrackingDetailView(APIView):
                 if not tailored:
                     return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.resume = tailored
-        if not row.resume_id:
-            return Response({'detail': 'Attachment is mandatory. Select one resume or tailored resume.'}, status=status.HTTP_400_BAD_REQUEST)
         if 'template' in payload or 'template_id' in payload or 'template_ids_ordered' in payload or 'achievement' in payload or 'achievement_id' in payload or 'achievement_ids_ordered' in payload:
             template_ids_ordered = _normalize_tracking_template_ids(payload, request.data)
             if not template_ids_ordered:
@@ -2997,12 +3016,21 @@ class ApplicationTrackingDetailView(APIView):
                 return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
             template_error = _validate_tracking_templates(
                 templates,
-                row.template_choice,
+                str(payload.get('mail_type') or row.mail_type or 'fresh'),
             )
             if template_error:
                 return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
-            row.achievement_ids_ordered = [item.id for item in templates]
-            row.achievement = templates[0] if templates else None
+            row.template_ids_ordered = [item.id for item in templates]
+            row.template = templates[0] if templates else None
+        if 'personalized_template' in payload:
+            raw_personalized_id = str(payload.get('personalized_template') or '').strip()
+            if not raw_personalized_id:
+                row.personalized_template = None
+            else:
+                selected_personalized = Template.objects.filter(id=raw_personalized_id, user=request.user, category='personalized').first()
+                if not selected_personalized:
+                    return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                row.personalized_template = selected_personalized
         if any(key in payload for key in ['template_choice', 'template_subject', 'custom_subject', 'template_message', 'template_name']):
             template_choice, template_subject, template_message = self._extract_template_fields(payload)
             row.template_choice = template_choice
@@ -3011,6 +3039,16 @@ class ApplicationTrackingDetailView(APIView):
             row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
         elif 'compose_mode' in payload:
             row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
+        if 'mail_type' in payload or 'action' in payload:
+            action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
+            if action_text in {'fresh', 'followed_up'}:
+                row.mail_type = action_text
+                row.template_choice = 'follow_up_applied' if action_text == 'followed_up' else 'cold_applied'
+        if 'use_hardcoded_personalized_intro' in payload:
+            row.use_hardcoded_personalized_intro = self._to_bool(
+                payload.get('use_hardcoded_personalized_intro'),
+                default=row.use_hardcoded_personalized_intro,
+            )
         if 'hardcoded_follow_up' in payload:
             row.hardcoded_follow_up = self._to_bool(payload.get('hardcoded_follow_up'), default=row.hardcoded_follow_up)
         row.hardcoded_follow_up = self._resolve_compose_mode({}, row.template_choice, getattr(row, 'compose_mode', 'hardcoded')) != 'complete_ai'
@@ -3018,18 +3056,14 @@ class ApplicationTrackingDetailView(APIView):
             template_error = _validate_tracking_templates(
                 _resolve_tracking_templates(
                     request.user,
-                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else (
-                        [str(row.achievement_id)] if row.achievement_id else []
+                    row.template_ids_ordered if isinstance(row.template_ids_ordered, list) else (
+                        [str(row.template_id)] if row.template_id else []
                     ),
                 ),
-                row.template_choice,
+                row.mail_type,
             )
             if template_error:
                 return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
-        if 'mail_type' in payload or 'action' in payload:
-            action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
-            if action_text in {'fresh', 'followed_up'}:
-                row.mail_type = action_text
         if 'schedule_time' in payload:
             row.schedule_time = self._to_datetime(payload.get('schedule_time'))
         if self._is_follow_up_template(row.template_choice) and not row.schedule_time:
@@ -3103,7 +3137,7 @@ class ApplicationTrackingDetailView(APIView):
                 row.mailed = True
             row.save(update_fields=['mail_type', 'mailed', 'updated_at'])
 
-        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'mail_tracking_record', 'achievement').prefetch_related('selected_hrs', 'actions', 'job__resumes').first()
+        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'mail_tracking_record', 'template', 'personalized_template').prefetch_related('selected_hrs', 'actions', 'job__resumes').first()
         return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
@@ -3127,18 +3161,18 @@ class ApplicationTrackingMailTestView(APIView):
         return (
             Tracking.objects
             .filter(id=tracking_id, user=request.user)
-            .select_related('job__company', 'resume', 'achievement', 'user')
+            .select_related('job__company', 'resume', 'template', 'personalized_template', 'user')
             .prefetch_related('selected_hrs')
             .first()
         )
 
     def _generate_previews(self, row, regenerate_options=None):
+
         command = SendTrackingMailsCommand()
         profile = command._get_profile(row.user_id)
         achievements = command._get_achievements(row)
         company = row.job.company if row.job_id and row.job and row.job.company_id else None
         pattern = str(getattr(company, 'mail_format', '') or '').strip()
-        compose_mode = command._resolve_compose_mode(row, getattr(row, 'template_choice', 'cold_applied'))
         effective_use_ai = command._should_use_ai_for_row(row)
         employees = [emp for emp in row.selected_hrs.all()]
         previews = []
@@ -3151,45 +3185,15 @@ class ApplicationTrackingMailTestView(APIView):
                 achievements,
                 use_ai=effective_use_ai,
             )
-            if regenerate_options and compose_mode in {'partial_ai', 'complete_ai'}:
-                adjusted = self._adjust_preview_with_ai(command, row, employee, to_email, subject, body, regenerate_options)
-                if adjusted:
-                    subject = adjusted.get('subject') or subject
-                    body = adjusted.get('body') or body
             previews.append({
                 'employee_id': employee.id,
                 'employee_name': str(employee.name or '').strip(),
                 'email': to_email,
                 'subject': subject,
                 'body': body,
-                'compose_mode': compose_mode,
+                'compose_mode': 'hardcoded',
             })
         return previews
-
-    def _adjust_preview_with_ai(self, command, row, employee, to_email, subject, body, options):
-        tone = str(options.get('tone') or '').strip() or 'professional'
-        length = str(options.get('length') or '').strip() or 'balanced'
-        char_limit = str(options.get('char_limit') or '').strip()
-        custom_prompt = str(options.get('custom_prompt') or '').strip()
-        prompt = (
-            "Rewrite the following job outreach email while keeping the same factual intent and recipient.\n"
-            "Return STRICT JSON only with keys subject and body.\n"
-            f"Recipient: {str(employee.name or '').strip() or 'there'}\n"
-            f"Recipient email: {to_email or '(unknown)'}\n"
-            f"Tone: {tone}\n"
-            f"Length: {length}\n"
-            f"Approx max characters for body: {char_limit or 'no strict limit'}\n"
-            f"Extra instructions: {custom_prompt or '(none)'}\n\n"
-            f"Current subject:\n{subject}\n\n"
-            f"Current body:\n{body}\n"
-        )
-        ai, error = command._openai_generate_mail_json(prompt)
-        if ai and not error:
-            return {
-                'subject': str(ai.get('subject') or '').strip(),
-                'body': str(ai.get('body') or '').strip(),
-            }
-        return None
 
     def get(self, request, tracking_id):
         row = self._get_row(request, tracking_id)
@@ -3211,7 +3215,7 @@ class ApplicationTrackingMailTestView(APIView):
             return Response({
                 'tracking_id': row.id,
                 'previews': previews,
-                'compose_mode': SendTrackingMailsCommand()._resolve_compose_mode(row, getattr(row, 'template_choice', 'cold_applied')),
+                'compose_mode': 'hardcoded',
             }, status=status.HTTP_200_OK)
 
         if action == 'save':

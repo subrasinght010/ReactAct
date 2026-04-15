@@ -7,8 +7,10 @@ export function SingleSelectDropdown({
   placeholder,
   disabled = false,
   clearLabel = 'Please select',
+  searchPlaceholder = '',
 }) {
   const wrapRef = useRef(null)
+  const inputRef = useRef(null)
   const [text, setText] = useState('')
   const [open, setOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
@@ -40,10 +42,16 @@ export function SingleSelectDropdown({
     <div ref={wrapRef} className={`search-dd ${disabled ? 'is-disabled' : ''}`}>
       <div className="search-dd-input-wrap">
         <input
+          ref={inputRef}
           className="search-dd-input"
           value={text}
           disabled={disabled}
-          placeholder={placeholder}
+          placeholder={open && searchPlaceholder ? searchPlaceholder : placeholder}
+          onClick={() => {
+            if (!disabled) {
+              setOpen(true)
+            }
+          }}
           onFocus={() => {
             if (!disabled) {
               setOpen(true)
@@ -61,7 +69,18 @@ export function SingleSelectDropdown({
           type="button"
           className="search-dd-toggle"
           disabled={disabled}
-          onClick={() => setOpen((prev) => !prev)}
+          onMouseDown={(event) => event.preventDefault()}
+          onTouchStart={(event) => event.preventDefault()}
+          onClick={() => {
+            if (disabled) return
+            setOpen((prev) => {
+              const next = !prev
+              if (next) {
+                window.requestAnimationFrame(() => inputRef.current?.focus())
+              }
+              return next
+            })
+          }}
           aria-label="Toggle options"
         >
           {open ? '▴' : '▾'}
@@ -195,4 +214,3 @@ export function MultiSelectDropdown({
     </div>
   )
 }
-

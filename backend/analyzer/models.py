@@ -233,14 +233,21 @@ class Tracking(BaseModel):
         related_name='application_tracking_rows',
     )
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='tracking_rows')
-    achievement = models.ForeignKey(
-        'Achievement',
+    template = models.ForeignKey(
+        'Template',
         on_delete=models.SET_NULL,
         blank=True,
         null=True,
         related_name='tracking_rows',
     )
-    achievement_ids_ordered = models.JSONField(default=list, blank=True)
+    template_ids_ordered = models.JSONField(default=list, blank=True)
+    personalized_template = models.ForeignKey(
+        'Template',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='tracking_personalized_rows',
+    )
     resume = models.ForeignKey(
         Resume,
         on_delete=models.SET_NULL,
@@ -255,6 +262,7 @@ class Tracking(BaseModel):
     template_message = models.TextField(blank=True, default='')
     compose_mode = models.CharField(max_length=20, choices=COMPOSE_MODE_CHOICES, default='hardcoded')
     hardcoded_follow_up = models.BooleanField(default=True)
+    use_hardcoded_personalized_intro = models.BooleanField(default=False)
     mail_delivery_status = models.CharField(
         max_length=20,
         choices=[
@@ -285,6 +293,30 @@ class Tracking(BaseModel):
     def __str__(self):
         job_name = self.job.role if self.job_id and getattr(self.job, 'role', None) else 'Tracking'
         return f'{job_name} ({self.user.username})'
+
+    @property
+    def achievement(self):
+        return self.template
+
+    @achievement.setter
+    def achievement(self, value):
+        self.template = value
+
+    @property
+    def achievement_id(self):
+        return self.template_id
+
+    @achievement_id.setter
+    def achievement_id(self, value):
+        self.template_id = value
+
+    @property
+    def achievement_ids_ordered(self):
+        return self.template_ids_ordered
+
+    @achievement_ids_ordered.setter
+    def achievement_ids_ordered(self, value):
+        self.template_ids_ordered = value
 
 
 class TrackingAction(BaseModel):
@@ -403,19 +435,20 @@ class UserProfile(BaseModel):
         return f'Profile ({self.user.username})'
 
 
-class Achievement(BaseModel):
+class Template(BaseModel):
     CATEGORY_CHOICES = [
+        ('personalized', 'Personalized'),
         ('opening', 'Opening'),
         ('experience', 'Experience'),
         ('closing', 'Closing'),
         ('general', 'General'),
     ]
 
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='achievements')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='templates')
     profile = models.ForeignKey(
         UserProfile,
         on_delete=models.CASCADE,
-        related_name='achievements',
+        related_name='templates',
         blank=True,
         null=True,
     )
@@ -433,12 +466,15 @@ class Achievement(BaseModel):
             models.UniqueConstraint(
                 Lower('name'),
                 'user',
-                name='uniq_achievement_user_name_ci',
+                name='uniq_template_user_name_ci',
             ),
         ]
 
     def __str__(self):
         return f'{self.name} ({self.user.username})'
+
+
+Achievement = Template
 
 
 class Interview(BaseModel):

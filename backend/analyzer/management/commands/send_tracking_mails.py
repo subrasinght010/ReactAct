@@ -15,16 +15,7 @@ from email.mime.text import MIMEText
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from analyzer.prompts import (
-    build_cold_applied_mail,
-    build_follow_up_applied_mail,
-    build_follow_up_call_mail,
-    build_follow_up_interview_mail,
-    build_follow_up_referral_mail,
-    build_referral_mail,
-    build_tracking_mail_prompt,
-)
-from analyzer.models import Tracking, UserProfile
+from analyzer.models import Template, Tracking, UserProfile
 from analyzer.tracking_mail_utils import build_mail_tracking_status_map, ensure_mail_tracking, log_mail_event, recompute_tracking_delivery_status
 
 
@@ -38,7 +29,7 @@ class Command(BaseCommand):
         parser.add_argument("--scheduled-today-only", action="store_true", help="Process only rows scheduled for today")
         parser.add_argument("--sleep-seconds", type=float, default=5.0, help="Sleep after each successful send")
         parser.add_argument("--dry-run", action="store_true", help="Do not send email; only log planned attempts")
-        parser.add_argument("--use-ai", action="store_true", help="Generate subject/body via OpenAI using profile + employee context")
+        parser.add_argument("--use-ai", action="store_true", help="Allow AI only for personalized employee intro generation")
 
     def _delivery_status_from_counts(self, sent_count, failed_count):
         sent = int(sent_count or 0)
@@ -66,16 +57,6 @@ class Command(BaseCommand):
         }
         return mapping.get(choice, f"Application for {role_text} at {company_text}")
 
-    def _yoe_phrase(self, profile):
-        yoe = str(getattr(profile, "years_of_experience", "") or "").strip() if profile else ""
-        if yoe:
-            if yoe.endswith("+"):
-                return f"{yoe} years of experience"
-            if yoe[-1:].isdigit():
-                return f"{yoe}+ years of experience"
-            return f"{yoe} years of experience"
-        return "3+ years of experience"
-
     def _is_hard_mail_failure(self, message):
         text = str(message or "").strip().lower()
         markers = [
@@ -93,9 +74,9 @@ class Command(BaseCommand):
         return any(marker in text for marker in markers)
 
     def _should_use_ai_for_row(self, row, explicit_use_ai=False):
-        choice = str(getattr(row, "template_choice", "cold_applied") or "cold_applied").strip().lower()
-        compose_mode = self._resolve_compose_mode(row, choice)
-        return bool(explicit_use_ai) or compose_mode == "partial_ai"
+        if explicit_use_ai:
+            return True
+        return not bool(getattr(row, "use_hardcoded_personalized_intro", False))
 
     def _set_employee_working_mail(self, employee, is_working):
         if not employee:
@@ -392,35 +373,29 @@ class Command(BaseCommand):
             return None
 
     def _get_achievements(self, row):
-        achievement_ids = getattr(row, "achievement_ids_ordered", None)
-        if isinstance(achievement_ids, list) and achievement_ids:
-            target_ids = [str(item or "").strip() for item in achievement_ids if str(item or "").strip()]
-            rows = list(Achievement.objects.filter(user=row.user, id__in=target_ids))
+        template_ids = getattr(row, "template_ids_ordered", None)
+        if isinstance(template_ids, list) and template_ids:
+            target_ids = [str(item or "").strip() for item in template_ids if str(item or "").strip()]
+            rows = list(Template.objects.filter(user=row.user, id__in=target_ids))
             row_map = {str(item.id): item for item in rows}
             return [row_map[item_id] for item_id in target_ids if item_id in row_map]
-        achievement = getattr(row, "achievement", None)
-        if getattr(row, "achievement_id", None) and achievement is not None:
-            return [achievement]
+        template = getattr(row, "template", None)
+        if getattr(row, "template_id", None) and template is not None:
+            return [template]
         return []
 
     def _template_category(self, row):
         return str(getattr(row, "category", "general") or "general").strip().lower() or "general"
 
-    def _template_sequence_is_ready(self, rows, template_choice):
+    def _template_sequence_is_ready(self, rows, mail_type):
         items = list(rows or [])
-        choice = str(template_choice or "cold_applied").strip().lower()
+        normalized_mail_type = str(mail_type or "fresh").strip().lower()
         if not items:
             return False
-        if choice in {"follow_up_applied", "follow_up_referral", "follow_up_call", "follow_up_interview"}:
-            return len(items) >= 2 and self._template_category(items[-1]) == "closing" and any(
-                self._template_category(item) != "closing" for item in items[:-1]
-            )
-        return (
-            len(items) >= 3
-            and self._template_category(items[0]) == "opening"
-            and self._template_category(items[-1]) == "closing"
-            and any(self._template_category(item) in {"experience", "general"} for item in items[1:-1])
-        )
+        if normalized_mail_type == "followed_up":
+            return len(items) >= 1
+        categories = [self._template_category(item) for item in items]
+        return len(items) >= 3 and "opening" in categories and "closing" in categories
 
     def _resolve_employee_email(self, employee, pattern):
         existing = str(employee.email or "").strip()
@@ -525,56 +500,6 @@ class Command(BaseCommand):
         value = str(os.getenv("OPENAI_MODEL", "gpt-4o") or "").strip()
         return value or "gpt-4o"
 
-    def _openai_generate_mail_json(self, prompt):
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            return None, "OPENAI_API_KEY is not set"
-
-        system = (
-            "You write job application emails. Return STRICT JSON only. "
-            "Do not include the sender's signature or contact details. "
-            "Output format: {\"subject\":\"...\",\"body\":\"...\"}. "
-            "The body must start with 'Hi <name>,' and be plain text (no markdown)."
-        )
-        payload = {
-            "model": self._resolve_openai_model(),
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": str(prompt or "").strip()[:12000]},
-            ],
-            "response_format": {"type": "json_object"},
-            "temperature": 0.4,
-        }
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/chat/completions",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "{}")
-            parsed = json.loads(content) if isinstance(content, str) else content
-            if not isinstance(parsed, dict):
-                return None, "AI response was not a JSON object"
-            subject = str(parsed.get("subject") or "").strip()
-            body = str(parsed.get("body") or "").strip()
-            if not subject or not body:
-                return None, "AI response missing subject/body"
-            return {"subject": subject, "body": body}, ""
-        except urllib.error.HTTPError as exc:
-            try:
-                body = exc.read().decode("utf-8")
-            except Exception:  # noqa: BLE001
-                body = ""
-            return None, f"OpenAI request failed: {body or exc.reason}"
-        except Exception as exc:  # noqa: BLE001
-            return None, f"OpenAI request failed: {exc}"
-
     def _openai_generate_text(self, prompt, *, system):
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not api_key:
@@ -614,103 +539,6 @@ class Command(BaseCommand):
         except Exception as exc:  # noqa: BLE001
             return None, f"OpenAI request failed: {exc}"
 
-    def _build_personalized_prompt(self, row, employee, profile, achievements):
-        job = row.job
-        company_name = self._display_company_name(job.company.name if row.job_id and job and job.company_id else "your company")
-        role = str(job.role or "").strip() if row.job_id and job else ""
-        job_id = str(job.job_id or "").strip() if row.job_id and job else ""
-        job_link = str(getattr(job, "job_link", "") or "").strip() if row.job_id and job else ""
-        emp_name = self._preferred_employee_name(employee)
-        template_category = str(row.template_choice or "cold_applied").strip().lower() or "cold_applied"
-
-        # Employee context: prefer about; fallback to role + department.
-        emp_about = str(getattr(employee, "about", "") or "").strip()
-        emp_role = str(getattr(employee, "JobRole", "") or "").strip()
-        emp_dept = str(getattr(employee, "department", "") or "").strip()
-        if emp_about:
-            employee_context = f"Employee about:\n{emp_about}"
-        else:
-            bits = [b for b in [emp_role, emp_dept] if b]
-            employee_context = (
-                "Employee about: (missing)\n"
-                f"Fallback context: employee role/department = {', '.join(bits) if bits else 'unknown'}"
-            )
-
-        summary = str(getattr(profile, "summary", "") or "").strip() if profile else ""
-        yoe = str(getattr(profile, "years_of_experience", "") or "").strip() if profile else ""
-        current_employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
-        full_name = self._sender_first_name(row, profile)
-
-        # Compact achievements list (best-effort).
-        ach_lines = []
-        for ach in achievements or []:
-            title = str(getattr(ach, "name", "") or "").strip()
-            detail = str(getattr(ach, "achievement", "") or "").strip()
-            skills = str(getattr(ach, "skills", "") or "").strip()
-            line = ""
-            if title and detail:
-                line = f"- {title}: {detail}"
-            elif title:
-                line = f"- {title}"
-            elif detail:
-                line = f"- {detail}"
-            if line and skills:
-                line = f"{line} (skills: {skills})"
-            if line:
-                ach_lines.append(line)
-            if len(ach_lines) >= 5:
-                break
-        achievements_block = "\n".join(ach_lines) if ach_lines else "- (none provided)"
-        context = {
-            "template_category": template_category,
-            "recipient_name": emp_name,
-            "recipient_role": emp_role or "(unknown)",
-            "recipient_department": emp_dept or "(unknown)",
-            "company_name": company_name,
-            "job_role": role or "(unknown)",
-            "job_id": job_id or "(none)",
-            "job_link": job_link or "(none)",
-            "interaction_date": self._format_interaction_date(row),
-            "candidate_name": full_name,
-            "years_of_experience": yoe or "(not provided)",
-            "current_employer": current_employer or "(not provided)",
-            "profile_summary": summary or "(not provided)",
-            "employee_context": employee_context,
-            "achievements_block": achievements_block,
-        }
-        return build_tracking_mail_prompt(context)
-
-    def _audience_type(self, employee):
-        role = str(getattr(employee, "JobRole", "") or "").strip().lower()
-        dept = str(getattr(employee, "department", "") or "").strip().lower()
-        audience = f"{role} {dept}".strip()
-        if any(key in audience for key in ["hr", "talent", "recruit", "people"]):
-            return "hr_talent"
-        if any(key in audience for key in ["manager", "team lead", "lead", "head"]):
-            return "manager"
-        if any(key in audience for key in ["engineer", "developer", "sde", "software"]):
-            return "engineering"
-        return "general"
-
-    def _ask_line_by_audience(self, employee, template_choice="cold_applied"):
-        audience = self._audience_type(employee)
-        choice = str(template_choice or "cold_applied").strip().lower()
-        if audience == "hr_talent":
-            if choice == "referral":
-                return "Would you be open to referring me, or guiding me to the right recruiter or hiring manager for this role?"
-            return "Would you be open to sharing your perspective on my fit, or pointing me to the right recruiter or hiring manager for this role?"
-        if audience == "manager":
-            if choice == "referral":
-                return "Would you be open to sharing whether my background aligns with your team needs, and referring me to the right hiring contact?"
-            return "Would you be open to sharing your perspective on my fit for the team, or directing me to the right hiring contact?"
-        if audience == "engineering":
-            if choice == "referral":
-                return "Would you be open to sharing your view on my technical fit and referring me to the right hiring contact?"
-            return "Would you be open to sharing your perspective on my technical fit, or pointing me to the right hiring contact?"
-        if choice == "referral":
-            return "Would you be open to referring me, or pointing me to the right contact for this role?"
-        return "Would you be open to sharing your perspective on my fit, or pointing me to the right person for this role?"
-
     def _resume_attachment_line(self, row):
         has_attached_resume = False
         if row.resume and isinstance(getattr(row.resume, "builder_data", None), dict) and row.resume.builder_data:
@@ -733,33 +561,6 @@ class Command(BaseCommand):
         if contact:
             sign_parts.append(contact)
         return "\n".join([p for p in sign_parts if str(p or "").strip()])
-
-    def _formal_closing_line(self, profile):
-        yoe = str(getattr(profile, "years_of_experience", "") or "").strip() if profile else ""
-        current_employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
-        full_name = str(getattr(profile, "full_name", "") or "").strip() if profile else ""
-
-        if yoe and current_employer:
-            return (
-                f"Thank you for your time and consideration. "
-                f"I would value the opportunity to contribute with my {yoe} years of experience at {current_employer}."
-            )
-        if yoe:
-            return (
-                f"Thank you for your time and consideration. "
-                f"I would value the opportunity to contribute with my {yoe} years of experience."
-            )
-        if current_employer:
-            return (
-                f"Thank you for your time and consideration. "
-                f"I would value the opportunity to contribute based on my experience at {current_employer}."
-            )
-        if full_name:
-            return (
-                f"Thank you for your time and consideration. "
-                f"I look forward to hearing from you."
-            )
-        return "Thank you for your time and consideration."
 
     def _inject_dynamic_names(self, text, employee_name, sender_name):
         value = str(text or "")
@@ -794,18 +595,6 @@ class Command(BaseCommand):
             return date_value.strftime("%d %b %Y")
         except Exception:  # noqa: BLE001
             return "recently"
-
-    def _is_follow_up_template_choice(self, choice):
-        return str(choice or "").strip().lower() in {"follow_up_applied", "follow_up_referral", "follow_up_call", "follow_up_interview"}
-
-    def _resolve_compose_mode(self, row, choice):
-        normalized_choice = str(choice or "").strip().lower()
-        compose_mode = str(getattr(row, "compose_mode", "") or "").strip().lower()
-        if normalized_choice == "custom":
-            return "complete_ai"
-        if normalized_choice == "cold_applied" and compose_mode == "partial_ai":
-            return "partial_ai"
-        return "hardcoded"
 
     def _approved_preview_for_employee(self, row, employee, to_email=""):
         payloads = getattr(row, "approved_test_mail_payloads", None)
@@ -868,6 +657,13 @@ class Command(BaseCommand):
                 value = " ".join(words[: int(max_words)]).rstrip(",;:-")
         return value.rstrip(".") + "."
 
+    def _strip_leading_greeting(self, text):
+        value = " ".join(str(text or "").split()).strip()
+        if not value:
+            return ""
+        value = re.sub(r"^(hi|hello|dear)\s+[^,:\n]{1,80}[,:]\s*", "", value, flags=re.I)
+        return value.strip()
+
     def _build_cold_applied_personalization_prompt(self, employee, company_name, role):
         about = str(getattr(employee, "about", "") or "").strip()
         employee_role = str(getattr(employee, "JobRole", "") or "").strip()
@@ -892,7 +688,9 @@ class Command(BaseCommand):
         )
 
     def _cold_applied_personalized_intro(self, employee, company_name, role, *, allow_generate=False):
-        existing = self._clean_single_paragraph(getattr(employee, "personalized_template", "") or "", max_words=35)
+        existing = self._strip_leading_greeting(
+            self._clean_single_paragraph(getattr(employee, "personalized_template", "") or "", max_words=35)
+        )
         if existing:
             return existing
 
@@ -904,130 +702,13 @@ class Command(BaseCommand):
             )
             generated, error = self._openai_generate_text(prompt, system=system)
             if generated and not error:
-                cleaned = self._clean_single_paragraph(generated, max_words=35)
+                cleaned = self._strip_leading_greeting(self._clean_single_paragraph(generated, max_words=35))
                 if cleaned:
                     employee.personalized_template = cleaned
                     employee.save(update_fields=["personalized_template", "updated_at"])
                     return cleaned
 
-        return self._employee_personalization(employee, company_name, max_about_chars=140)
-
-    def _build_custom_ai_prompt(self, row, employee):
-        emp_name = self._preferred_employee_name(employee)
-        custom_message = str(getattr(row, "template_message", "") or "").strip()
-        custom_subject = str(getattr(row, "template_subject", "") or "").strip()
-        return (
-            "Write a short, professional outreach email in plain text.\n"
-            "Rules:\n"
-            "- Use the user's custom instructions below as the main intent.\n"
-            "- Personalize only with the recipient name.\n"
-            "- Do not include sender signature, email, phone, or LinkedIn.\n"
-            "- Return STRICT JSON only: {\"subject\":\"...\",\"body\":\"...\"}.\n\n"
-            f"Recipient name: {emp_name}\n"
-            f"Preferred subject hint: {custom_subject or '(none)'}\n"
-            f"Custom instructions:\n{custom_message or '(none provided)'}\n"
-        )
-
-    def _cold_applied_skills_text(self, achievements):
-        skills = []
-        seen = set()
-        for ach in achievements or []:
-            raw = str(getattr(ach, "skills", "") or "").strip()
-            if not raw:
-                continue
-            for part in re.split(r"[,/|]", raw):
-                item = str(part or "").strip()
-                key = item.lower()
-                if item and key not in seen:
-                    seen.add(key)
-                    skills.append(item)
-                if len(skills) >= 4:
-                    break
-            if len(skills) >= 4:
-                break
-        return ", ".join(skills[:4]) if skills else "Python, React, MCP and AWS"
-
-    def _cold_applied_achievement_line(self, profile, achievements):
-        employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
-        prefix = f"At {employer}, " if employer else ""
-        combined = []
-        for ach in achievements or []:
-            detail = " ".join(str(getattr(ach, "achievement", "") or "").split()).strip()
-            if detail:
-                words = detail.split()
-                compact = " ".join(words[:24]).rstrip(",;:-")
-                sentence = f"{prefix}{compact}".strip().rstrip(".") + "."
-                combined.append(sentence)
-            if len(combined) >= 3:
-                break
-        if combined:
-            return " ".join(combined)
-
-        summary = " ".join(str(getattr(profile, "summary", "") or "").split()).strip() if profile else ""
-        if summary:
-            compact = " ".join(summary.split()[:24]).rstrip(",;:-")
-            sentence = f"{prefix}{compact}".strip()
-            return sentence.rstrip(".") + "."
-        return f"{prefix}I have built and scaled backend systems with measurable product and performance impact.".strip()
-
-    def _candidate_intro_line(self, profile, role, company_name, job_id, achievements):
-        yoe = str(getattr(profile, "years_of_experience", "") or "").strip() if profile else ""
-        summary = str(getattr(profile, "summary", "") or "").strip() if profile else ""
-        skills = []
-        for ach in achievements or []:
-            raw = str(getattr(ach, "skills", "") or "").strip()
-            if raw:
-                for part in re.split(r"[,/|]", raw):
-                    item = str(part or "").strip()
-                    if item and item.lower() not in {s.lower() for s in skills}:
-                        skills.append(item)
-                    if len(skills) >= 4:
-                        break
-            if len(skills) >= 4:
-                break
-
-        yoe_text = f"{yoe}+ years of experience" if yoe and yoe[-1].isdigit() else (f"{yoe} years of experience" if yoe else "hands-on experience")
-        skills_text = ""
-        if skills:
-            skills_text = f" in {', '.join(skills[:3])}"
-        elif summary:
-            skills_text = ""
-
-        return (
-            f"I recently applied for the {role or 'open'} role at {company_name}"
-            f"{f' (Job ID: {job_id})' if job_id else ''} and wanted to reach out. "
-            f"I am a full-stack engineer with {yoe_text}{skills_text}, "
-            "with practical experience in building and scaling backend services."
-        )
-
-    def _achievement_impact_line(self, profile, achievements):
-        current_employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
-        combined = []
-        for ach in achievements or []:
-            name = str(getattr(ach, "name", "") or "").strip()
-            detail = str(getattr(ach, "achievement", "") or "").strip()
-            if detail:
-                metric_match = re.search(r"(\d+%|\d+\s?ms|\d+\s?rpm|\d+\s?requests?)", detail, flags=re.I)
-                if metric_match:
-                    lead = f"At {current_employer}, " if current_employer else ""
-                    sentence = detail[:220].strip()
-                    if sentence and not sentence.endswith("."):
-                        sentence += "."
-                    if name:
-                        combined.append(f"{lead}I delivered {name.lower()} where {sentence}")
-                    else:
-                        combined.append(f"{lead}{sentence}")
-            if len(combined) >= 3:
-                break
-        if combined:
-            return " ".join(combined)
-        summary = str(getattr(profile, "summary", "") or "").strip() if profile else ""
-        if summary:
-            fallback = summary[:220].strip()
-            if fallback and not fallback.endswith("."):
-                fallback += "."
-            return fallback
-        return "I focus on building reliable, user-focused systems with measurable impact."
+        return self._strip_leading_greeting(self._employee_personalization(employee, company_name, max_about_chars=140))
 
     def _mail_placeholder_map(self, row, employee, profile, *, company_name="", role="", job_id="", job_link="", sender_name="", employee_email=""):
         current_employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
@@ -1064,11 +745,18 @@ class Command(BaseCommand):
             safe_value = str(replacement or "").strip()
             value = value.replace(f"{{{key}}}", safe_value)
             value = value.replace(f"[{key}]", safe_value)
+        # Clean punctuation artifacts left behind by empty placeholders.
+        value = re.sub(r"\bAt\s*,\s*", "", value, flags=re.I)
+        value = re.sub(r"\s+,", ",", value)
+        value = re.sub(r"\(\s*\)", "", value)
+        value = re.sub(r"\s{2,}", " ", value)
         return " ".join(value.split()).strip()
 
     def _ordered_achievement_paragraphs(self, achievements, replacements=None):
         paragraphs = []
         for ach in achievements or []:
+            if self._template_category(ach) == "personalized":
+                continue
             detail = self._render_mail_placeholders(getattr(ach, "achievement", "") or "", replacements)
             if not detail:
                 continue
@@ -1078,6 +766,17 @@ class Command(BaseCommand):
             if len(paragraphs) >= 5:
                 break
         return paragraphs
+
+    def _hardcoded_personalized_intro(self, row, replacements=None):
+        template = getattr(row, "personalized_template", None)
+        if not getattr(row, "use_hardcoded_personalized_intro", False) or not template:
+            return ""
+        text = self._render_mail_placeholders(getattr(template, "achievement", "") or "", replacements)
+        if not text:
+            return ""
+        if not text.endswith("."):
+            text += "."
+        return self._strip_leading_greeting(text)
 
     def _sender_detail_lines(self, sender_name, email, contact, linkedin):
         lines = []
@@ -1114,7 +813,7 @@ class Command(BaseCommand):
 
         sender_lines = self._sender_detail_lines(sender_name, email, contact, linkedin)
         if sender_lines:
-            body_sections.extend(["Thanks,", "\n".join(sender_lines)])
+            body_sections.append("Thanks,\n" + "\n".join(sender_lines))
 
         return "\n\n".join([section for section in body_sections if section])
 
@@ -1125,10 +824,9 @@ class Command(BaseCommand):
         job_id = str(job.job_id or "").strip() if row.job_id and job else ""
         job_link = str(getattr(job, "job_link", "") or "").strip() if row.job_id and job else ""
         emp_name = self._preferred_employee_name(employee)
-        choice = str(row.template_choice or "cold_applied").strip().lower()
-        compose_mode = self._resolve_compose_mode(row, choice)
+        mail_type = str(getattr(row, "mail_type", "fresh") or "fresh").strip().lower()
+        choice = "follow_up_applied" if mail_type == "followed_up" else "cold_applied"
         sender_name = self._sender_first_name(row, profile)
-        interaction_date = self._format_interaction_date(row)
         resolved_email = self._resolve_employee_email(employee, str(getattr(job.company, "mail_format", "") or "").strip()) if row.job_id and job and job.company_id else str(getattr(employee, "email", "") or "").strip()
         placeholder_values = self._mail_placeholder_map(
             row,
@@ -1145,364 +843,34 @@ class Command(BaseCommand):
         if approved_preview:
             return approved_preview["subject"], approved_preview["body"]
 
-        # Always build signature from profile (never hard-code contact details).
-        signature = self._build_signature(row, profile)
-        closing_line = self._formal_closing_line(profile)
         attachment_line = self._resume_attachment_line(row)
-
-        # Optional AI generation; row.hardcoded_follow_up acts as the per-row compose-mode flag.
-        hardcoded_template = compose_mode == "hardcoded"
         ordered_template_paragraphs = self._ordered_achievement_paragraphs(achievements, placeholder_values)
-        use_selected_template_sequence = hardcoded_template and self._template_sequence_is_ready(achievements, choice)
-        if use_selected_template_sequence and choice != "custom":
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "role", company_name, emp_name, job_id)
-            body = self._build_ordered_hardcoded_mail(
-                emp_name=emp_name,
-                intro_paragraphs=[],
-                achievement_paragraphs=ordered_template_paragraphs,
-                ask_line="",
-                attachment_line=attachment_line,
-                sender_name=sender_name,
-                email=str(getattr(profile, "email", "") or row.user.email or "").strip(),
-                contact=str(getattr(profile, "contact_number", "") or "").strip(),
-                linkedin=str(getattr(profile, "linkedin_url", "") or "").strip(),
+        personalized_intro = self._hardcoded_personalized_intro(row, placeholder_values)
+        if not personalized_intro:
+            personalized_intro = self._cold_applied_personalized_intro(
+                employee,
+                company_name,
+                role,
+                allow_generate=bool(use_ai),
             )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        if choice == "cold_applied":
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "role", company_name, emp_name, job_id)
-            if compose_mode == "complete_ai" and use_ai:
-                prompt = self._build_personalized_prompt(row, employee, profile, achievements)
-                ai, error = self._openai_generate_mail_json(prompt)
-                if ai and not error:
-                    subject = str(ai.get("subject") or "").strip() or subject
-                    body_core = str(ai.get("body") or "").strip()
-                    body = f"{body_core}\n\nThanks,\n{sender_name}"
-                    linkedin = str(getattr(profile, "linkedin_url", "") or "").strip()
-                    email = str(getattr(profile, "email", "") or row.user.email or "").strip()
-                    contact = str(getattr(profile, "contact_number", "") or "").strip()
-                    if linkedin:
-                        body += f"\nLinkedIn: {linkedin}"
-                    if email:
-                        body += f"\nEmail: {email}"
-                    if contact:
-                        body += f"\n{contact}"
-                    subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-                    body = self._inject_dynamic_names(body, emp_name, sender_name)
-                    return subject, body
 
-            personalized_intro = self._cold_applied_personalized_intro(employee, company_name, role, allow_generate=bool(use_ai and compose_mode == "partial_ai"))
-            if hardcoded_template:
-                intro_yoe = str(getattr(profile, "years_of_experience", "") or "").strip() or "3"
-                intro_paragraphs = [
-                    personalized_intro,
-                    (
-                        f"I recently applied for the {role or 'SDE'} role"
-                        f"{f' (Job ID: {job_id})' if str(job_id or '').strip() else ''} and wanted to reach out. "
-                        f"I'm a {role or 'SDE'} with {intro_yoe}+ years of experience in {self._cold_applied_skills_text(achievements)}, "
-                        "with hands-on experience in deploying and scaling backend services."
-                    ),
-                ]
-                if str(job_link or "").strip():
-                    intro_paragraphs.append(f"Job Link: {job_link.strip()}")
-                body = self._build_ordered_hardcoded_mail(
-                    emp_name=emp_name,
-                    intro_paragraphs=intro_paragraphs,
-                    achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                    ask_line=self._ask_line_by_audience(employee, template_choice=choice),
-                    attachment_line="",
-                    sender_name=sender_name,
-                    email=str(getattr(profile, "email", "") or row.user.email or "").strip(),
-                    contact=str(getattr(profile, "contact_number", "") or "").strip(),
-                    linkedin=str(getattr(profile, "linkedin_url", "") or "").strip(),
-                )
-            else:
-                body = build_cold_applied_mail(
-                    emp_name=emp_name,
-                    personalized_intro=personalized_intro,
-                    role=role or "SDE",
-                    years_of_experience=str(getattr(profile, "years_of_experience", "") or "").strip() or "3",
-                    skills_text=self._cold_applied_skills_text(achievements),
-                    achievement_line=self._cold_applied_achievement_line(profile, achievements),
-                    ask_line=self._ask_line_by_audience(employee, template_choice=choice),
-                    sender_name=sender_name,
-                    linkedin=str(getattr(profile, "linkedin_url", "") or "").strip(),
-                    email=str(getattr(profile, "email", "") or row.user.email or "").strip(),
-                    contact=str(getattr(profile, "contact_number", "") or "").strip(),
-                    job_id=job_id,
-                    job_link=job_link,
-                )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-
-        if choice == "custom":
-            prompt = self._build_custom_ai_prompt(row, employee)
-            ai, error = self._openai_generate_mail_json(prompt)
-            provided_subject = str(row.template_subject or "").strip()
-            provided_body = str(row.template_message or "").strip()
-            if ai and not error:
-                subject = str(ai.get("subject") or "").strip() or provided_subject
-                body_core = str(ai.get("body") or "").strip() or provided_body
-                body = f"{body_core}\n\nThanks,\n{sender_name}"
-                linkedin = str(getattr(profile, "linkedin_url", "") or "").strip()
-                email = str(getattr(profile, "email", "") or row.user.email or "").strip()
-                contact = str(getattr(profile, "contact_number", "") or "").strip()
-                if linkedin:
-                    body += f"\nLinkedIn: {linkedin}"
-                if email:
-                    body += f"\nEmail: {email}"
-                if contact:
-                    body += f"\n{contact}"
-                subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-                body = self._inject_dynamic_names(body, emp_name, sender_name)
-                return subject, body
-
-        if use_ai and choice not in {"custom", "referral"} and not hardcoded_template:
-            prompt = self._build_personalized_prompt(row, employee, profile, achievements)
-            ai, error = self._openai_generate_mail_json(prompt)
-            if ai and not error:
-                subject = str(ai.get("subject") or "").strip()
-                body_core = str(ai.get("body") or "").strip()
-                body = f"{body_core}\n\n{closing_line}\n\n{attachment_line}\n\n{signature}"
-                subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-                body = self._inject_dynamic_names(body, emp_name, sender_name)
-                return subject, body
-
-        summary = str(getattr(profile, "summary", "") or "").strip()
-        yoe = str(getattr(profile, "years_of_experience", "") or "").strip()
-        current_employer = str(getattr(profile, "current_employer", "") or "").strip()
-        full_name = self._sender_first_name(row, profile)
-        linkedin = str(getattr(profile, "linkedin_url", "") or "").strip()
-        contact = str(getattr(profile, "contact_number", "") or "").strip()
-        email = str(getattr(profile, "email", "") or row.user.email or "").strip()
-
-        if choice == "custom":
-            # Fallback only when AI is disabled/unavailable.
-            subject = str(row.template_subject or "").strip()
-            body_core = str(row.template_message or "").strip()
-            if not subject:
-                raise RuntimeError("Custom mail subject is required.")
-            if not body_core:
-                raise RuntimeError("Custom mail body is required.")
-            body = f"{body_core}\n\nThanks,\n{sender_name}"
-            if linkedin:
-                body += f"\nLinkedIn: {linkedin}"
-            if email:
-                body += f"\nEmail: {email}"
-            if contact:
-                body += f"\n{contact}"
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "referral":
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "open role", company_name, emp_name, job_id)
-            if hardcoded_template:
-                intro_paragraphs = [
-                    f"I noticed your company is hiring for the {role or 'open'} role and wanted to reach out regarding a referral opportunity.",
-                ]
-                if job_link:
-                    intro_paragraphs.append(f"Here is the job link for reference: {job_link}")
-                body = self._build_ordered_hardcoded_mail(
-                    emp_name=emp_name,
-                    intro_paragraphs=intro_paragraphs,
-                    achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                    ask_line="If you are open to it, I would really appreciate your consideration for a referral or guidance on the right next step.",
-                    attachment_line=attachment_line,
-                    sender_name=sender_name,
-                    email=email,
-                    contact=contact,
-                    linkedin=linkedin,
-                )
-            else:
-                body = build_referral_mail(
-                    emp_name=emp_name,
-                    role=role,
-                    company_name=company_name,
-                    job_link=job_link,
-                    linkedin=linkedin,
-                    email=email,
-                    contact=contact,
-                    sender_name=sender_name,
-                )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "job_inquire":
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "open roles", company_name, emp_name, job_id)
-            if hardcoded_template:
-                yoe_text = self._yoe_phrase(profile)
-                body = self._build_ordered_hardcoded_mail(
-                    emp_name=emp_name,
-                    intro_paragraphs=[
-                        self._employee_personalization(employee, company_name, max_about_chars=110),
-                        f"I wanted to inquire about the {role or 'open'} role at {company_name}. I have {yoe_text} in full-stack and backend systems.",
-                    ],
-                    achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                    ask_line=self._ask_line_by_audience(employee, template_choice=choice),
-                    attachment_line=attachment_line,
-                    sender_name=sender_name,
-                    email=email,
-                    contact=contact,
-                    linkedin=linkedin,
-                )
-            else:
-                yoe_text = self._yoe_phrase(profile)
-                body_core = (
-                    f"Hi {emp_name},\n\n"
-                    f"{self._employee_personalization(employee, company_name, max_about_chars=110)}\n\n"
-                    f"I wanted to inquire about the {role or 'open'} role at {company_name}.\n"
-                    f"I have {yoe_text} in full-stack and backend systems.\n"
-                    f"{self._achievement_impact_line(profile, achievements)[:150].rstrip('.') }.\n\n"
-                    f"{self._ask_line_by_audience(employee, template_choice=choice)}"
-                )
-                body = f"{body_core}\n\n{closing_line}\n\n{attachment_line}\n\n{signature}"
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "follow_up_applied" and hardcoded_template:
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "the role", company_name, emp_name, job_id)
-            body = self._build_ordered_hardcoded_mail(
-                emp_name=emp_name,
-                intro_paragraphs=[
-                    self._employee_personalization(employee, company_name, max_about_chars=110),
-                    f"I wanted to follow up on my application for the {role or 'role'} position at {company_name}.",
-                ],
-                achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                ask_line="I would appreciate any update you can share, or guidance on the next step.",
-                attachment_line=attachment_line,
-                sender_name=sender_name,
-                email=email,
-                contact=contact,
-                linkedin=linkedin,
-            )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "follow_up_referral":
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "the role", company_name, emp_name, job_id)
-            if hardcoded_template:
-                body = self._build_ordered_hardcoded_mail(
-                    emp_name=emp_name,
-                    intro_paragraphs=[
-                        f"I am following up on my previous message regarding the referral for {role or 'Software Engineer'} at {company_name}.",
-                    ],
-                    achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                    ask_line="Whenever you get a moment, I would really appreciate your help or any guidance you can share.",
-                    attachment_line=attachment_line,
-                    sender_name=sender_name,
-                    email=email,
-                    contact=contact,
-                    linkedin=linkedin,
-                )
-            else:
-                body = build_follow_up_referral_mail(emp_name=emp_name, role=role, company_name=company_name)
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "follow_up_call" and hardcoded_template:
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "the role", company_name, emp_name, job_id)
-            body = self._build_ordered_hardcoded_mail(
-                emp_name=emp_name,
-                intro_paragraphs=[
-                    f"Thank you again for the call on {interaction_date}. We had discussed the {role or 'role'} opportunity at {company_name}.",
-                    f"I remain very interested in the {role or 'role'} position at {company_name}.",
-                ],
-                achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                ask_line="Could you please share whether my profile is shortlisted, and what the next step in the process will be?",
-                attachment_line=attachment_line,
-                sender_name=sender_name,
-                email=email,
-                contact=contact,
-                linkedin=linkedin,
-            )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif choice == "follow_up_interview" and hardcoded_template:
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "role", company_name, emp_name, job_id)
-            body = self._build_ordered_hardcoded_mail(
-                emp_name=emp_name,
-                intro_paragraphs=[
-                    f"Thank you for taking the time to interview me on {interaction_date}.",
-                    f"I remain excited about the opportunity to contribute to the {role or 'role'} team at {company_name}.",
-                ],
-                achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                ask_line="Could you please share feedback from the interview and the next process or timeline?",
-                attachment_line=attachment_line,
-                sender_name=sender_name,
-                email=email,
-                contact=contact,
-                linkedin=linkedin,
-            )
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        elif self._is_follow_up_template_choice(choice):
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template("follow_up_applied", role or "the role", company_name, emp_name, job_id)
-            body_core = (
-                f"Hi {emp_name},\n\n"
-                f"I wanted to follow up on our recent discussion regarding the {role or 'role'} opportunity at {company_name}.\n\n"
-                f"{self._achievement_impact_line(profile, achievements)[:150].rstrip('.') }.\n\n"
-                "I would appreciate any update on next steps when convenient."
-            )
-            body = f"{body_core}\n\n{closing_line}\n\n{attachment_line}\n\n{signature}"
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-        else:
-            subject = str(row.template_subject or "").strip() or self._default_subject_for_template(choice, role or "role", company_name, emp_name, job_id)
-            if hardcoded_template:
-                body = self._build_ordered_hardcoded_mail(
-                    emp_name=emp_name,
-                    intro_paragraphs=[
-                        self._employee_personalization(employee, company_name),
-                        self._candidate_intro_line(profile, role, company_name, job_id, achievements),
-                    ],
-                    achievement_paragraphs=self._ordered_achievement_paragraphs(achievements, placeholder_values),
-                    ask_line=self._ask_line_by_audience(employee, template_choice=choice),
-                    attachment_line=attachment_line,
-                    sender_name=sender_name,
-                    email=email,
-                    contact=contact,
-                    linkedin=linkedin,
-                )
-            else:
-                personalized_first_para = self._employee_personalization(employee, company_name)
-                intro_para = self._candidate_intro_line(profile, role, company_name, job_id, achievements)
-                impact_para = self._achievement_impact_line(profile, achievements)
-                ask_para = self._ask_line_by_audience(employee, template_choice=choice)
-                body_core = (
-                    f"Hi {emp_name},\n\n"
-                    f"{personalized_first_para}\n\n"
-                    f"{intro_para}\n\n"
-                    f"{impact_para}\n\n"
-                    f"{ask_para}"
-                )
-                body = f"{body_core}\n\n{closing_line}\n\n{attachment_line}\n\n{signature}"
-            subject = self._inject_dynamic_names(subject, emp_name, sender_name)
-            body = self._inject_dynamic_names(body, emp_name, sender_name)
-            return subject, body
-
-        intro_bits = []
-        if yoe:
-            intro_bits.append(f"{yoe} years of experience")
-        if current_employer:
-            intro_bits.append(f"currently at {current_employer}")
-        intro_line = f"I am {full_name}" + (f", with {' and '.join(intro_bits)}." if intro_bits else ".")
-
-        extra = summary or "I bring hands-on backend and product engineering experience and would love to contribute."
-        ask = self._ask_line_by_audience(employee, template_choice=choice)
-
-        body = (
-            f"{body_core}\n\n"
-            f"{intro_line}\n"
-            f"{extra}\n\n"
-            f"{ask}\n\n"
-            f"{closing_line}\n\n"
-            f"{attachment_line}\n\n"
-            + signature
+        subject = str(getattr(row, "template_subject", "") or "").strip() or self._default_subject_for_template(
+            choice,
+            role or "role",
+            company_name,
+            emp_name,
+            job_id,
+        )
+        body = self._build_ordered_hardcoded_mail(
+            emp_name=emp_name,
+            intro_paragraphs=[personalized_intro] if personalized_intro else [],
+            achievement_paragraphs=ordered_template_paragraphs,
+            ask_line="",
+            attachment_line=attachment_line,
+            sender_name=sender_name,
+            email=str(getattr(profile, "email", "") or row.user.email or "").strip(),
+            contact=str(getattr(profile, "contact_number", "") or "").strip(),
+            linkedin=str(getattr(profile, "linkedin_url", "") or "").strip(),
         )
         subject = self._inject_dynamic_names(subject, emp_name, sender_name)
         body = self._inject_dynamic_names(body, emp_name, sender_name)

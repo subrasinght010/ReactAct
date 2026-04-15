@@ -9,7 +9,7 @@ from .models import (
     Job,
     Location,
     UserProfile,
-    Achievement,
+    Template,
     Interview,
 )
 
@@ -432,7 +432,7 @@ class TemplateSerializer(serializers.ModelSerializer):
         request = self.context.get('request') if isinstance(self.context, dict) else None
         user = getattr(request, 'user', None)
         if getattr(user, 'is_authenticated', False):
-            rows = Achievement.objects.filter(user=user, name__iexact=text)
+            rows = Template.objects.filter(user=user, name__iexact=text)
             if self.instance is not None:
                 rows = rows.exclude(id=self.instance.id)
             if rows.exists():
@@ -441,8 +441,8 @@ class TemplateSerializer(serializers.ModelSerializer):
 
     def validate_category(self, value):
         text = str(value or '').strip().lower()
-        if text not in {'opening', 'experience', 'closing', 'general'}:
-            raise serializers.ValidationError('Category must be Opening, Experience, Closing, or General.')
+        if text not in {'personalized', 'opening', 'experience', 'closing', 'general'}:
+            raise serializers.ValidationError('Category must be Personalized, Opening, Experience, Closing, or General.')
         return text
 
     def validate_paragraph(self, value):
@@ -452,7 +452,7 @@ class TemplateSerializer(serializers.ModelSerializer):
         return text
 
     class Meta:
-        model = Achievement
+        model = Template
         fields = [
             'id',
             'profile',
