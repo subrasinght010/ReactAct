@@ -655,6 +655,8 @@ function ResumeBuilderPage({
   })
   const [resumeRecordId, setResumeRecordId] = useState(() => sessionStorage.getItem(resumeIdSessionKey))
   const [saveMode, setSaveMode] = useState(() => (sessionStorage.getItem('builderSaveMode') === 'edit' ? 'edit' : 'create'))
+  const [saveTarget, setSaveTarget] = useState('base')
+  const [tailoredSourceResumeId, setTailoredSourceResumeId] = useState('')
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
   const [pdfSaveState, setPdfSaveState] = useState({ saving: false, message: '' })
   const [importState, setImportState] = useState({ importing: false, message: '' })
@@ -818,6 +820,7 @@ function ResumeBuilderPage({
         isDefaultResume: Boolean(full.is_default),
       }))
       setResumeRecordId(String(full.id))
+      setSaveTarget(Boolean(full?.is_tailored) ? 'tailored' : 'base')
       sessionStorage.setItem(resumeIdSessionKey, String(full.id))
       if (enableTailorFlow && !tailorReferenceBuilder && hasBuilderSubstance(full.builder_data || {})) {
         setTailorReferenceBuilder(cloneBuilderData(full.builder_data || {}))
@@ -842,6 +845,7 @@ function ResumeBuilderPage({
             isDefaultResume: Boolean(full.is_default),
           }))
           setResumeRecordId(String(full.id))
+          setSaveTarget(Boolean(full?.is_tailored) ? 'tailored' : 'base')
           setSaveMode('edit')
           // Stored resume was loaded successfully; do not override with default resume.
           return
@@ -1276,11 +1280,12 @@ function ResumeBuilderPage({
         }))
       }
 
-      // Tailor action is preview-first. Keep save manual to avoid auto-overwrite.
-      if (saveMode === 'create') {
-        setResumeRecordId(null)
-        sessionStorage.removeItem(resumeIdSessionKey)
-      }
+      // Tailor action is preview-first. Any subsequent Save must create/update a tailored copy, never overwrite the base.
+      setTailoredSourceResumeId(String(resumeRecordId || tailorReferenceResumeId || '').trim())
+      setSaveTarget('tailored')
+      setResumeRecordId(null)
+      setSaveMode('create')
+      sessionStorage.removeItem(resumeIdSessionKey)
 
       const mode = String(result?.mode || '')
       const score = Number(result?.match_score)
@@ -1405,6 +1410,8 @@ function ResumeBuilderPage({
       setResumeRecordId(String(data.id))
       sessionStorage.setItem(resumeIdSessionKey, String(data.id))
       setSaveMode('edit')
+      setSaveTarget('base')
+      setTailoredSourceResumeId('')
       setForm((prev) => ({
         ...prev,
         isDefaultResume: Boolean(data.is_default),
@@ -1420,12 +1427,83 @@ function ResumeBuilderPage({
     }
   }
 
+  const saveTailoredResumeToAccount = async ({ titleOverride = '' } = {}) => {
+    const access = localStorage.getItem('access')
+    if (!access) {
+      navigate('/login')
+      return null
+    }
+
+    try {
+      setSaveState({ saving: true, message: '' })
+      const derivedTitle = String(titleOverride || '').trim() || `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
+      const updatePayload = {
+        title: derivedTitle,
+        builder_data: form,
+        original_text: formToPlainText(form),
+        is_default: false,
+        is_tailored: true,
+      }
+      if (resumeRecordId && saveMode === 'edit') {
+        const data = await updateResume(access, resumeRecordId, updatePayload)
+        if (data?.id) {
+          setResumeRecordId(String(data.id))
+          sessionStorage.setItem(resumeIdSessionKey, String(data.id))
+        }
+        setSaveMode('edit')
+        setSaveTarget('tailored')
+        setForm((prev) => ({
+          ...prev,
+          isDefaultResume: false,
+        }))
+        setSaveState({
+          saving: false,
+          message: `Updated tailored copy: ${new Date().toLocaleTimeString()}`,
+        })
+        return data
+      }
+
+      const sourceResumeId = String(tailoredSourceResumeId || resumeRecordId || tailorReferenceResumeId || '').trim()
+      if (!sourceResumeId) {
+        throw new Error('Load or save a base resume first before saving a tailored copy.')
+      }
+
+      const payload = {
+        name: derivedTitle,
+        builder_data: form,
+        resume: Number(sourceResumeId),
+        job: tailoredModal.jobId ? Number(tailoredModal.jobId) : null,
+      }
+      const data = await createTailoredResume(access, payload)
+      if (data?.id) {
+        setResumeRecordId(String(data.id))
+        sessionStorage.setItem(resumeIdSessionKey, String(data.id))
+      }
+      setSaveMode('edit')
+      setSaveTarget('tailored')
+      setForm((prev) => ({
+        ...prev,
+        isDefaultResume: false,
+      }))
+      setSaveState({
+        saving: false,
+        message: `Saved tailored copy: ${new Date().toLocaleTimeString()}`,
+      })
+      return data
+    } catch (err) {
+      setSaveState({ saving: false, message: err.message || 'Save failed' })
+      return null
+    }
+  }
+
   const openSaveModal = () => {
-    if (saveMode === 'edit' && !resumeRecordId) {
+    if (saveTarget === 'base' && saveMode === 'edit' && !resumeRecordId) {
       setSaveState({ saving: false, message: 'Edit mode cannot create new resume. Use Add Resume (+).' })
       return
     }
-    const suggested = String(autoTitle || '').trim() || 'My Resume'
+    const suggested = saveTarget === 'tailored'
+      ? `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
+      : (String(autoTitle || '').trim() || 'My Resume')
     setSaveModal({
       open: true,
       name: suggested,
@@ -1433,9 +1511,13 @@ function ResumeBuilderPage({
   }
 
   const saveFromModal = async () => {
-    const suggested = String(autoTitle || '').trim() || 'My Resume'
+    const suggested = saveTarget === 'tailored'
+      ? `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
+      : (String(autoTitle || '').trim() || 'My Resume')
     const value = String(saveModal.name || '').trim() || suggested
-    const saved = await saveResumeToAccount({ titleOverride: value, forceCreate: false })
+    const saved = saveTarget === 'tailored'
+      ? await saveTailoredResumeToAccount({ titleOverride: value })
+      : await saveResumeToAccount({ titleOverride: value, forceCreate: false })
     if (saved) {
       setSaveModal((prev) => ({ ...prev, open: false }))
     }
@@ -1484,7 +1566,13 @@ function ResumeBuilderPage({
         resume: Number(sourceResumeId),
         job: tailoredModal.jobId ? Number(tailoredModal.jobId) : null,
       }
-      await createTailoredResume(access, payload)
+      const data = await createTailoredResume(access, payload)
+      if (data?.id) {
+        setResumeRecordId(String(data.id))
+        sessionStorage.setItem(resumeIdSessionKey, String(data.id))
+        setSaveMode('edit')
+      }
+      setSaveTarget('tailored')
       setTailoredModal((prev) => ({ ...prev, open: false }))
       setSaveState({
         saving: false,

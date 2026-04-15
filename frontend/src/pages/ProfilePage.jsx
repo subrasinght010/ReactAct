@@ -4,19 +4,19 @@ import ResumeSheet from '../components/ResumeSheet'
 import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
 
 import {
-  createAchievement,
+  createTemplate,
   createInterview,
-  deleteAchievement,
+  deleteTemplate,
   deleteInterview,
   deleteResume,
-  fetchAchievements,
+  fetchTemplates,
   fetchInterviews,
   fetchJobs,
   fetchLocations,
   fetchProfile,
   fetchProfileInfo,
   fetchResumes,
-  updateAchievement,
+  updateTemplate,
   updateInterview,
   updateProfileInfo,
 } from '../api'
@@ -43,8 +43,8 @@ const EMPTY_PROFILE = {
 
 const EMPTY_ACH = {
   name: '',
-  achievement: '',
-  skills: '',
+  category: 'general',
+  paragraph: '',
 }
 
 const PROGRESSION_STAGES = [
@@ -289,7 +289,7 @@ function ProfilePage() {
         fetchProfile(access),
         fetchProfileInfo(access),
         fetchResumes(access),
-        fetchAchievements(access),
+        fetchTemplates(access),
         fetchInterviews(access),
         fetchJobs(access, { page: 1, page_size: 500 }),
         fetchLocations(access),
@@ -367,27 +367,27 @@ function ProfilePage() {
       setOk('')
       const payload = {
         name: String(achForm.name || '').trim(),
-        achievement: String(achForm.achievement || '').trim(),
-        skills: String(achForm.skills || '').trim(),
+        category: String(achForm.category || 'general').trim() || 'general',
+        paragraph: String(achForm.paragraph || '').trim(),
       }
-      if (!payload.name || !payload.achievement) {
-        setError('Achievement needs name and achievement text.')
+      if (!payload.name || !payload.paragraph) {
+        setError('Template needs name and paragraph text.')
         return
       }
       if (editingAchId) {
-        const updated = await updateAchievement(access, editingAchId, payload)
+        const updated = await updateTemplate(access, editingAchId, payload)
         setAchievements((prev) => prev.map((row) => (row.id === editingAchId ? updated : row)))
-        setOk('Achievement updated.')
+        setOk('Template updated.')
       } else {
-        const created = await createAchievement(access, payload)
+        const created = await createTemplate(access, payload)
         setAchievements((prev) => [created, ...prev])
-        setOk('Achievement added.')
+        setOk('Template added.')
       }
       setAchForm(EMPTY_ACH)
       setEditingAchId(null)
       setShowAchForm(false)
     } catch (err) {
-      setError(err.message || 'Could not save achievement.')
+      setError(err.message || 'Could not save template.')
     }
   }
 
@@ -395,18 +395,18 @@ function ProfilePage() {
     setEditingAchId(row.id)
     setAchForm({
       name: row.name || '',
-      achievement: row.achievement || '',
-      skills: row.skills || '',
+      category: row.category || 'general',
+      paragraph: row.paragraph || '',
     })
     setShowAchForm(true)
   }
 
   const removeAchievement = async (id) => {
     try {
-      await deleteAchievement(access, id)
+      await deleteTemplate(access, id)
       setAchievements((prev) => prev.filter((row) => row.id !== id))
     } catch (err) {
-      setError(err.message || 'Could not delete achievement.')
+      setError(err.message || 'Could not delete template.')
     }
   }
 
@@ -489,7 +489,7 @@ function ProfilePage() {
       <div className="tracking-head">
         <div>
           <h1>Profile</h1>
-          <p className="subtitle">Personal info, achievements, resumes, and interview milestones.</p>
+          <p className="subtitle">Personal info, templates, resumes, and interview milestones.</p>
         </div>
         <div className="actions">
           <button type="button" className="secondary" onClick={openCreateResumeInBuilder}>Open Resume Workspace</button>
@@ -602,17 +602,17 @@ function ProfilePage() {
 
       <section className="dash-card">
         <div className="tracking-head profile-section-head">
-          <h2>Achievements</h2>
+          <h2>Templates</h2>
           <div className="actions">
-            <button type="button" className="secondary" onClick={() => { setShowAchForm((v) => !v); setEditingAchId(null); setAchForm(EMPTY_ACH) }}>{showAchForm ? 'Close Form' : 'Add Achievement'}</button>
+            <button type="button" className="secondary" onClick={() => { setShowAchForm((v) => !v); setEditingAchId(null); setAchForm(EMPTY_ACH) }}>{showAchForm ? 'Close Form' : 'Add Template'}</button>
           </div>
         </div>
         {showAchForm ? (
           <>
             <div className="profile-form-grid">
               <label>Name<input value={achForm.name} onChange={(e) => setAchForm((p) => ({ ...p, name: e.target.value }))} /></label>
-              <label>Skills<input value={achForm.skills} onChange={(e) => setAchForm((p) => ({ ...p, skills: e.target.value }))} placeholder="Python, React, AWS" /></label>
-              <label className="md:col-span-2">Achievement<textarea rows={3} value={achForm.achievement} onChange={(e) => setAchForm((p) => ({ ...p, achievement: e.target.value }))} /></label>
+              <label>Category<select value={achForm.category || 'general'} onChange={(e) => setAchForm((p) => ({ ...p, category: e.target.value }))}><option value="opening">Opening</option><option value="experience">Experience</option><option value="closing">Closing</option><option value="general">General</option></select></label>
+              <label className="md:col-span-2">Paragraph<textarea rows={4} value={achForm.paragraph} onChange={(e) => setAchForm((p) => ({ ...p, paragraph: e.target.value }))} /></label>
             </div>
             <div className="actions">
               <button type="button" onClick={saveAchievement}>{editingAchId ? 'Update' : 'Create'}</button>
@@ -624,15 +624,15 @@ function ProfilePage() {
           {achievements.map((row) => (
             <article key={row.id} className="resume-card profile-card-shell">
               <p className="resume-card-title"><strong>{row.name || '-'}</strong></p>
-              <p className="hint">{row.skills || '-'}</p>
-              <p className="resume-card-snippet">{row.achievement || '-'}</p>
+              <p className="hint">{String(row.category || 'general').replaceAll('_', ' ')}</p>
+              <p className="resume-card-snippet">{row.paragraph || '-'}</p>
               <div className="resume-card-actions">
                 <button type="button" className="secondary" onClick={() => editAchievement(row)}>Edit</button>
                 <button type="button" className="secondary" onClick={() => removeAchievement(row.id)}>Delete</button>
               </div>
             </article>
           ))}
-          {!achievements.length ? <p className="hint">No achievements yet.</p> : null}
+          {!achievements.length ? <p className="hint">No templates yet.</p> : null}
         </div>
       </section>
 

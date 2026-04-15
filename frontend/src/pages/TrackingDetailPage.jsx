@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { fetchTrackingRow } from '../api'
 import { SingleSelectDropdown } from '../components/SearchableDropdown'
+import { MailTestIcon } from './TrackingMailTestPage'
 
 function formatTemplateType(value) {
   const raw = String(value || '').trim()
@@ -29,6 +30,31 @@ function formatSendMode(value) {
   if (raw === 'sent') return 'On Time'
   if (raw === 'scheduled') return 'Scheduled'
   return raw ? raw.replaceAll('_', ' ') : '-'
+}
+
+function formatEmployeeDeliveryLabel(item) {
+  const name = String(item?.employee_name || '').trim()
+  const email = String(item?.email || '').trim()
+  if (name && email) return `${name} (${email})`
+  if (email) return email
+  if (name) return name
+  return '-'
+}
+
+function formatDeliveryReason(item) {
+  const reason = String(item?.reason || '').trim()
+  if (!reason) return ''
+  const failureType = String(item?.failure_type || '').trim().toLowerCase()
+  if (failureType === 'bounced') return `Bounce: ${reason}`
+  return reason
+}
+
+function formatDeliveryStatus(value) {
+  const text = String(value || '').trim().toLowerCase()
+  if (text === 'sent') return 'Sent'
+  if (text === 'failed') return 'Failed'
+  if (text === 'bounced') return 'Bounced'
+  return 'Pending'
 }
 
 function actionRowsForDetail(row, filteredMailEvents) {
@@ -140,6 +166,9 @@ function TrackingDetailPage() {
       .map((item) => String(item.employee_name || '').trim())
       .filter(Boolean),
   ))
+  const passedEmployees = Array.isArray(row?.delivery_summary?.passed) ? row.delivery_summary.passed : []
+  const failedEmployees = Array.isArray(row?.delivery_summary?.failed) ? row.delivery_summary.failed : []
+  const employeeDeliveryOverview = Array.isArray(row?.employee_delivery_overview) ? row.employee_delivery_overview : []
 
   return (
     <main className="page page-wide mx-auto w-full">
@@ -149,6 +178,7 @@ function TrackingDetailPage() {
           <p className="subtitle">Summary, employee-wise mail chat history, and actions.</p>
         </div>
         <div className="actions">
+          <button type="button" className="secondary tracking-icon-btn" title="Test Mail" onClick={() => navigate(`/tracking/${trackingId}/test-mail`)}><MailTestIcon /></button>
           <button type="button" className="secondary" onClick={() => navigate('/tracking', { replace: true })}>Back</button>
         </div>
       </div>
@@ -181,6 +211,68 @@ function TrackingDetailPage() {
               <div className="tracking-detail-item"><span className="tracking-detail-label">Mailed</span><span className="tracking-detail-value">{(row.mailed || scopedEvents.length) ? 'Yes' : 'No'} {mailedAt ? `(${toFriendlyDateTime(mailedAt)})` : ''}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Got Response</span><span className="tracking-detail-value">{(row.got_replied || repliedEvents.length) ? 'Yes' : 'No'} {repliedAt ? `(${toFriendlyDateTime(repliedAt)})` : ''}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Response From Employee</span><span className="tracking-detail-value">{repliedBy.length ? repliedBy.join(', ') : '-'}</span></div>
+            </div>
+          </section>
+
+          <section className="tracking-status-board">
+            <article className="dash-card tracking-status-card is-pass">
+              <div className="tracking-status-head">
+                <h2>Passed Mail IDs</h2>
+                <span className="tracking-status-count">{passedEmployees.length}</span>
+              </div>
+              <div className="tracking-status-list">
+                {passedEmployees.length ? passedEmployees.map((item, index) => (
+                  <div className="tracking-status-pill" key={`passed-${item.employee_id || item.email || index}`}>
+                    <span className="tracking-status-pill-title">{formatEmployeeDeliveryLabel(item)}</span>
+                  </div>
+                )) : <p className="hint">No successful mails found for this tracking.</p>}
+              </div>
+            </article>
+
+            <article className="dash-card tracking-status-card is-fail">
+              <div className="tracking-status-head">
+                <h2>Failed Mail IDs</h2>
+                <span className="tracking-status-count">{failedEmployees.length}</span>
+              </div>
+              <div className="tracking-status-list">
+                {failedEmployees.length ? failedEmployees.map((item, index) => (
+                  <div className="tracking-status-pill" key={`failed-${item.employee_id || item.email || index}`}>
+                    <span className="tracking-status-pill-title">{formatEmployeeDeliveryLabel(item)}</span>
+                    {formatDeliveryReason(item) ? <span className="tracking-status-pill-meta">{formatDeliveryReason(item)}</span> : null}
+                  </div>
+                )) : <p className="hint">No failed mails found for this tracking.</p>}
+              </div>
+            </article>
+          </section>
+
+          <section className="dash-card">
+            <h2>Employee Delivery Overview</h2>
+            <div className="tracking-table-wrap">
+              <table className="tracking-table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Mail ID</th>
+                    <th>Status</th>
+                    <th>Reason</th>
+                    <th>Last Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employeeDeliveryOverview.map((item, index) => (
+                    <tr key={`overview-${item.employee_id || index}`}>
+                      <td>{item.employee_name || '-'}</td>
+                      <td>{item.email || '-'}</td>
+                      <td>{formatDeliveryStatus(item.status)}</td>
+                      <td>{formatDeliveryReason(item) || '-'}</td>
+                      <td>{toFriendlyDateTime(item.action_at)}</td>
+                    </tr>
+                  ))}
+                  {!employeeDeliveryOverview.length ? (
+                    <tr><td colSpan={5}>No employee delivery details available.</td></tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
           </section>
 

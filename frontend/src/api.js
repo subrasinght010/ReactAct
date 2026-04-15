@@ -146,6 +146,37 @@ export async function signupUser(username, email, password) {
   return parseResponse(response)
 }
 
+export async function fetchTrackingMailTest(accessToken, trackingId) {
+  const response = await authFetch(`${API_BASE_URL}/tracking/${trackingId}/mail-test/`, {}, accessToken)
+  return parseResponse(response)
+}
+
+export async function generateTrackingMailTest(accessToken, trackingId, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/tracking/${trackingId}/mail-test/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'generate', ...(payload || {}) }),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function saveTrackingMailTest(accessToken, trackingId, previews) {
+  const response = await authFetch(
+    `${API_BASE_URL}/tracking/${trackingId}/mail-test/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save', previews }),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
 export async function parseResumePdf(file) {
   const formData = new FormData()
   formData.append('file', file)
@@ -321,9 +352,27 @@ export async function fetchAchievements(accessToken) {
   return parseResponse(response)
 }
 
+export async function fetchTemplates(accessToken) {
+  const response = await authFetch(`${API_BASE_URL}/templates/`, {}, accessToken)
+  return parseResponse(response)
+}
+
 export async function createAchievement(accessToken, payload) {
   const response = await authFetch(
     `${API_BASE_URL}/achievements/`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
+export async function createTemplate(accessToken, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/templates/`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -347,9 +396,32 @@ export async function updateAchievement(accessToken, achievementId, payload) {
   return parseResponse(response)
 }
 
+export async function updateTemplate(accessToken, templateId, payload) {
+  const response = await authFetch(
+    `${API_BASE_URL}/templates/${templateId}/`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    },
+    accessToken,
+  )
+  return parseResponse(response)
+}
+
 export async function deleteAchievement(accessToken, achievementId) {
   const response = await authFetch(
     `${API_BASE_URL}/achievements/${achievementId}/`,
+    { method: 'DELETE' },
+    accessToken,
+  )
+  if (response.status === 204) return { ok: true }
+  return parseResponse(response)
+}
+
+export async function deleteTemplate(accessToken, templateId) {
+  const response = await authFetch(
+    `${API_BASE_URL}/templates/${templateId}/`,
     { method: 'DELETE' },
     accessToken,
   )

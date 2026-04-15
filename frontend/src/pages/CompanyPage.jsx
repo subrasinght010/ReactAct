@@ -277,6 +277,7 @@ function CompanyPage() {
       location: '',
       profile: '',
       about: '',
+      personalized_template: '',
       personalized_template_helpful: 'partial_somewhat',
     })
   }
@@ -298,6 +299,7 @@ function CompanyPage() {
       location: employee.location || '',
       profile: employee.profile || '',
       about: employee.about || '',
+      personalized_template: employee.personalized_template || '',
       personalized_template_helpful: employee.personalized_template_helpful || 'partial_somewhat',
     })
   }
@@ -331,6 +333,7 @@ function CompanyPage() {
           location: employeeForm.location,
           profile: employeeForm.profile,
           about: employeeForm.about,
+          personalized_template: employeeForm.personalized_template,
           personalized_template_helpful: employeeForm.personalized_template_helpful,
         })
         setEmployees((prev) => prev.map((row) => (row.id === employeeForm.id ? updated : row)))
@@ -349,6 +352,7 @@ function CompanyPage() {
           location: employeeForm.location,
           profile: employeeForm.profile,
           about: employeeForm.about,
+          personalized_template: employeeForm.personalized_template,
           personalized_template_helpful: employeeForm.personalized_template_helpful,
         })
         setEmployees((prev) => [...prev, created])
@@ -597,6 +601,15 @@ function CompanyPage() {
             <div className="tracking-form-section-title tracking-form-span-2">Profile & Notes</div>
             <label>LinkedIn URL<input value={employeeForm.profile} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, profile: event.target.value }))} /></label>
             <label className="tracking-form-span-2">About<textarea rows="4" value={employeeForm.about} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, about: event.target.value }))} /></label>
+            <label className="tracking-form-span-2">
+              Personalized Template
+              <textarea
+                rows="5"
+                value={employeeForm.personalized_template || ''}
+                onChange={(event) => setEmployeeForm((prev) => ({ ...prev, personalized_template: event.target.value }))}
+                placeholder="Store a reusable personalized intro for this employee"
+              />
+            </label>
             <label>
               Template Helpful
               <select value={employeeForm.personalized_template_helpful} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, personalized_template_helpful: event.target.value }))}>

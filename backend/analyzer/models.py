@@ -46,6 +46,21 @@ class Resume(BaseModel):
     optimized_text = models.TextField(blank=True)
     builder_data = models.JSONField(default=dict, blank=True)
     is_default = models.BooleanField(default=False)
+    is_tailored = models.BooleanField(default=False)
+    job = models.ForeignKey(
+        'Job',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='resumes',
+    )
+    source_resume = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name='tailored_versions',
+    )
     file = models.FileField(upload_to='resumes/', blank=True, null=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
     class Meta:
@@ -53,31 +68,6 @@ class Resume(BaseModel):
 
     def __str__(self):
         return f'{self.title} ({self.user.username})'
-
-
-class TailoredResume(BaseModel):
-    job = models.ForeignKey(
-        'Job',
-        on_delete=models.SET_NULL,
-        blank=True,
-        null=True,
-        related_name='tailored_resumes',
-    )
-    resume = models.ForeignKey(
-        Resume,
-        on_delete=models.SET_NULL,
-        blank=True,
-        null=True,
-        related_name='tailored_resumes',
-    )
-    name = models.CharField(max_length=220, blank=True, default='')
-    builder_data = models.JSONField(default=dict, blank=True)
-
-    class Meta:
-        ordering = ['-updated_at', '-created_at']
-
-    def __str__(self):
-        return f'{self.name} ({self.resume_id})'
 
 
 class Company(BaseModel):
@@ -194,35 +184,43 @@ class MailTracking(BaseModel):
         on_delete=models.SET_NULL,
         blank=True,
         null=True,
-        related_name='tracking_rows',
+        related_name='mail_tracking_refs',
     )
-    job = models.ForeignKey(
-        Job,
+    resume = models.ForeignKey(
+        Resume,
         on_delete=models.SET_NULL,
         blank=True,
         null=True,
-        related_name='tracking_rows',
+        related_name='mail_tracking_refs',
     )
-    mailed = models.BooleanField(default=False)
-    got_replied = models.BooleanField(default=False)
+    tracking = models.OneToOneField(
+        'Tracking',
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name='mail_tracking_record',
+    )
     mail_history = models.JSONField(default=list, blank=True)
-    mailed_at = models.DateTimeField(blank=True, null=True)
-    replied_at = models.DateTimeField(blank=True, null=True)
-    attachment_files = models.FileField(upload_to='mail_attachments/', blank=True, null=True)
 
     class Meta:
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['user', '-created_at']),
-            models.Index(fields=['job', '-created_at']),
+            models.Index(fields=['tracking', '-created_at']),
         ]
 
     def __str__(self):
-        company_name = self.job.company.name if self.job_id and self.job and self.job.company_id else 'Company'
+        tracking = getattr(self, 'tracking', None)
+        company_name = tracking.job.company.name if tracking and tracking.job_id and tracking.job and tracking.job.company_id else 'Company'
         return f'Tracking ({company_name})'
 
 
 class Tracking(BaseModel):
+    COMPOSE_MODE_CHOICES = [
+        ('hardcoded', 'Hardcoded'),
+        ('partial_ai', 'Partial AI'),
+        ('complete_ai', 'Complete AI'),
+    ]
     actions_choices = [
         ('fresh', 'Fresh'),
         ('followed_up', 'Followed Up'),
@@ -242,15 +240,9 @@ class Tracking(BaseModel):
         null=True,
         related_name='tracking_rows',
     )
+    achievement_ids_ordered = models.JSONField(default=list, blank=True)
     resume = models.ForeignKey(
         Resume,
-        on_delete=models.SET_NULL,
-        blank=True,
-        null=True,
-        related_name='tracking_rows',
-    )
-    tailored_resume = models.ForeignKey(
-        TailoredResume,
         on_delete=models.SET_NULL,
         blank=True,
         null=True,
@@ -261,6 +253,7 @@ class Tracking(BaseModel):
     template_choice = models.CharField(max_length=40, blank=True, default='cold_applied')
     template_subject = models.CharField(max_length=255, blank=True, default='')
     template_message = models.TextField(blank=True, default='')
+    compose_mode = models.CharField(max_length=20, choices=COMPOSE_MODE_CHOICES, default='hardcoded')
     hardcoded_follow_up = models.BooleanField(default=True)
     mail_delivery_status = models.CharField(
         max_length=20,
@@ -279,23 +272,14 @@ class Tracking(BaseModel):
         choices=actions_choices,
         default='fresh',
     )
+    approved_test_mail_payloads = models.JSONField(default=list, blank=True)
     is_freezed = models.BooleanField(default=False)
     freezed_at = models.DateTimeField(blank=True, null=True)
-    is_removed = models.BooleanField(default=False)
-    removed_at = models.DateTimeField(blank=True, null=True)
-    mail_tracking = models.ForeignKey(
-        MailTracking,
-        on_delete=models.SET_NULL,
-        blank=True,
-        null=True,
-        related_name='tracking_rows',
-    )
     class Meta:
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['user', '-created_at']),
             models.Index(fields=['job', '-created_at']),
-            models.Index(fields=['mail_tracking', '-created_at']),
         ]
 
     def __str__(self):
@@ -363,6 +347,8 @@ class MailTrackingEvent(BaseModel):
     action_at = models.DateTimeField()
     got_replied = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
+    source_uid = models.CharField(max_length=255, blank=True, default='')
+    source_message_id = models.CharField(max_length=1000, blank=True, default='')
     raw_payload = models.JSONField(default=dict, blank=True)
 
     class Meta:
@@ -372,6 +358,8 @@ class MailTrackingEvent(BaseModel):
             models.Index(fields=['tracking', '-created_at']),
             models.Index(fields=['employee', '-created_at']),
             models.Index(fields=['mail_tracking', 'status', '-created_at'], name='analyzer_ma_mail_tr_9ddbce_idx'),
+            models.Index(fields=['source_uid'], name='analyzer_ma_source_uid_idx'),
+            models.Index(fields=['source_message_id'], name='analyzer_ma_source_msg_idx'),
         ]
 
     def __str__(self):
@@ -416,6 +404,13 @@ class UserProfile(BaseModel):
 
 
 class Achievement(BaseModel):
+    CATEGORY_CHOICES = [
+        ('opening', 'Opening'),
+        ('experience', 'Experience'),
+        ('closing', 'Closing'),
+        ('general', 'General'),
+    ]
+
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='achievements')
     profile = models.ForeignKey(
         UserProfile,
@@ -425,6 +420,7 @@ class Achievement(BaseModel):
         null=True,
     )
     name = models.CharField(max_length=220)
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='general')
     achievement = models.TextField(blank=True)
     skills = models.TextField(blank=True)
 

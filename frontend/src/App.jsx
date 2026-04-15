@@ -7,6 +7,7 @@ import RegisterPage from './pages/RegisterPage'
 import CompanyPage from './pages/CompanyPage'
 import TrackingPage from './pages/TrackingPage'
 import TrackingDetailPage from './pages/TrackingDetailPage'
+import TrackingMailTestPage from './pages/TrackingMailTestPage'
 import TrackingSchedulePage from './pages/TrackingSchedulePage'
 import JobsPage from './pages/JobsPage'
 import ResumeBuilderPage from './pages/ResumeBuilderPage'
@@ -57,6 +58,7 @@ function AppLayout() {
             <Route path="/tracking" element={<RequireAuth><TrackingPage /></RequireAuth>} />
             <Route path="/tracking-schedule" element={<RequireAuth><TrackingSchedulePage /></RequireAuth>} />
             <Route path="/tracking/:trackingId" element={<RequireAuth><TrackingDetailPage /></RequireAuth>} />
+            <Route path="/tracking/:trackingId/test-mail" element={<RequireAuth><TrackingMailTestPage /></RequireAuth>} />
             <Route path="/jobs" element={<RequireAuth><JobsPage /></RequireAuth>} />
             <Route path="/bulk-upload" element={<RequireAuth><BulkUploadPage /></RequireAuth>} />
             <Route

@@ -3,7 +3,6 @@ from rest_framework import serializers
 
 from .models import (
     Resume,
-    TailoredResume,
     MailTracking,
     Company,
     Employee,
@@ -31,6 +30,10 @@ class SignupSerializer(serializers.ModelSerializer):
 
 
 class ResumeSerializer(serializers.ModelSerializer):
+    job_id = serializers.IntegerField(source='job.id', read_only=True)
+    source_resume_id = serializers.IntegerField(source='source_resume.id', read_only=True)
+    is_tailored = serializers.BooleanField(required=False)
+
     class Meta:
         model = Resume
         fields = [
@@ -40,6 +43,11 @@ class ResumeSerializer(serializers.ModelSerializer):
             'optimized_text',
             'builder_data',
             'is_default',
+            'is_tailored',
+            'job',
+            'job_id',
+            'source_resume',
+            'source_resume_id',
             'status',
             'created_at',
             'updated_at',
@@ -48,10 +56,14 @@ class ResumeSerializer(serializers.ModelSerializer):
 
 
 class TailoredResumeSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
     job_id = serializers.IntegerField(source='job.id', read_only=True)
     job_label = serializers.SerializerMethodField()
-    resume_id = serializers.IntegerField(source='resume.id', read_only=True)
+    resume_id = serializers.IntegerField(source='source_resume.id', read_only=True)
     resume_title = serializers.SerializerMethodField()
+
+    def get_name(self, obj):
+        return str(obj.title or '').strip()
 
     def get_job_label(self, obj):
         if not obj.job_id or not obj.job:
@@ -59,20 +71,21 @@ class TailoredResumeSerializer(serializers.ModelSerializer):
         return f"{obj.job.job_id} - {obj.job.role}"
 
     def get_resume_title(self, obj):
-        if not obj.resume_id or not obj.resume:
+        if not obj.source_resume_id or not obj.source_resume:
             return ''
-        return obj.resume.title
+        return obj.source_resume.title
 
     class Meta:
-        model = TailoredResume
+        model = Resume
         fields = [
             'id',
             'name',
+            'title',
             'builder_data',
             'job',
             'job_id',
             'job_label',
-            'resume',
+            'source_resume',
             'resume_id',
             'resume_title',
             'created_at',
@@ -82,6 +95,9 @@ class TailoredResumeSerializer(serializers.ModelSerializer):
 
 
 class MailTrackingSerializer(serializers.ModelSerializer):
+    tracking_id = serializers.IntegerField(source='tracking.id', read_only=True)
+    employee_id = serializers.IntegerField(source='employee.id', read_only=True)
+    employee_name = serializers.SerializerMethodField()
     company_name = serializers.SerializerMethodField()
     job_id = serializers.SerializerMethodField()
     applied_date = serializers.SerializerMethodField()
@@ -100,40 +116,40 @@ class MailTrackingSerializer(serializers.ModelSerializer):
         compat = self._compat_payload(obj)
         if compat.get('company_name'):
             return compat.get('company_name')
-        if getattr(obj, 'company', None):
-            return obj.company.name
+        if getattr(obj, 'tracking', None) and getattr(obj.tracking, 'job', None) and getattr(obj.tracking.job, 'company', None):
+            return obj.tracking.job.company.name
         return ''
 
     def get_job_id(self, obj):
         compat = self._compat_payload(obj)
         if compat.get('job_id'):
             return compat.get('job_id')
-        if getattr(obj, 'job', None):
-            return obj.job.job_id
+        if getattr(obj, 'tracking', None) and getattr(obj.tracking, 'job', None):
+            return obj.tracking.job.job_id
         return ''
 
     def get_applied_date(self, obj):
         compat = self._compat_payload(obj)
         if compat.get('applied_date'):
             return compat.get('applied_date')
-        if getattr(obj, 'job', None) and obj.job.applied_at:
-            return obj.job.applied_at.isoformat()
+        if getattr(obj, 'tracking', None) and getattr(obj.tracking, 'job', None) and obj.tracking.job.applied_at:
+            return obj.tracking.job.applied_at.isoformat()
         return None
 
     def get_posting_date(self, obj):
         compat = self._compat_payload(obj)
         if compat.get('posting_date'):
             return compat.get('posting_date')
-        if getattr(obj, 'job', None) and obj.job.date_of_posting:
-            return obj.job.date_of_posting.isoformat()
+        if getattr(obj, 'tracking', None) and getattr(obj.tracking, 'job', None) and obj.tracking.job.date_of_posting:
+            return obj.tracking.job.date_of_posting.isoformat()
         return None
 
     def get_is_open(self, obj):
         compat = self._compat_payload(obj)
         if 'is_open' in compat:
             return bool(compat.get('is_open'))
-        if getattr(obj, 'job', None):
-            return not bool(obj.job.is_closed)
+        if getattr(obj, 'tracking', None) and getattr(obj.tracking, 'job', None):
+            return not bool(obj.tracking.job.is_closed)
         return True
 
     def get_available_hrs(self, obj):
@@ -146,22 +162,28 @@ class MailTrackingSerializer(serializers.ModelSerializer):
         value = compat.get('selected_hrs')
         return value if isinstance(value, list) else []
 
+    def get_employee_name(self, obj):
+        if getattr(obj, 'employee', None):
+            return str(obj.employee.name or '')
+        compat = self._compat_payload(obj)
+        return str(compat.get('employee_name') or '')
+
     class Meta:
         model = MailTracking
         fields = [
             'id',
-            'company',
-            'employee',
-            'job',
+            'tracking',
+            'tracking_id',
+            'employee_id',
+            'employee_name',
             'company_name',
             'job_id',
-            'mailed',
             'applied_date',
             'posting_date',
             'is_open',
             'available_hrs',
             'selected_hrs',
-            'got_replied',
+            'mail_history',
             'created_at',
             'updated_at',
         ]
@@ -290,20 +312,20 @@ class JobSerializer(serializers.ModelSerializer):
         return obj.company.name if getattr(obj, 'company', None) else ''
 
     def get_has_tailored_resume(self, obj):
-        return obj.tailored_resumes.exists()
+        return obj.resumes.filter(is_tailored=True).exists()
 
     def get_tailored_resumes(self, obj):
-        rows = obj.tailored_resumes.all().order_by('created_at', 'id')
+        rows = obj.resumes.filter(is_tailored=True).order_by('created_at', 'id')
         return [
             {
                 'id': item.id,
-                'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+                'name': str(item.title or '').strip() or f'Tailored Resume #{item.id}',
             }
             for item in rows
         ]
 
     def get_resume_preview(self, obj):
-        first = obj.tailored_resumes.all().order_by('created_at', 'id').first()
+        first = obj.resumes.filter(is_tailored=True).order_by('created_at', 'id').first()
         if not first:
             return None
         data = first.builder_data or {}
@@ -311,7 +333,7 @@ class JobSerializer(serializers.ModelSerializer):
             return None
         return {
             'id': first.id,
-            'title': str(first.name or '').strip() or f'Tailored Resume #{first.id}',
+            'title': str(first.title or '').strip() or f'Tailored Resume #{first.id}',
             'builder_data': data,
         }
 
@@ -400,11 +422,13 @@ class UserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class AchievementSerializer(serializers.ModelSerializer):
+class TemplateSerializer(serializers.ModelSerializer):
+    paragraph = serializers.CharField(source='achievement')
+
     def validate_name(self, value):
         text = str(value or '').strip()
         if not text:
-            raise serializers.ValidationError('Name is required.')
+            raise serializers.ValidationError('Template name is required.')
         request = self.context.get('request') if isinstance(self.context, dict) else None
         user = getattr(request, 'user', None)
         if getattr(user, 'is_authenticated', False):
@@ -412,7 +436,19 @@ class AchievementSerializer(serializers.ModelSerializer):
             if self.instance is not None:
                 rows = rows.exclude(id=self.instance.id)
             if rows.exists():
-                raise serializers.ValidationError('Achievement name already exists.')
+                raise serializers.ValidationError('Template name already exists.')
+        return text
+
+    def validate_category(self, value):
+        text = str(value or '').strip().lower()
+        if text not in {'opening', 'experience', 'closing', 'general'}:
+            raise serializers.ValidationError('Category must be Opening, Experience, Closing, or General.')
+        return text
+
+    def validate_paragraph(self, value):
+        text = str(value or '').strip()
+        if not text:
+            raise serializers.ValidationError('Paragraph is required.')
         return text
 
     class Meta:
@@ -421,12 +457,15 @@ class AchievementSerializer(serializers.ModelSerializer):
             'id',
             'profile',
             'name',
-            'achievement',
-            'skills',
+            'category',
+            'paragraph',
             'created_at',
             'updated_at',
         ]
         read_only_fields = ['id', 'profile', 'created_at', 'updated_at']
+
+
+AchievementSerializer = TemplateSerializer
 
 
 class InterviewSerializer(serializers.ModelSerializer):

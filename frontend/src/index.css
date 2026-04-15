@@ -1014,6 +1014,38 @@
     color: #334155;
   }
 
+  .tracking-employee-issue-list {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.45rem;
+  }
+
+  .tracking-employee-issue {
+    display: grid;
+    gap: 0.12rem;
+    padding: 0.42rem 0.55rem;
+    border-radius: 10px;
+    background: #fff7ed;
+    border: 1px solid #fed7aa;
+  }
+
+  .tracking-employee-issue-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #9a3412;
+  }
+
+  .tracking-employee-issue-meta {
+    font-size: 11px;
+    color: #7c2d12;
+  }
+
+  .tracking-employee-more {
+    font-size: 11px;
+    font-weight: 700;
+    color: #b45309;
+  }
+
   .tracking-badge {
     display: inline-flex;
     align-items: center;
@@ -1414,6 +1446,92 @@
 
   .tracking-detail-select {
     min-width: min(100%, 320px);
+  }
+
+  .tracking-status-board {
+    display: grid;
+    gap: 1rem;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+
+  .tracking-status-card {
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .tracking-status-card.is-pass {
+    border: 1px solid #bbf7d0;
+    background: linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%);
+  }
+
+  .tracking-status-card.is-fail {
+    border: 1px solid #fecaca;
+    background: linear-gradient(180deg, #fef2f2 0%, #ffffff 100%);
+  }
+
+  .tracking-status-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .tracking-status-head h2 {
+    margin: 0;
+  }
+
+  .tracking-status-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2rem;
+    height: 2rem;
+    padding: 0 0.65rem;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+  }
+
+  .tracking-status-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+  }
+
+  .tracking-status-pill {
+    display: grid;
+    align-content: flex-start;
+    min-height: 40px;
+    padding: 0.65rem 0.9rem;
+    border-radius: 18px;
+    font-size: 14px;
+    line-height: 1.4;
+    color: #0f172a;
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid #e2e8f0;
+  }
+
+  .tracking-status-pill-title {
+    font-weight: 700;
+  }
+
+  .tracking-status-pill-meta {
+    margin-top: 0.25rem;
+    font-size: 12px;
+    color: #7c2d12;
+  }
+
+  .tracking-mail-preview-list {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .tracking-mail-preview-card {
+    display: grid;
+    gap: 0.9rem;
   }
 
   .tracking-form-grid {

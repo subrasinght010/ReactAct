@@ -3,12 +3,14 @@ import imaplib
 import re
 from datetime import timedelta
 from email.header import decode_header
+from email.utils import parseaddr, parsedate_to_datetime
 
 from django.core.management.base import BaseCommand
 from django.db.models import Q
 from django.utils import timezone
 
-from analyzer.models import Employee, MailTrackingEvent, Tracking
+from analyzer.models import Employee, MailTracking, MailTrackingEvent, Tracking
+from analyzer.tracking_mail_utils import log_mail_event, recompute_tracking_delivery_status
 
 
 class Command(BaseCommand):
@@ -55,11 +57,12 @@ class Command(BaseCommand):
                 return
             ids = data[0].split()
             if not ids:
-                self.stdout.write("No unseen recent bounce emails found.")
+                self.stdout.write("No unseen recent IMAP messages found.")
                 return
             ids = ids[-limit:]
 
             for msg_id in ids:
+                imap_uid = self._fetch_uid(mail, msg_id)
                 typ, msg_data = mail.fetch(msg_id, "(RFC822)")
                 if typ != "OK" or not msg_data:
                     continue
@@ -72,9 +75,21 @@ class Command(BaseCommand):
                 subject = self._decode_header_value(msg.get("Subject"))
                 from_addr = str(msg.get("From") or "")
                 body_text = self._extract_text(msg)
+                message_id = str(msg.get("Message-ID") or "").strip()
+                message_at = self._message_datetime(msg)
 
                 if not self._looks_like_bounce(subject, from_addr, body_text):
-                    # Mark read so we do not keep re-checking non-bounce operational mail.
+                    if not dry_run:
+                        self._record_reply_if_applicable(
+                            subject=subject,
+                            from_addr=from_addr,
+                            body_text=body_text,
+                            source_uid=imap_uid,
+                            source_message_id=message_id,
+                            action_at=message_at,
+                            user_id=user_id,
+                            scheduled_today_only=scheduled_today_only,
+                        )
                     mail.store(msg_id, "+FLAGS", "\\Seen")
                     continue
 
@@ -96,7 +111,15 @@ class Command(BaseCommand):
                     matched += 1
                     for row in rows:
                         if not dry_run:
-                            inserted = self._record_bounce(row, recipient, subject)
+                            inserted = self._record_bounce(
+                                row,
+                                recipient,
+                                subject,
+                                body_text,
+                                source_uid=imap_uid,
+                                source_message_id=message_id,
+                                action_at=message_at,
+                            )
                             if inserted:
                                 self._recompute_delivery_status(row)
                         updated += 1
@@ -127,6 +150,48 @@ class Command(BaseCommand):
             else:
                 out.append(str(item))
         return "".join(out).strip()
+
+    def _fetch_uid(self, mail, msg_id):
+        try:
+            typ, data = mail.fetch(msg_id, "(UID)")
+        except Exception:
+            return ""
+        if typ != "OK" or not data:
+            return ""
+        for item in data:
+            if isinstance(item, tuple):
+                text = item[0].decode(errors="ignore")
+            else:
+                text = str(item or "")
+            match = re.search(r"UID\s+(\d+)", text, flags=re.I)
+            if match:
+                return str(match.group(1) or "").strip()
+        return ""
+
+    def _message_datetime(self, msg):
+        raw = str(msg.get("Date") or "").strip()
+        if not raw:
+            return timezone.now()
+        try:
+            dt = parsedate_to_datetime(raw)
+            if dt is None:
+                return timezone.now()
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt, timezone.get_current_timezone())
+            return dt
+        except Exception:
+            return timezone.now()
+
+    def _already_processed_message(self, mail_tracking, *, source_uid="", source_message_id=""):
+        if not mail_tracking:
+            return False
+        uid = str(source_uid or "").strip()
+        message_id = str(source_message_id or "").strip()
+        if uid and MailTrackingEvent.objects.filter(mail_tracking=mail_tracking, source_uid=uid).exists():
+            return True
+        if message_id and MailTrackingEvent.objects.filter(mail_tracking=mail_tracking, source_message_id=message_id).exists():
+            return True
+        return False
 
     def _extract_text(self, msg):
         chunks = []
@@ -186,10 +251,31 @@ class Command(BaseCommand):
         }
         return sorted(cleaned)
 
+    def _extract_sender_email(self, from_addr):
+        _, addr = parseaddr(str(from_addr or "").strip())
+        return str(addr or "").strip().lower()
+
+    def _today_tracking_ids(self, user_id=None, scheduled_today_only=False):
+        today_local = timezone.localdate()
+        qs = MailTracking.objects.filter(
+            tracking_id__isnull=False,
+            created_at__date=today_local,
+            tracking__is_freezed=False,
+        )
+        if user_id:
+            qs = qs.filter(tracking__user_id=int(user_id))
+        if scheduled_today_only:
+            qs = qs.filter(tracking__schedule_time__date=today_local)
+        return set(qs.values_list("tracking_id", flat=True))
+
     def _match_tracking_rows_for_recipient(self, recipient, user_id=None, scheduled_today_only=False):
+        today_tracking_ids = self._today_tracking_ids(user_id=user_id, scheduled_today_only=scheduled_today_only)
+        if not today_tracking_ids:
+            return []
         candidate_events = (
             MailTrackingEvent.objects
             .select_related("tracking", "mail_tracking")
+            .filter(Q(tracking_id__in=today_tracking_ids) | Q(mail_tracking__tracking_id__in=today_tracking_ids))
             .order_by("-created_at")[:3000]
         )
         rows = []
@@ -201,15 +287,13 @@ class Command(BaseCommand):
             if to_email != recipient:
                 continue
             tracking = event.tracking
-            if tracking is None and event.mail_tracking and event.mail_tracking.tracking_rows.exists():
-                tracking = event.mail_tracking.tracking_rows.order_by("-created_at").first()
+            if tracking is None and event.mail_tracking and getattr(event.mail_tracking, "tracking_id", None):
+                tracking = event.mail_tracking.tracking
             if tracking is None:
                 continue
             if user_id and tracking.user_id != int(user_id):
                 continue
             if bool(getattr(tracking, "is_freezed", False)):
-                continue
-            if not bool(getattr(tracking, "mailed", False)):
                 continue
             if scheduled_today_only:
                 st = getattr(tracking, "schedule_time", None)
@@ -225,15 +309,70 @@ class Command(BaseCommand):
                 rows.append(tracking)
         return rows
 
-    def _record_bounce(self, tracking, recipient, subject):
-        mail_tracking = tracking.mail_tracking
+    def _record_reply_if_applicable(self, subject, from_addr, body_text, source_uid="", source_message_id="", action_at=None, user_id=None, scheduled_today_only=False):
+        sender_email = self._extract_sender_email(from_addr)
+        if not sender_email:
+            return 0
+        rows = self._match_tracking_rows_for_recipient(
+            sender_email,
+            user_id=user_id,
+            scheduled_today_only=scheduled_today_only,
+        )
+        inserted = 0
+        for tracking in rows:
+            if self._record_reply(
+                tracking,
+                sender_email,
+                subject,
+                body_text,
+                source_uid=source_uid,
+                source_message_id=source_message_id,
+                action_at=action_at,
+            ):
+                self._recompute_delivery_status(tracking)
+                inserted += 1
+        return inserted
+
+    def _extract_bounce_reason(self, subject, body_text):
+        text = str(body_text or "").strip()
+        subject_text = str(subject or "").strip()
+        patterns = [
+            r"Diagnostic-Code:\s*[^;]+;\s*(.+)",
+            r"Status:\s*([45]\.\d+\.\d+.*)",
+            r"Reason:\s*(.+)",
+            r"Action:\s*(failed.*)",
+            r"This is .*?:\s*(.+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.I)
+            if match:
+                value = re.sub(r"\s+", " ", str(match.group(1) or "").strip(" .;:-"))
+                if value:
+                    return value[:240]
+
+        for line in text.splitlines():
+            normalized = re.sub(r"\s+", " ", str(line or "").strip())
+            lower = normalized.lower()
+            if not normalized:
+                continue
+            if any(marker in lower for marker in ["user unknown", "address not found", "mailbox unavailable", "recipient address rejected", "undeliverable", "no such user", "delivery has failed"]):
+                return normalized[:240]
+
+        if subject_text:
+            return subject_text[:240]
+        return "Bounce detected from IMAP inbox."
+
+    def _record_bounce(self, tracking, recipient, subject, body_text, source_uid="", source_message_id="", action_at=None):
+        mail_tracking = getattr(tracking, "mail_tracking_record", None)
         if not mail_tracking:
+            return False
+        if self._already_processed_message(mail_tracking, source_uid=source_uid, source_message_id=source_message_id):
             return False
 
         # De-duplicate bounce event for same recipient+subject.
         recent = (
             MailTrackingEvent.objects
-            .filter(mail_tracking=mail_tracking, notes="Bounce detected from IMAP inbox.")
+            .filter(mail_tracking=mail_tracking, status="bounced")
             .order_by("-created_at")[:80]
         )
         for item in recent:
@@ -263,45 +402,95 @@ class Command(BaseCommand):
         employee = matched_event.employee if matched_event and matched_event.employee_id else None
         mail_type = str(matched_event.mail_type or "").strip() if matched_event else ""
         send_mode = str(matched_event.send_mode or "").strip() if matched_event else ""
+        bounce_reason = self._extract_bounce_reason(subject, body_text)
 
-        now = timezone.now()
-        history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
-        history.append(
-            {
-                "status": "failed",
-                "to_email": recipient,
-                "subject": subject,
-                "body": "",
-                "employee_id": employee.id if employee else None,
-                "employee_name": str(employee.name or "").strip() if employee else "",
-                "notes": "Bounce detected from IMAP inbox.",
-                "at": now.isoformat(),
-            }
-        )
-        mail_tracking.mail_history = history[-300:]
-        mail_tracking.save(update_fields=["mail_history", "updated_at"])
-
-        MailTrackingEvent.objects.create(
+        event, _ = log_mail_event(
             mail_tracking=mail_tracking,
             tracking=tracking,
             employee=employee,
-            mail_type=mail_type or ("followup" if str(tracking.mail_type or "").strip().lower() == "followed_up" else "fresh"),
-            send_mode=send_mode or "sent",
             status="bounced",
-            action_at=now,
-            got_replied=False,
-            notes="Bounce detected from IMAP inbox.",
+            notes=f"Bounce detected: {bounce_reason}",
+            subject=subject,
+            body="",
+            to_email=recipient,
+            action_at=action_at,
+            source_uid=source_uid,
+            source_message_id=source_message_id,
             raw_payload={
                 "to_email": recipient,
                 "subject": subject,
                 "body": "",
                 "status": "bounced",
+                "reason": bounce_reason,
             },
+            mail_type=mail_type or ("followup" if str(tracking.mail_type or "").strip().lower() == "followed_up" else "fresh"),
+            send_mode=send_mode or "sent",
+        )
+        return True
+
+    def _record_reply(self, tracking, sender_email, subject, body_text, source_uid="", source_message_id="", action_at=None):
+        mail_tracking = getattr(tracking, "mail_tracking_record", None)
+        if not mail_tracking:
+            return False
+        if self._already_processed_message(mail_tracking, source_uid=source_uid, source_message_id=source_message_id):
+            return False
+
+        normalized_email = str(sender_email or "").strip().lower()
+        normalized_subject = str(subject or "").strip()
+
+        latest_event = (
+            MailTrackingEvent.objects
+            .filter(mail_tracking=mail_tracking)
+            .select_related("employee")
+            .order_by("-action_at", "-created_at")
+        )
+        matched_event = None
+        for item in latest_event[:120]:
+            payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+            item_to = str(payload.get("to_email") or "").strip().lower()
+            if item_to == normalized_email:
+                matched_event = item
+                break
+
+        employee = matched_event.employee if matched_event and matched_event.employee_id else getattr(mail_tracking, "employee", None)
+        status_value = str(matched_event.status or "sent").strip() if matched_event else "sent"
+        if status_value not in {"pending", "sent", "failed", "bounced"}:
+            status_value = "sent"
+        log_mail_event(
+            mail_tracking=mail_tracking,
+            tracking=tracking,
+            employee=employee,
+            status=status_value,
+            notes="Reply detected from IMAP inbox.",
+            subject=normalized_subject,
+            body=str(body_text or "").strip(),
+            to_email=normalized_email,
+            from_email=normalized_email,
+            got_replied=True,
+            action_at=action_at,
+            source_uid=source_uid,
+            source_message_id=source_message_id,
+            raw_payload={
+                "from_email": normalized_email,
+                "subject": normalized_subject,
+                "body": str(body_text or "").strip(),
+                "status": "replied",
+            },
+            mail_type=str(matched_event.mail_type or "").strip() if matched_event else ("followup" if str(tracking.mail_type or "").strip().lower() == "followed_up" else "fresh"),
+            send_mode=str(matched_event.send_mode or "").strip() if matched_event else ("scheduled" if tracking and tracking.schedule_time else "sent"),
         )
         return True
 
     def _eligible_rows(self, user_id=None, scheduled_today_only=False):
-        qs = Tracking.objects.filter(mailed=True, is_removed=False, is_freezed=False).select_related("mail_tracking")
+        today_local = timezone.localdate()
+        qs = (
+            Tracking.objects
+            .filter(
+                is_freezed=False,
+                mail_tracking_record__created_at__date=today_local,
+            )
+            .select_related("mail_tracking_record", "resume", "job__company")
+        )
         if user_id:
             qs = qs.filter(user_id=int(user_id))
         if scheduled_today_only:
@@ -317,49 +506,4 @@ class Command(BaseCommand):
             qs.update(working_mail=False)
 
     def _recompute_delivery_status(self, tracking):
-        mail_tracking = tracking.mail_tracking
-        if not mail_tracking:
-            tracking.mail_delivery_status = "pending"
-            tracking.save(update_fields=["mail_delivery_status", "updated_at"])
-            return
-
-        latest_by_email = {}
-        event_rows = (
-            MailTrackingEvent.objects
-            .filter(mail_tracking=mail_tracking)
-            .order_by('action_at', 'created_at')
-        )
-        for item in event_rows:
-            payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
-            to_email = str(payload.get("to_email") or "").strip().lower()
-            status = str(item.status or payload.get("status") or "").strip().lower()
-            if not to_email or status not in {"sent", "failed", "bounced"}:
-                continue
-            latest_by_email[to_email] = status
-
-        if not latest_by_email:
-            history = mail_tracking.mail_history if isinstance(mail_tracking.mail_history, list) else []
-            for row in history:
-                if not isinstance(row, dict):
-                    continue
-                to_email = str(row.get("to_email") or "").strip().lower()
-                status = str(row.get("status") or "").strip().lower()
-                if not to_email:
-                    continue
-                if status in {"sent", "failed", "bounced"}:
-                    latest_by_email[to_email] = status
-
-        sent_count = sum(1 for value in latest_by_email.values() if value == "sent")
-        failed_count = sum(1 for value in latest_by_email.values() if value in {"failed", "bounced"})
-
-        if sent_count > 0 and failed_count > 0:
-            tracking.mail_delivery_status = "partial_sent"
-        elif sent_count > 0:
-            tracking.mail_delivery_status = "complete_sent"
-        elif failed_count > 0:
-            tracking.mail_delivery_status = "failed"
-        else:
-            tracking.mail_delivery_status = "pending"
-
-        tracking.mailed = sent_count > 0
-        tracking.save(update_fields=["mail_delivery_status", "mailed", "updated_at"])
+        recompute_tracking_delivery_status(tracking)

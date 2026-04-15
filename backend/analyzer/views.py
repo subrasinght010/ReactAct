@@ -10,6 +10,7 @@ from pathlib import Path
 
 from django.db.models import Q
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -18,7 +19,7 @@ from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
 from .company_utils import normalize_company_name, resolve_company_for_job
-from .models import Resume, TailoredResume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, Achievement, Interview, Location
+from .models import Resume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, Achievement, Interview, Location
 from .serializers import (
     ResumeSerializer,
     TailoredResumeSerializer,
@@ -28,7 +29,7 @@ from .serializers import (
     EmployeeSerializer,
     JobSerializer,
     UserProfileSerializer,
-    AchievementSerializer,
+    TemplateSerializer,
     InterviewSerializer,
     LocationSerializer,
 )
@@ -44,6 +45,8 @@ from .tailor import (
     sanitize_builder_data,
     tailor_resume_with_ai,
 )
+from .tracking_mail_utils import build_mail_tracking_status_map
+from .management.commands.send_tracking_mails import Command as SendTrackingMailsCommand
 
 
 def _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100):
@@ -72,6 +75,232 @@ def _paginate_queryset(queryset, request, default_page_size=10, max_page_size=10
         'page_size': page_size,
         'total_pages': total_pages,
     }
+
+
+def _resolve_tracking_delivery_status_from_events(event_rows, fallback_status='pending'):
+    latest_by_target = {}
+    fallback_counter = 0
+
+    for item in event_rows:
+        payload = item.raw_payload if isinstance(getattr(item, 'raw_payload', None), dict) else {}
+        status_value = str(getattr(item, 'status', '') or payload.get('status') or '').strip().lower()
+        if status_value not in {'sent', 'failed', 'bounced'}:
+            continue
+
+        to_email = str(payload.get('to_email') or payload.get('recipient_email') or payload.get('receiver') or '').strip().lower()
+        if to_email:
+            latest_by_target[to_email] = status_value
+            continue
+
+        latest_by_target[f'event-{fallback_counter}'] = status_value
+        fallback_counter += 1
+
+    if not latest_by_target:
+        fallback_value = str(fallback_status or 'pending').strip().lower()
+        return fallback_value if fallback_value in {'pending', 'complete_sent', 'partial_sent', 'failed'} else 'pending'
+
+    sent_count = sum(1 for value in latest_by_target.values() if value == 'sent')
+    failed_count = sum(1 for value in latest_by_target.values() if value in {'failed', 'bounced'})
+
+    if sent_count and failed_count:
+        return 'partial_sent'
+    if sent_count:
+        return 'complete_sent'
+    if failed_count:
+        return 'failed'
+    return 'pending'
+
+
+def _build_tracking_delivery_summary(event_rows):
+    latest_by_target = {}
+
+    for item in event_rows:
+        payload = item.raw_payload if isinstance(getattr(item, 'raw_payload', None), dict) else {}
+        status_value = str(getattr(item, 'status', '') or payload.get('status') or '').strip().lower()
+        if status_value not in {'sent', 'failed', 'bounced'}:
+            continue
+
+        to_email = str(payload.get('to_email') or payload.get('recipient_email') or payload.get('receiver') or '').strip()
+        employee_name = ''
+        employee_id = getattr(item, 'employee_id', None)
+        if employee_id and getattr(item, 'employee', None):
+            employee_name = str(item.employee.name or '').strip()
+        target_key = to_email.lower() if to_email else f'employee-{employee_id or item.id}'
+        reason = str(
+            payload.get('reason')
+            or payload.get('failure_reason')
+            or payload.get('bounce_reason')
+            or getattr(item, 'notes', '')
+            or ''
+        ).strip()
+
+        latest_by_target[target_key] = {
+            'employee_id': employee_id,
+            'employee_name': employee_name,
+            'email': to_email,
+            'status': 'failed' if status_value == 'bounced' else status_value,
+            'failure_type': 'bounced' if status_value == 'bounced' else status_value,
+            'reason': reason,
+            'action_at': item.action_at.isoformat() if item.action_at else '',
+        }
+
+    passed = []
+    failed = []
+    for entry in latest_by_target.values():
+        item = {
+            'employee_id': entry['employee_id'],
+            'employee_name': entry['employee_name'],
+            'email': entry['email'],
+            'reason': entry.get('reason', ''),
+            'failure_type': entry.get('failure_type', ''),
+            'action_at': entry['action_at'],
+        }
+        if entry['status'] == 'sent':
+            passed.append(item)
+        elif entry['status'] == 'failed':
+            failed.append(item)
+
+    passed.sort(key=lambda item: ((item.get('employee_name') or '').lower(), (item.get('email') or '').lower()))
+    failed.sort(key=lambda item: ((item.get('employee_name') or '').lower(), (item.get('email') or '').lower()))
+
+    return {
+        'passed': passed,
+        'failed': failed,
+        'passed_count': len(passed),
+        'failed_count': len(failed),
+    }
+
+
+def _build_tracking_employee_delivery_overview(selected_employees, mail_tracking):
+    status_map = build_mail_tracking_status_map(mail_tracking)
+    overview = []
+    for employee in selected_employees:
+        employee_id = employee.get('id')
+        email = str(employee.get('email') or '').strip()
+        current = status_map.get(f'employee:{employee_id}')
+        if not current and email:
+            current = status_map.get(f'email:{email.lower()}')
+        status_value = str((current or {}).get('status') or '').strip().lower()
+        overview.append({
+            'employee_id': employee_id,
+            'employee_name': str(employee.get('name') or '').strip(),
+            'email': str((current or {}).get('email') or email or '').strip(),
+            'status': status_value or 'pending',
+            'reason': str((current or {}).get('reason') or '').strip(),
+            'action_at': str((current or {}).get('action_at') or '').strip(),
+        })
+    return overview
+
+
+def _normalize_tracking_template_ids(payload, request_data=None):
+    values = payload.get('template_ids_ordered')
+    if values in [None, '', []]:
+        values = payload.get('achievement_ids_ordered')
+    if hasattr(request_data, 'getlist'):
+        list_values = [str(v or '').strip() for v in request_data.getlist('template_ids_ordered') if str(v or '').strip()]
+        if not list_values:
+            list_values = [str(v or '').strip() for v in request_data.getlist('achievement_ids_ordered') if str(v or '').strip()]
+        if list_values:
+            values = list_values
+    if isinstance(values, str):
+        values = [item.strip() for item in values.split(',') if item.strip()]
+    if not isinstance(values, list):
+        values = []
+    cleaned = []
+    seen = set()
+    for value in values:
+        text = str(value or '').strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        cleaned.append(text)
+        if len(cleaned) >= 5:
+            break
+    return cleaned
+
+
+def _resolve_tracking_templates(user, template_ids):
+    if not template_ids:
+        return []
+    rows = list(Achievement.objects.filter(user=user, id__in=template_ids))
+    row_map = {str(item.id): item for item in rows}
+    return [row_map[item_id] for item_id in template_ids if item_id in row_map]
+
+
+def _template_category(template_row):
+    return str(getattr(template_row, 'category', 'general') or 'general').strip().lower() or 'general'
+
+
+def _validate_tracking_templates(templates, template_choice='cold_applied'):
+    choice = str(template_choice or 'cold_applied').strip().lower()
+    if choice == 'custom':
+        return ''
+    rows = list(templates or [])
+    if not rows:
+        return 'Select templates in order.'
+    if len(rows) > 5:
+        return 'Select at most 5 templates.'
+
+    is_follow_up = choice in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
+    first_category = _template_category(rows[0])
+    last_category = _template_category(rows[-1])
+
+    if is_follow_up:
+        if len(rows) < 2:
+            return 'For follow-up mail, select at least 2 templates: one paragraph and one closing.'
+        if last_category != 'closing':
+            return 'For follow-up mail, the last selected template must be Closing.'
+        if not any(_template_category(item) != 'closing' for item in rows[:-1]):
+            return 'For follow-up mail, add at least one template before the closing.'
+        return ''
+
+    if len(rows) < 3:
+        return 'For non-follow-up mail, select at least 3 templates: opening, body, and closing.'
+    if first_category != 'opening':
+        return 'For non-follow-up mail, the first selected template must be Opening.'
+    if last_category != 'closing':
+        return 'For non-follow-up mail, the last selected template must be Closing.'
+    if not any(_template_category(item) in {'experience', 'general'} for item in rows[1:-1]):
+        return 'For non-follow-up mail, add at least one Experience or General template between opening and closing.'
+    return ''
+
+
+def _mail_tracking_for_row(tracking):
+    if not tracking:
+        return None
+    return getattr(tracking, 'mail_tracking_record', None)
+
+
+def _mail_tracking_sent_at(mail_tracking):
+    if not mail_tracking:
+        return None
+    event = (
+        MailTrackingEvent.objects
+        .filter(mail_tracking=mail_tracking, status='sent')
+        .order_by('-action_at', '-created_at')
+        .only('action_at')
+        .first()
+    )
+    return event.action_at if event and event.action_at else None
+
+
+def _mail_tracking_replied_at(mail_tracking):
+    if not mail_tracking:
+        return None
+    event = (
+        MailTrackingEvent.objects
+        .filter(mail_tracking=mail_tracking, got_replied=True)
+        .order_by('-action_at', '-created_at')
+        .only('action_at')
+        .first()
+    )
+    return event.action_at if event and event.action_at else None
+
+
+def _mail_tracking_got_replied(mail_tracking):
+    if not mail_tracking:
+        return False
+    return MailTrackingEvent.objects.filter(mail_tracking=mail_tracking, got_replied=True).exists()
 
 
 def _resolve_extension_user(request):
@@ -945,16 +1174,16 @@ class ProfileInfoView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AchievementListCreateView(APIView):
+class TemplateListCreateView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
 
     def get(self, request):
         rows = Achievement.objects.filter(user=request.user).order_by('-created_at')
-        return Response(AchievementSerializer(rows, many=True).data, status=status.HTTP_200_OK)
+        return Response(TemplateSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = AchievementSerializer(data=request.data, context={'request': request})
+        serializer = TemplateSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             profile, _ = UserProfile.objects.get_or_create(
                 user=request.user,
@@ -964,35 +1193,42 @@ class AchievementListCreateView(APIView):
                 },
             )
             created = serializer.save(user=request.user, profile=profile)
-            return Response(AchievementSerializer(created).data, status=status.HTTP_201_CREATED)
+            return Response(TemplateSerializer(created).data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class AchievementDetailView(APIView):
+class TemplateDetailView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
 
-    def _get_object(self, request, achievement_id):
-        return Achievement.objects.get(id=achievement_id, user=request.user)
+    def _resolve_id(self, template_id=None, achievement_id=None):
+        return template_id if template_id is not None else achievement_id
 
-    def put(self, request, achievement_id):
+    def _get_object(self, request, template_id=None, achievement_id=None):
+        return Achievement.objects.get(id=self._resolve_id(template_id, achievement_id), user=request.user)
+
+    def put(self, request, template_id=None, achievement_id=None):
         try:
-            row = self._get_object(request, achievement_id)
+            row = self._get_object(request, template_id, achievement_id)
         except Achievement.DoesNotExist:
-            return Response({'detail': 'Achievement not found.'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = AchievementSerializer(row, data=request.data, partial=True, context={'request': request})
+            return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
+        serializer = TemplateSerializer(row, data=request.data, partial=True, context={'request': request})
         if serializer.is_valid():
             updated = serializer.save()
-            return Response(AchievementSerializer(updated).data, status=status.HTTP_200_OK)
+            return Response(TemplateSerializer(updated).data, status=status.HTTP_200_OK)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    def delete(self, request, achievement_id):
+    def delete(self, request, template_id=None, achievement_id=None):
         try:
-            row = self._get_object(request, achievement_id)
+            row = self._get_object(request, template_id, achievement_id)
         except Achievement.DoesNotExist:
-            return Response({'detail': 'Achievement not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'detail': 'Template not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.hard_delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+AchievementListCreateView = TemplateListCreateView
+AchievementDetailView = TemplateDetailView
 
 
 class InterviewListCreateView(APIView):
@@ -1285,7 +1521,11 @@ class ResumeListCreateView(APIView):
 
     def get(self, request):
         # Always return the latest 6 resumes (do not de-dupe by title).
-        qs = Resume.objects.filter(user=request.user).order_by('-updated_at', '-created_at')[:6]
+        include_tailored = str(request.query_params.get('include_tailored') or '').strip().lower() in {'1', 'true', 'yes'}
+        qs = Resume.objects.filter(user=request.user)
+        if not include_tailored:
+            qs = qs.filter(is_tailored=False)
+        qs = qs.order_by('-updated_at', '-created_at')[:6]
         serializer = ResumeSerializer(qs, many=True)
         return Response(serializer.data)
 
@@ -1301,7 +1541,13 @@ class ResumeListCreateView(APIView):
             if not incoming_text and incoming_builder:
                 incoming_text = _builder_data_to_text(incoming_builder)
 
-            created = serializer.save(user=request.user, original_text=incoming_text or serializer.validated_data.get("original_text") or "")
+            created = serializer.save(
+                user=request.user,
+                is_tailored=False,
+                job=None,
+                source_resume=None,
+                original_text=incoming_text or serializer.validated_data.get("original_text") or "",
+            )
             self._apply_default_resume(request.user, created)
 
             # Enforce max 6 resumes by deleting older ones (by updated_at/created_at).
@@ -1371,9 +1617,9 @@ class TailoredResumeListCreateView(APIView):
 
     def get(self, request):
         rows = (
-            TailoredResume.objects
-            .filter(Q(job__user=request.user) | Q(resume__user=request.user))
-            .select_related('job', 'resume')
+            Resume.objects
+            .filter(user=request.user, is_tailored=True)
+            .select_related('job', 'source_resume')
             .order_by('-updated_at', '-created_at')
         )
         job_id = str(request.query_params.get('job_id') or '').strip()
@@ -1381,7 +1627,7 @@ class TailoredResumeListCreateView(APIView):
             rows = rows.filter(job_id=job_id)
         q = str(request.query_params.get('q') or '').strip()
         if q:
-            rows = rows.filter(Q(name__icontains=q) | Q(job__job_id__icontains=q) | Q(job__role__icontains=q))
+            rows = rows.filter(Q(title__icontains=q) | Q(job__job_id__icontains=q) | Q(job__role__icontains=q))
         return Response(TailoredResumeSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -1413,11 +1659,14 @@ class TailoredResumeListCreateView(APIView):
         else:
             return Response({'resume': ['Original resume reference is required.']}, status=status.HTTP_400_BAD_REQUEST)
 
-        created = TailoredResume.objects.create(
-            job=job,
-            resume=resume,
-            name=name,
+        created = Resume.objects.create(
+            user=request.user,
+            title=name,
             builder_data=sanitize_builder_data(builder_data),
+            is_tailored=True,
+            job=job,
+            source_resume=resume,
+            status='optimized',
         )
         return Response(TailoredResumeSerializer(created).data, status=status.HTTP_201_CREATED)
 
@@ -1587,7 +1836,7 @@ class TailorResumeView(APIView):
         if not keywords:
             return Response({'detail': 'Could not extract JD keywords.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        resumes = list(Resume.objects.filter(user=request.user).order_by('-updated_at', '-created_at')) if is_authenticated else []
+        resumes = list(Resume.objects.filter(user=request.user, is_tailored=False).order_by('-updated_at', '-created_at')) if is_authenticated else []
         best = find_best_resume_match(keywords, resumes)
         latest_resume = resumes[0] if resumes else None
 
@@ -1676,6 +1925,8 @@ class TailorResumeView(APIView):
             title=title,
             original_text=plain_text,
             builder_data=tailored_builder,
+            is_tailored=True,
+            source_resume=reference_resume or best.resume or latest_resume,
             status='optimized',
         )
         self._enforce_resume_limit(request.user)
@@ -1874,6 +2125,7 @@ class ApplicationTrackingListCreateView(APIView):
             'referral',
             'job_inquire',
             'follow_up_applied',
+            'follow_up_referral',
             'follow_up_call',
             'follow_up_interview',
             'custom',
@@ -1895,13 +2147,41 @@ class ApplicationTrackingListCreateView(APIView):
             message = legacy
         if not choice:
             choice = 'cold_applied'
+        if choice == 'custom' and (not subject or not message):
+            raise ValidationError({'detail': 'Custom mail requires both subject and body.'})
         if choice != 'custom':
             subject = ''
             message = ''
         return choice, subject, message
 
     def _is_follow_up_template(self, choice):
-        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_call', 'follow_up_interview'}
+        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
+
+    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
+        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
+        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
+
+        if choice == 'custom':
+            return 'complete_ai'
+        if choice == 'cold_applied':
+            if compose_mode == 'partial_ai':
+                return 'partial_ai'
+            current = str(current_value or '').strip().lower()
+            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
+        return 'hardcoded'
+
+    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
+        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
+        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
+
+        if choice == 'custom':
+            return 'complete_ai'
+        if choice == 'cold_applied':
+            if compose_mode == 'partial_ai':
+                return 'partial_ai'
+            current = str(current_value or '').strip().lower()
+            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
+        return 'hardcoded'
 
     def _resolve_company(self, request, payload):
         company_id = payload.get('company')
@@ -2045,19 +2325,22 @@ class ApplicationTrackingListCreateView(APIView):
     def _serialize_tracking_row(self, tracking, available_hr_map):
         job = tracking.job
         resume = tracking.resume
-        tailored_resume = tracking.tailored_resume
+        tailored_resume = tracking.resume if tracking.resume_id and tracking.resume and bool(getattr(tracking.resume, 'is_tailored', False)) else None
         company = job.company if job and job.company_id else None
-        mail_tracking = tracking.mail_tracking if tracking.mail_tracking_id else None
+        mail_tracking = _mail_tracking_for_row(tracking)
+        mailed_at_value = _mail_tracking_sent_at(mail_tracking)
+        replied_at_value = _mail_tracking_replied_at(mail_tracking)
+        got_replied_value = _mail_tracking_got_replied(mail_tracking)
         available = available_hr_map.get(company.id if company else None, [])
         selected = list(tracking.selected_hrs.all())
         tailored_rows = []
         oldest_tailored = None
         if job:
-            related_tailored = list(job.tailored_resumes.all().order_by('created_at', 'id'))
+            related_tailored = list(job.resumes.filter(is_tailored=True).order_by('created_at', 'id'))
             tailored_rows = [
                 {
                     'id': item.id,
-                    'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+                    'name': str(item.title or '').strip() or f'Tailored Resume #{item.id}',
                     'created_at': item.created_at.isoformat() if item.created_at else None,
                 }
                 for item in related_tailored
@@ -2066,12 +2349,12 @@ class ApplicationTrackingListCreateView(APIView):
                 oldest = related_tailored[0]
                 oldest_tailored = {
                     'id': oldest.id,
-                    'name': str(oldest.name or '').strip() or f'Tailored Resume #{oldest.id}',
+                    'name': str(oldest.title or '').strip() or f'Tailored Resume #{oldest.id}',
                     'created_at': oldest.created_at.isoformat() if oldest.created_at else None,
                     'builder_data': oldest.builder_data or {},
                 }
         resume_preview = None
-        if resume:
+        if resume and not bool(getattr(resume, 'is_tailored', False)):
             resume_builder = resume.builder_data or {}
             resume_file_url = ''
             if getattr(resume, 'file', None):
@@ -2092,7 +2375,7 @@ class ApplicationTrackingListCreateView(APIView):
             if builder_has_substance(tailored_builder):
                 tailored_resume_preview = {
                     'id': tailored_resume.id,
-                    'title': str(tailored_resume.name or '').strip() or f'Tailored Resume #{tailored_resume.id}',
+                    'title': str(tailored_resume.title or '').strip() or f'Tailored Resume #{tailored_resume.id}',
                     'builder_data': tailored_builder,
                 }
         milestones = [
@@ -2103,9 +2386,22 @@ class ApplicationTrackingListCreateView(APIView):
             }
             for item in tracking.actions.all().order_by('created_at')[:10]
         ]
+        events_query = Q(tracking=tracking)
+        mail_tracking = _mail_tracking_for_row(tracking)
+        if mail_tracking:
+            events_query = events_query | Q(tracking__isnull=True, mail_tracking_id=mail_tracking.id)
+        delivery_events = list(
+            MailTrackingEvent.objects
+            .filter(events_query)
+            .order_by('action_at', 'created_at')
+        )
         template_choice = str(tracking.template_choice or 'cold_applied').strip() or 'cold_applied'
         template_subject = str(tracking.template_subject or '')
         template_message = str(tracking.template_message or '')
+        mailed_at_value = _mail_tracking_sent_at(mail_tracking)
+        replied_at_value = _mail_tracking_replied_at(mail_tracking)
+        got_replied_value = _mail_tracking_got_replied(mail_tracking)
+        delivery_summary = _build_tracking_delivery_summary(delivery_events)
         return {
             'id': tracking.id,
             'company': company.id if company else None,
@@ -2119,11 +2415,14 @@ class ApplicationTrackingListCreateView(APIView):
             'resume_preview': resume_preview,
             'tailored_resume_preview': tailored_resume_preview,
             'tailored_resume': tailored_resume.id if tailored_resume else None,
-            'tailored_resume_name': str(tailored_resume.name or '').strip() if tailored_resume else '',
+            'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(job.is_closed) if job else False,
             'is_removed': bool(job.is_removed) if job else False,
             'mailed': bool(tracking.mailed),
-            'mail_delivery_status': str(tracking.mail_delivery_status or 'pending'),
+            'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
+                delivery_events,
+                fallback_status=tracking.mail_delivery_status,
+            ),
             'applied_date': job.applied_at.isoformat() if job and job.applied_at else None,
             'posting_date': job.date_of_posting.isoformat() if job and job.date_of_posting else None,
             'is_open': bool(not bool(job.is_closed) if job else True),
@@ -2134,23 +2433,52 @@ class ApplicationTrackingListCreateView(APIView):
             'achievement_id': tracking.achievement_id,
             'achievement_name': str(tracking.achievement.name or '').strip() if tracking.achievement_id and tracking.achievement else '',
             'achievement_text': str(tracking.achievement.achievement or '').strip() if tracking.achievement_id and tracking.achievement else '',
+            'achievement_ids_ordered': list(tracking.achievement_ids_ordered or []),
+            'template_ids_ordered': list(tracking.achievement_ids_ordered or []),
+            'selected_achievements': [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip(),
+                    'achievement': str(item.achievement or '').strip(),
+                    'paragraph': str(item.achievement or '').strip(),
+                    'category': str(item.category or 'general').strip(),
+                }
+                for item in _resolve_tracking_templates(
+                    tracking.user,
+                    tracking.achievement_ids_ordered if isinstance(tracking.achievement_ids_ordered, list) else [],
+                )
+            ],
+            'selected_templates': [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip(),
+                    'paragraph': str(item.achievement or '').strip(),
+                    'category': str(item.category or 'general').strip(),
+                }
+                for item in _resolve_tracking_templates(
+                    tracking.user,
+                    tracking.achievement_ids_ordered if isinstance(tracking.achievement_ids_ordered, list) else [],
+                )
+            ],
             'template_choice': template_choice,
             'template_subject': template_subject,
             'template_message': template_message,
-            'hardcoded_follow_up': bool(tracking.hardcoded_follow_up),
+            'compose_mode': self._resolve_compose_mode({}, template_choice, getattr(tracking, 'compose_mode', 'hardcoded')),
+            'hardcoded_follow_up': self._resolve_compose_mode({}, template_choice, getattr(tracking, 'compose_mode', 'hardcoded')) != 'complete_ai',
             'schedule_time': tracking.schedule_time.isoformat() if tracking.schedule_time else None,
             'template_name': (template_message if template_choice == 'custom' else template_choice),
+            'delivery_summary': delivery_summary,
             'mail_type': str(tracking.mail_type or 'fresh'),
             'action': str(tracking.mail_type or 'fresh'),
-            'got_replied': bool(mail_tracking.got_replied) if mail_tracking else False,
+            'got_replied': got_replied_value,
             'needs_tailored': False,
             'tailoring_scope': '',
             'is_freezed': bool(tracking.is_freezed),
             'freezed_at': tracking.freezed_at.isoformat() if tracking.freezed_at else None,
             'mail_tracking_id': mail_tracking.id if mail_tracking else None,
-            'maild_at': mail_tracking.mailed_at.isoformat() if mail_tracking and mail_tracking.mailed_at else None,
-            'mailed_at': mail_tracking.mailed_at.isoformat() if mail_tracking and mail_tracking.mailed_at else None,
-            'replied_at': mail_tracking.replied_at.isoformat() if mail_tracking and mail_tracking.replied_at else None,
+            'maild_at': mailed_at_value.isoformat() if mailed_at_value else None,
+            'mailed_at': mailed_at_value.isoformat() if mailed_at_value else None,
+            'replied_at': replied_at_value.isoformat() if replied_at_value else None,
             'milestones': milestones,
             'created_at': tracking.created_at.isoformat() if tracking.created_at else '',
             'updated_at': tracking.updated_at.isoformat() if tracking.updated_at else '',
@@ -2161,9 +2489,9 @@ class ApplicationTrackingListCreateView(APIView):
 
     def get(self, request):
         queryset = (
-            Tracking.objects.filter(user=request.user, is_removed=False)
-            .select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement')
-            .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
+            Tracking.objects.filter(user=request.user)
+            .select_related('job__company', 'resume', 'mail_tracking_record', 'achievement')
+            .prefetch_related('selected_hrs', 'actions', 'job__resumes')
             .order_by('-created_at')
         )
         rows, meta = _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100)
@@ -2203,35 +2531,48 @@ class ApplicationTrackingListCreateView(APIView):
         resume = self._resolve_resume(request, payload)
         if payload.get('resume') not in [None, '', 'null'] and not resume:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
-        achievement = None
-        achievement_raw = str(payload.get('achievement') or payload.get('achievement_id') or '').strip()
-        if achievement_raw:
-            achievement = Achievement.objects.filter(id=achievement_raw, user=request.user).first()
-            if not achievement:
-                return Response({'detail': 'Achievement not found.'}, status=status.HTTP_400_BAD_REQUEST)
-
+        tailored_resume = None
+        tailored_resume_id = str(payload.get('tailored_resume') or '').strip()
+        if tailored_resume_id:
+            tailored_resume = Resume.objects.filter(id=tailored_resume_id, user=request.user, is_tailored=True).first()
+            if not tailored_resume and job:
+                tailored_resume = job.resumes.filter(user=request.user, is_tailored=True).order_by('created_at', 'id').first()
+            if not tailored_resume:
+                return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not resume and not tailored_resume:
+            return Response({'detail': 'Attachment is mandatory. Select one resume or tailored resume.'}, status=status.HTTP_400_BAD_REQUEST)
+        compose_mode = self._resolve_compose_mode(payload, template_choice, 'hardcoded')
+        template_ids_ordered = _normalize_tracking_template_ids(payload, request.data)
+        if not template_ids_ordered:
+            legacy_template_raw = str(payload.get('template') or payload.get('template_id') or payload.get('achievement') or payload.get('achievement_id') or '').strip()
+            if legacy_template_raw:
+                template_ids_ordered = [legacy_template_raw]
+        templates = _resolve_tracking_templates(request.user, template_ids_ordered)
+        if template_ids_ordered and len(templates) != len(template_ids_ordered):
+            return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
+        template_error = _validate_tracking_templates(templates, template_choice)
+        if template_error:
+            return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
+        achievement = templates[0] if templates else None
         tracking = Tracking.objects.create(
             user=request.user,
             job=job,
             achievement=achievement,
+            achievement_ids_ordered=[item.id for item in templates],
             resume=resume,
             template_choice=template_choice,
             template_subject=template_subject,
             template_message=template_message,
-            hardcoded_follow_up=self._to_bool(payload.get('hardcoded_follow_up'), default=True),
+            compose_mode=compose_mode,
+            hardcoded_follow_up=(compose_mode != 'complete_ai'),
             schedule_time=schedule_time,
             mail_delivery_status='pending',
             mailed=self._to_bool(payload.get('mailed'), default=False),
             mail_type=mail_type,
         )
-        tailored_resume_id = str(payload.get('tailored_resume') or '').strip()
-        if tailored_resume_id:
-            tailored = TailoredResume.objects.filter(id=tailored_resume_id, job=job).first() if job else TailoredResume.objects.filter(id=tailored_resume_id).first()
-            if not tailored and job:
-                job_tailored = job.tailored_resumes.all().order_by('created_at', 'id')
-                tailored = job_tailored.first()
-            tracking.tailored_resume = tailored
-            tracking.save(update_fields=['tailored_resume', 'updated_at'])
+        if tailored_resume:
+            tracking.resume = tailored_resume
+            tracking.save(update_fields=['resume', 'updated_at'])
         self._sync_selected_hrs(request, tracking, payload)
         template_department_error = _validate_template_against_employees(
             tracking.template_choice,
@@ -2254,7 +2595,7 @@ class ApplicationTrackingListCreateView(APIView):
         available_hr_map = {company.id: list(available)}
         return Response(
             self._serialize_tracking_row(
-                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement').first(),
+                Tracking.objects.filter(id=tracking.id).prefetch_related('selected_hrs', 'actions', 'job__resumes').select_related('job__company', 'resume', 'mail_tracking_record', 'achievement').first(),
                 available_hr_map,
             ),
             status=status.HTTP_201_CREATED,
@@ -2266,7 +2607,7 @@ class ApplicationTrackingDetailView(APIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def _get_object(self, request, tracking_id):
-        return Tracking.objects.get(id=tracking_id, user=request.user, is_removed=False)
+        return Tracking.objects.get(id=tracking_id, user=request.user)
 
     def _get_object_any(self, request, tracking_id):
         return Tracking.objects.get(id=tracking_id, user=request.user)
@@ -2318,6 +2659,7 @@ class ApplicationTrackingDetailView(APIView):
             'referral',
             'job_inquire',
             'follow_up_applied',
+            'follow_up_referral',
             'follow_up_call',
             'follow_up_interview',
             'custom',
@@ -2339,18 +2681,33 @@ class ApplicationTrackingDetailView(APIView):
             message = legacy
         if not choice:
             choice = 'cold_applied'
+        if choice == 'custom' and (not subject or not message):
+            raise ValidationError({'detail': 'Custom mail requires both subject and body.'})
         if choice != 'custom':
             subject = ''
             message = ''
         return choice, subject, message
 
     def _is_follow_up_template(self, choice):
-        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_call', 'follow_up_interview'}
+        return str(choice or '').strip().lower() in {'follow_up_applied', 'follow_up_referral', 'follow_up_call', 'follow_up_interview'}
+
+    def _resolve_compose_mode(self, payload, template_choice, current_value='hardcoded'):
+        choice = str(template_choice or 'cold_applied').strip().lower() or 'cold_applied'
+        compose_mode = str(payload.get('compose_mode') or '').strip().lower()
+
+        if choice == 'custom':
+            return 'complete_ai'
+        if choice == 'cold_applied':
+            if compose_mode == 'partial_ai':
+                return 'partial_ai'
+            current = str(current_value or '').strip().lower()
+            return 'partial_ai' if current == 'partial_ai' else 'hardcoded'
+        return 'hardcoded'
 
     def _serialize_tracking_row(self, row):
         company = row.job.company if row.job_id and row.job and row.job.company_id else None
         resume = row.resume if row.resume_id else None
-        tailored_resume = row.tailored_resume if getattr(row, 'tailored_resume_id', None) else None
+        tailored_resume = row.resume if row.resume_id and row.resume and bool(getattr(row.resume, 'is_tailored', False)) else None
         available = []
         if company:
             available = list(Employee.objects.filter(user=row.user, company_id=company.id, working_mail=True).order_by('name'))
@@ -2358,11 +2715,11 @@ class ApplicationTrackingDetailView(APIView):
         tailored_rows = []
         oldest_tailored = None
         if row.job_id and row.job:
-            related_tailored = list(row.job.tailored_resumes.all().order_by('created_at', 'id'))
+            related_tailored = list(row.job.resumes.filter(is_tailored=True).order_by('created_at', 'id'))
             tailored_rows = [
                 {
                     'id': item.id,
-                    'name': str(item.name or '').strip() or f'Tailored Resume #{item.id}',
+                    'name': str(item.title or '').strip() or f'Tailored Resume #{item.id}',
                     'created_at': item.created_at.isoformat() if item.created_at else None,
                 }
                 for item in related_tailored
@@ -2371,12 +2728,12 @@ class ApplicationTrackingDetailView(APIView):
                 oldest = related_tailored[0]
                 oldest_tailored = {
                     'id': oldest.id,
-                    'name': str(oldest.name or '').strip() or f'Tailored Resume #{oldest.id}',
+                    'name': str(oldest.title or '').strip() or f'Tailored Resume #{oldest.id}',
                     'created_at': oldest.created_at.isoformat() if oldest.created_at else None,
                     'builder_data': oldest.builder_data or {},
                 }
         resume_preview = None
-        if resume:
+        if resume and not bool(getattr(resume, 'is_tailored', False)):
             resume_builder = resume.builder_data or {}
             resume_file_url = ''
             if getattr(resume, 'file', None):
@@ -2397,7 +2754,7 @@ class ApplicationTrackingDetailView(APIView):
             if builder_has_substance(tailored_builder):
                 tailored_resume_preview = {
                     'id': tailored_resume.id,
-                    'title': str(tailored_resume.name or '').strip() or f'Tailored Resume #{tailored_resume.id}',
+                    'title': str(tailored_resume.title or '').strip() or f'Tailored Resume #{tailored_resume.id}',
                     'builder_data': tailored_builder,
                 }
         milestones = [
@@ -2420,8 +2777,9 @@ class ApplicationTrackingDetailView(APIView):
             for emp in selected
         ]
         events_query = Q(tracking=row)
-        if row.mail_tracking_id:
-            events_query = events_query | Q(tracking__isnull=True, mail_tracking_id=row.mail_tracking_id)
+        mail_tracking = _mail_tracking_for_row(row)
+        if mail_tracking:
+            events_query = events_query | Q(tracking__isnull=True, mail_tracking_id=mail_tracking.id)
         event_rows = (
             MailTrackingEvent.objects
             .filter(events_query)
@@ -2453,6 +2811,11 @@ class ApplicationTrackingDetailView(APIView):
         template_choice = str(row.template_choice or 'cold_applied').strip() or 'cold_applied'
         template_subject = str(row.template_subject or '')
         template_message = str(row.template_message or '')
+        mailed_at_value = _mail_tracking_sent_at(mail_tracking)
+        replied_at_value = _mail_tracking_replied_at(mail_tracking)
+        got_replied_value = _mail_tracking_got_replied(mail_tracking)
+        delivery_summary = _build_tracking_delivery_summary(event_rows)
+        employee_delivery_overview = _build_tracking_employee_delivery_overview(selected_employees, mail_tracking)
         return {
             'id': row.id,
             'company': company.id if company else None,
@@ -2466,11 +2829,14 @@ class ApplicationTrackingDetailView(APIView):
             'resume_preview': resume_preview,
             'tailored_resume_preview': tailored_resume_preview,
             'tailored_resume': tailored_resume.id if tailored_resume else None,
-            'tailored_resume_name': str(tailored_resume.name or '').strip() if tailored_resume else '',
+            'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(row.job.is_closed) if row.job_id and row.job else False,
             'is_removed': bool(row.job.is_removed) if row.job_id and row.job else False,
             'mailed': bool(row.mailed),
-            'mail_delivery_status': str(row.mail_delivery_status or 'pending'),
+            'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
+                event_rows,
+                fallback_status=row.mail_delivery_status,
+            ),
             'applied_date': row.job.applied_at.isoformat() if row.job_id and row.job and row.job.applied_at else None,
             'posting_date': row.job.date_of_posting.isoformat() if row.job_id and row.job and row.job.date_of_posting else None,
             'is_open': bool(not row.job.is_closed) if row.job_id and row.job else True,
@@ -2481,25 +2847,55 @@ class ApplicationTrackingDetailView(APIView):
             'achievement_id': row.achievement_id,
             'achievement_name': str(row.achievement.name or '').strip() if row.achievement_id and row.achievement else '',
             'achievement_text': str(row.achievement.achievement or '').strip() if row.achievement_id and row.achievement else '',
+            'achievement_ids_ordered': list(row.achievement_ids_ordered or []),
+            'template_ids_ordered': list(row.achievement_ids_ordered or []),
+            'selected_achievements': [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip(),
+                    'achievement': str(item.achievement or '').strip(),
+                    'paragraph': str(item.achievement or '').strip(),
+                    'category': str(item.category or 'general').strip(),
+                }
+                for item in _resolve_tracking_templates(
+                    row.user,
+                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else [],
+                )
+            ],
+            'selected_templates': [
+                {
+                    'id': item.id,
+                    'name': str(item.name or '').strip(),
+                    'paragraph': str(item.achievement or '').strip(),
+                    'category': str(item.category or 'general').strip(),
+                }
+                for item in _resolve_tracking_templates(
+                    row.user,
+                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else [],
+                )
+            ],
             'selected_employees': selected_employees,
             'template_choice': template_choice,
             'template_subject': template_subject,
             'template_message': template_message,
-            'hardcoded_follow_up': bool(row.hardcoded_follow_up),
+            'compose_mode': self._resolve_compose_mode({}, template_choice, getattr(row, 'compose_mode', 'hardcoded')),
+            'hardcoded_follow_up': self._resolve_compose_mode({}, template_choice, getattr(row, 'compose_mode', 'hardcoded')) != 'complete_ai',
             'schedule_time': row.schedule_time.isoformat() if row.schedule_time else None,
             'template_name': (template_message if template_choice == 'custom' else template_choice),
             'mail_events': mail_events,
+            'delivery_summary': delivery_summary,
+            'employee_delivery_overview': employee_delivery_overview,
             'mail_type': str(row.mail_type or 'fresh'),
             'action': str(row.mail_type or 'fresh'),
-            'got_replied': bool(row.mail_tracking.got_replied) if row.mail_tracking_id and row.mail_tracking else False,
+            'got_replied': got_replied_value,
             'needs_tailored': False,
             'tailoring_scope': '',
             'is_freezed': bool(row.is_freezed),
             'freezed_at': row.freezed_at.isoformat() if row.freezed_at else None,
-            'mail_tracking_id': row.mail_tracking.id if row.mail_tracking_id else None,
-            'maild_at': row.mail_tracking.mailed_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.mailed_at else None,
-            'mailed_at': row.mail_tracking.mailed_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.mailed_at else None,
-            'replied_at': row.mail_tracking.replied_at.isoformat() if row.mail_tracking_id and row.mail_tracking and row.mail_tracking.replied_at else None,
+            'mail_tracking_id': mail_tracking.id if mail_tracking else None,
+            'maild_at': mailed_at_value.isoformat() if mailed_at_value else None,
+            'mailed_at': mailed_at_value.isoformat() if mailed_at_value else None,
+            'replied_at': replied_at_value.isoformat() if replied_at_value else None,
             'milestones': milestones,
             'created_at': row.created_at.isoformat() if row.created_at else '',
             'updated_at': row.updated_at.isoformat() if row.updated_at else '',
@@ -2509,9 +2905,9 @@ class ApplicationTrackingDetailView(APIView):
         try:
             row = (
                 Tracking.objects
-                .filter(id=tracking_id, user=request.user, is_removed=False)
-                .select_related('job__company', 'mail_tracking', 'resume', 'tailored_resume', 'achievement')
-                .prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes')
+                .filter(id=tracking_id, user=request.user)
+                .select_related('job__company', 'mail_tracking_record', 'resume', 'achievement')
+                .prefetch_related('selected_hrs', 'actions', 'job__resumes')
                 .first()
             )
             if not row:
@@ -2579,30 +2975,57 @@ class ApplicationTrackingDetailView(APIView):
         if 'tailored_resume' in payload:
             raw_tailored_id = str(payload.get('tailored_resume') or '').strip()
             if not raw_tailored_id:
-                row.tailored_resume = None
+                if row.resume_id and row.resume and bool(getattr(row.resume, 'is_tailored', False)):
+                    row.resume = None
             else:
-                tailored = TailoredResume.objects.filter(id=raw_tailored_id, job=row.job).first() if row.job_id and row.job else TailoredResume.objects.filter(id=raw_tailored_id).first()
+                tailored = Resume.objects.filter(id=raw_tailored_id, user=request.user, is_tailored=True).first()
                 if not tailored and row.job_id and row.job:
-                    tailored = row.job.tailored_resumes.all().order_by('created_at', 'id').first()
+                    tailored = row.job.resumes.filter(user=request.user, is_tailored=True).order_by('created_at', 'id').first()
                 if not tailored:
                     return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
-                row.tailored_resume = tailored
-        if 'achievement' in payload or 'achievement_id' in payload:
-            achievement_raw = str(payload.get('achievement') or payload.get('achievement_id') or '').strip()
-            if not achievement_raw:
-                row.achievement = None
-            else:
-                achievement = Achievement.objects.filter(id=achievement_raw, user=request.user).first()
-                if not achievement:
-                    return Response({'detail': 'Achievement not found.'}, status=status.HTTP_400_BAD_REQUEST)
-                row.achievement = achievement
+                row.resume = tailored
+        if not row.resume_id:
+            return Response({'detail': 'Attachment is mandatory. Select one resume or tailored resume.'}, status=status.HTTP_400_BAD_REQUEST)
+        if 'template' in payload or 'template_id' in payload or 'template_ids_ordered' in payload or 'achievement' in payload or 'achievement_id' in payload or 'achievement_ids_ordered' in payload:
+            template_ids_ordered = _normalize_tracking_template_ids(payload, request.data)
+            if not template_ids_ordered:
+                legacy_template_raw = str(payload.get('template') or payload.get('template_id') or payload.get('achievement') or payload.get('achievement_id') or '').strip()
+                if legacy_template_raw:
+                    template_ids_ordered = [legacy_template_raw]
+            templates = _resolve_tracking_templates(request.user, template_ids_ordered)
+            if template_ids_ordered and len(templates) != len(template_ids_ordered):
+                return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
+            template_error = _validate_tracking_templates(
+                templates,
+                row.template_choice,
+            )
+            if template_error:
+                return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
+            row.achievement_ids_ordered = [item.id for item in templates]
+            row.achievement = templates[0] if templates else None
         if any(key in payload for key in ['template_choice', 'template_subject', 'custom_subject', 'template_message', 'template_name']):
             template_choice, template_subject, template_message = self._extract_template_fields(payload)
             row.template_choice = template_choice
             row.template_subject = template_subject
             row.template_message = template_message
+            row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
+        elif 'compose_mode' in payload:
+            row.compose_mode = self._resolve_compose_mode(payload, row.template_choice, getattr(row, 'compose_mode', 'hardcoded'))
         if 'hardcoded_follow_up' in payload:
             row.hardcoded_follow_up = self._to_bool(payload.get('hardcoded_follow_up'), default=row.hardcoded_follow_up)
+        row.hardcoded_follow_up = self._resolve_compose_mode({}, row.template_choice, getattr(row, 'compose_mode', 'hardcoded')) != 'complete_ai'
+        if not any(key in payload for key in ['template', 'template_id', 'template_ids_ordered', 'achievement', 'achievement_id', 'achievement_ids_ordered']):
+            template_error = _validate_tracking_templates(
+                _resolve_tracking_templates(
+                    request.user,
+                    row.achievement_ids_ordered if isinstance(row.achievement_ids_ordered, list) else (
+                        [str(row.achievement_id)] if row.achievement_id else []
+                    ),
+                ),
+                row.template_choice,
+            )
+            if template_error:
+                return Response({'detail': template_error}, status=status.HTTP_400_BAD_REQUEST)
         if 'mail_type' in payload or 'action' in payload:
             action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
             if action_text in {'fresh', 'followed_up'}:
@@ -2616,23 +3039,9 @@ class ApplicationTrackingDetailView(APIView):
             row.is_freezed = next_freezed
             row.freezed_at = timezone.now() if next_freezed else None
         if any(key in payload for key in ['maild_at', 'mailed_at', 'replied_at', 'got_replied', 'mailed']):
-            if not row.mail_tracking_id:
-                row.mail_tracking = MailTracking.objects.create(
-                    user=request.user,
-                    employee=None,
-                    job=job,
-                    mailed=row.mailed,
-                    got_replied=self._to_bool(payload.get('got_replied'), default=False),
-                )
-            mailed_at_payload = payload.get('mailed_at', payload.get('maild_at'))
-            if mailed_at_payload is not None:
-                row.mail_tracking.mailed_at = self._to_datetime(mailed_at_payload)
-            if 'replied_at' in payload:
-                row.mail_tracking.replied_at = self._to_datetime(payload.get('replied_at'))
-            row.mail_tracking.mailed = row.mailed
-            if 'got_replied' in payload:
-                row.mail_tracking.got_replied = self._to_bool(payload.get('got_replied'), default=row.mail_tracking.got_replied)
-            row.mail_tracking.save()
+            mail_tracking = _mail_tracking_for_row(row)
+            if not mail_tracking:
+                mail_tracking = MailTracking.objects.create(user=request.user, tracking=row, resume=row.resume)
 
         selected_hr_ids = payload.get('selected_hr_ids')
         selected_hrs = payload.get('selected_hrs')
@@ -2694,7 +3103,7 @@ class ApplicationTrackingDetailView(APIView):
                 row.mailed = True
             row.save(update_fields=['mail_type', 'mailed', 'updated_at'])
 
-        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'tailored_resume', 'mail_tracking', 'achievement').prefetch_related('selected_hrs', 'actions', 'job__tailored_resumes').first()
+        fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'mail_tracking_record', 'achievement').prefetch_related('selected_hrs', 'actions', 'job__resumes').first()
         return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
@@ -2705,12 +3114,134 @@ class ApplicationTrackingDetailView(APIView):
         if self._is_hard_delete(request):
             row.hard_delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
-        row.is_removed = True
         row.is_freezed = True
-        row.removed_at = timezone.now()
-        row.freezed_at = row.freezed_at or row.removed_at
-        row.save(update_fields=['is_removed', 'is_freezed', 'removed_at', 'freezed_at', 'updated_at'])
-        return Response({'status': 'soft_deleted', 'id': row.id}, status=status.HTTP_200_OK)
+        row.freezed_at = row.freezed_at or timezone.now()
+        row.save(update_fields=['is_freezed', 'freezed_at', 'updated_at'])
+        return Response({'status': 'freezed', 'id': row.id}, status=status.HTTP_200_OK)
+
+
+class ApplicationTrackingMailTestView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get_row(self, request, tracking_id):
+        return (
+            Tracking.objects
+            .filter(id=tracking_id, user=request.user)
+            .select_related('job__company', 'resume', 'achievement', 'user')
+            .prefetch_related('selected_hrs')
+            .first()
+        )
+
+    def _generate_previews(self, row, regenerate_options=None):
+        command = SendTrackingMailsCommand()
+        profile = command._get_profile(row.user_id)
+        achievements = command._get_achievements(row)
+        company = row.job.company if row.job_id and row.job and row.job.company_id else None
+        pattern = str(getattr(company, 'mail_format', '') or '').strip()
+        compose_mode = command._resolve_compose_mode(row, getattr(row, 'template_choice', 'cold_applied'))
+        effective_use_ai = command._should_use_ai_for_row(row)
+        employees = [emp for emp in row.selected_hrs.all()]
+        previews = []
+        for employee in employees:
+            to_email = command._resolve_employee_email(employee, pattern)
+            subject, body = command._build_mail(
+                row,
+                employee,
+                profile,
+                achievements,
+                use_ai=effective_use_ai,
+            )
+            if regenerate_options and compose_mode in {'partial_ai', 'complete_ai'}:
+                adjusted = self._adjust_preview_with_ai(command, row, employee, to_email, subject, body, regenerate_options)
+                if adjusted:
+                    subject = adjusted.get('subject') or subject
+                    body = adjusted.get('body') or body
+            previews.append({
+                'employee_id': employee.id,
+                'employee_name': str(employee.name or '').strip(),
+                'email': to_email,
+                'subject': subject,
+                'body': body,
+                'compose_mode': compose_mode,
+            })
+        return previews
+
+    def _adjust_preview_with_ai(self, command, row, employee, to_email, subject, body, options):
+        tone = str(options.get('tone') or '').strip() or 'professional'
+        length = str(options.get('length') or '').strip() or 'balanced'
+        char_limit = str(options.get('char_limit') or '').strip()
+        custom_prompt = str(options.get('custom_prompt') or '').strip()
+        prompt = (
+            "Rewrite the following job outreach email while keeping the same factual intent and recipient.\n"
+            "Return STRICT JSON only with keys subject and body.\n"
+            f"Recipient: {str(employee.name or '').strip() or 'there'}\n"
+            f"Recipient email: {to_email or '(unknown)'}\n"
+            f"Tone: {tone}\n"
+            f"Length: {length}\n"
+            f"Approx max characters for body: {char_limit or 'no strict limit'}\n"
+            f"Extra instructions: {custom_prompt or '(none)'}\n\n"
+            f"Current subject:\n{subject}\n\n"
+            f"Current body:\n{body}\n"
+        )
+        ai, error = command._openai_generate_mail_json(prompt)
+        if ai and not error:
+            return {
+                'subject': str(ai.get('subject') or '').strip(),
+                'body': str(ai.get('body') or '').strip(),
+            }
+        return None
+
+    def get(self, request, tracking_id):
+        row = self._get_row(request, tracking_id)
+        if not row:
+            return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({
+            'approved_test_mail_payloads': row.approved_test_mail_payloads if isinstance(row.approved_test_mail_payloads, list) else [],
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request, tracking_id):
+        row = self._get_row(request, tracking_id)
+        if not row:
+            return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        action = str(request.data.get('action') or 'generate').strip().lower()
+        if action == 'generate':
+            regenerate_options = request.data.get('regenerate_options')
+            previews = self._generate_previews(row, regenerate_options=regenerate_options if isinstance(regenerate_options, dict) else None)
+            return Response({
+                'tracking_id': row.id,
+                'previews': previews,
+                'compose_mode': SendTrackingMailsCommand()._resolve_compose_mode(row, getattr(row, 'template_choice', 'cold_applied')),
+            }, status=status.HTTP_200_OK)
+
+        if action == 'save':
+            previews = request.data.get('previews')
+            if not isinstance(previews, list) or not previews:
+                return Response({'detail': 'Preview list is required.'}, status=status.HTTP_400_BAD_REQUEST)
+            cleaned = []
+            for item in previews:
+                if not isinstance(item, dict):
+                    continue
+                subject = str(item.get('subject') or '').strip()
+                body = str(item.get('body') or '').strip()
+                employee_id = item.get('employee_id')
+                if not employee_id or not subject or not body:
+                    continue
+                cleaned.append({
+                    'employee_id': employee_id,
+                    'employee_name': str(item.get('employee_name') or '').strip(),
+                    'email': str(item.get('email') or '').strip(),
+                    'subject': subject,
+                    'body': body,
+                    'saved_at': timezone.now().isoformat(),
+                })
+            if not cleaned:
+                return Response({'detail': 'No valid preview rows to save.'}, status=status.HTTP_400_BAD_REQUEST)
+            row.approved_test_mail_payloads = cleaned
+            row.save(update_fields=['approved_test_mail_payloads', 'updated_at'])
+            return Response({'status': 'saved', 'approved_test_mail_payloads': cleaned}, status=status.HTTP_200_OK)
+
+        return Response({'detail': 'Unsupported action.'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CompanyListCreateView(APIView):
@@ -2849,7 +3380,7 @@ class JobListCreateView(APIView):
 
     def get(self, request):
         include_removed = str(request.query_params.get('include_removed') or '').strip().lower() in {'1', 'true', 'yes', 'y'}
-        rows = Job.objects.filter(user=request.user).select_related('company').prefetch_related('tailored_resumes')
+        rows = Job.objects.filter(user=request.user).select_related('company').prefetch_related('resumes')
         if not include_removed:
             rows = rows.filter(is_removed=False)
 
