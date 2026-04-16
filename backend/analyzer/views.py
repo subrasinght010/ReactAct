@@ -464,6 +464,12 @@ def _tracking_action_delivery_fallback(tracking):
     return {'mailed': bool(getattr(tracking, 'mailed', False)), 'status': str(getattr(tracking, 'mail_delivery_status', 'pending') or 'pending')}
 
 
+def _should_force_pending_display(tracking):
+    if not tracking:
+        return False
+    return (not bool(getattr(tracking, 'mailed', False))) and str(getattr(tracking, 'mail_delivery_status', 'pending') or 'pending').strip().lower() == 'pending'
+
+
 def _tracking_sent_employee_map_for_day(tracking, action_type, action_at):
     if not tracking or not action_at:
         return {}
@@ -2836,6 +2842,7 @@ class ApplicationTrackingListCreateView(APIView):
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
         action_delivery_fallback = _tracking_action_delivery_fallback(tracking)
+        force_pending_display = _should_force_pending_display(tracking)
         is_currently_scheduled = bool(tracking.schedule_time)
         available = available_hr_map.get(company.id if company else None, [])
         selected = list(tracking.selected_hrs.all())
@@ -2924,10 +2931,10 @@ class ApplicationTrackingListCreateView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(job.is_closed) if job else False,
             'is_removed': bool(job.is_removed) if job else False,
-            'mailed': False if is_currently_scheduled else bool(tracking.mailed),
+            'mailed': False if is_currently_scheduled else (False if force_pending_display else bool(tracking.mailed)),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
-                [] if is_currently_scheduled else delivery_events,
-                fallback_status='pending' if is_currently_scheduled else (
+                [] if (is_currently_scheduled or force_pending_display) else delivery_events,
+                fallback_status='pending' if (is_currently_scheduled or force_pending_display) else (
                     (str(tracking.mail_delivery_status or '').strip().lower() or 'pending')
                 ),
             ),
@@ -3375,6 +3382,7 @@ class ApplicationTrackingDetailView(APIView):
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
         action_delivery_fallback = _tracking_action_delivery_fallback(row)
+        force_pending_display = _should_force_pending_display(row)
         is_currently_scheduled = bool(row.schedule_time)
         delivery_summary = _build_tracking_delivery_summary(event_rows)
         employee_delivery_overview = _build_tracking_employee_delivery_overview(selected_employees, mail_tracking)
@@ -3394,10 +3402,10 @@ class ApplicationTrackingDetailView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(row.job.is_closed) if row.job_id and row.job else False,
             'is_removed': bool(row.job.is_removed) if row.job_id and row.job else False,
-            'mailed': False if is_currently_scheduled else bool(row.mailed),
+            'mailed': False if is_currently_scheduled else (False if force_pending_display else bool(row.mailed)),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
-                [] if is_currently_scheduled else event_rows,
-                fallback_status='pending' if is_currently_scheduled else (
+                [] if (is_currently_scheduled or force_pending_display) else event_rows,
+                fallback_status='pending' if (is_currently_scheduled or force_pending_display) else (
                     (str(row.mail_delivery_status or '').strip().lower() or 'pending')
                 ),
             ),
@@ -3706,6 +3714,10 @@ class ApplicationTrackingDetailView(APIView):
             )
 
         append_action = payload.get('append_action')
+        if not send_now and not isinstance(append_action, dict):
+            row.mailed = False
+            row.mail_delivery_status = 'pending'
+            row.save(update_fields=['mailed', 'mail_delivery_status', 'updated_at'])
         if send_now:
             row.mailed = False
             row.mail_delivery_status = 'pending'

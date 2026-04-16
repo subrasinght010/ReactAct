@@ -156,12 +156,6 @@ function rowLastActionType(row) {
 }
 
 function rowLastSendMode(row) {
-  if (row?.schedule_time) return 'scheduled'
-  const items = row?.milestones || []
-  if (items.length) {
-    const mode = String(items[items.length - 1]?.mode || '').trim().toLowerCase()
-    return mode === 'sent' ? 'On Time' : (mode || '')
-  }
   return row?.schedule_time ? 'scheduled' : 'On Time'
 }
 
@@ -890,6 +884,7 @@ function TrackingPage() {
         is_open: Boolean(fullRow.is_open),
         selected_hr_ids: Array.isArray(fullRow.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
         follow_thread_id: Array.isArray(fullRow.selected_hr_ids) && fullRow.selected_hr_ids.length ? String(fullRow.selected_hr_ids[0]) : '',
+        follow_thread_ids: Array.isArray(fullRow.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
         selected_employees: Array.isArray(fullRow.selected_employees) ? fullRow.selected_employees : [],
         mail_events: Array.isArray(fullRow.mail_events) ? fullRow.mail_events : [],
       })
@@ -959,7 +954,8 @@ function TrackingPage() {
     const selectedHrIds = Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids : []
     if (editForm.mail_type === 'followed_up') {
       const allowedIds = new Set(editFollowUpCandidateIds.map((id) => String(id)))
-      const effectiveSelectedIds = editForm.follow_thread_id ? [String(editForm.follow_thread_id)] : selectedHrIds
+      const followThreadIds = Array.isArray(editForm.follow_thread_ids) ? editForm.follow_thread_ids.map((id) => String(id)) : []
+      const effectiveSelectedIds = followThreadIds.length ? followThreadIds : (editForm.follow_thread_id ? [String(editForm.follow_thread_id)] : selectedHrIds)
       const invalidIds = effectiveSelectedIds.filter((id) => !allowedIds.has(String(id)))
       if (invalidIds.length) {
         setEditFormError('Follow up can only be sent to employees who already received mail in this tracking row.')
@@ -989,7 +985,9 @@ function TrackingPage() {
       posting_date: editForm.posting_date || null,
       is_open: editForm.is_open,
       selected_hr_ids: editForm.mail_type === 'followed_up'
-        ? (editForm.follow_thread_id ? [String(editForm.follow_thread_id)] : selectedHrIds)
+        ? ((Array.isArray(editForm.follow_thread_ids) && editForm.follow_thread_ids.length)
+          ? editForm.follow_thread_ids.map((id) => String(id))
+          : (editForm.follow_thread_id ? [String(editForm.follow_thread_id)] : selectedHrIds))
         : selectedHrIds,
     }
     try {
@@ -1021,8 +1019,14 @@ function TrackingPage() {
   const sendRowImmediately = async (row) => {
     if (!row || !row.id) return
     if (row.is_freezed) return
-    setSendConfirmError('')
-    setSendConfirmRow(row)
+    try {
+      setSendConfirmError('')
+      const fullRow = await fetchTrackingRow(access, row.id).catch(() => row)
+      setSendConfirmRow(fullRow || row)
+    } catch (err) {
+      setSendConfirmError(err.message || 'Could not load send details.')
+      setSendConfirmRow(row)
+    }
   }
 
   const confirmSendRowImmediately = async () => {
@@ -1952,6 +1956,7 @@ function TrackingPage() {
                       ...prev,
                       mail_type: nextMailType,
                       follow_thread_id: '',
+                      follow_thread_ids: [],
                     }
                   }
                   const currentIds = Array.isArray(prev.selected_hr_ids) ? prev.selected_hr_ids.map((id) => String(id)) : []
@@ -1962,6 +1967,7 @@ function TrackingPage() {
                     mail_type: nextMailType,
                     selected_hr_ids: matchingIds.length ? matchingIds : [...editFollowUpCandidateIds],
                     follow_thread_id: matchingIds[0] || editFollowUpCandidateIds[0] || '',
+                    follow_thread_ids: matchingIds.length ? matchingIds : [...editFollowUpCandidateIds],
                   }
                 })}
               />
@@ -1996,16 +2002,15 @@ function TrackingPage() {
               <>
                 <label className="tracking-form-span-2">
                   Follow Thread ID
-                  <SingleSelectDropdown
-                    value={editForm.follow_thread_id || ''}
-                    placeholder="Select follow thread"
-                    searchPlaceholder="Search thread by id or employee"
-                    clearLabel="No follow thread selected"
+                  <MultiSelectDropdown
+                    values={Array.isArray(editForm.follow_thread_ids) ? editForm.follow_thread_ids : []}
+                    placeholder="Select follow thread(s)"
                     options={editFollowThreadOptions}
-                    onChange={(value) => setEditForm((prev) => ({
+                    onChange={(values) => setEditForm((prev) => ({
                       ...prev,
-                      follow_thread_id: value || '',
-                      selected_hr_ids: value ? [String(value)] : prev.selected_hr_ids,
+                      follow_thread_ids: Array.isArray(values) ? values.map((value) => String(value)) : [],
+                      follow_thread_id: Array.isArray(values) && values.length ? String(values[0]) : '',
+                      selected_hr_ids: Array.isArray(values) ? values.map((value) => String(value)) : prev.selected_hr_ids,
                     }))}
                   />
                 </label>
@@ -2187,13 +2192,38 @@ function TrackingPage() {
 
       {sendConfirmRow ? (
         <div className="modal-overlay" onClick={() => { if (!sendingRowId) { setSendConfirmRow(null); setSendConfirmError('') } }}>
-          <div className="modal-panel tracking-employee-preview-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-panel tracking-send-confirm-modal" onClick={(event) => event.stopPropagation()}>
             <h2>Send Mail Now</h2>
             <p className="subtitle">Re-check everything before sending this mail immediately.</p>
-            <div className="tracking-preview-block">
-              <strong>{sendConfirmRow.company_name || '-'}</strong>
-              <p>{sendConfirmRow.job_id || '-'}</p>
-              <p>{Array.isArray(sendConfirmRow.selected_hrs) && sendConfirmRow.selected_hrs.length ? sendConfirmRow.selected_hrs.join(', ') : 'No employees selected'}</p>
+            <div className="tracking-send-confirm-grid">
+              <div className="tracking-send-confirm-item">
+                <span>Company</span>
+                <strong>{sendConfirmRow.company_name || '-'}</strong>
+              </div>
+              <div className="tracking-send-confirm-item">
+                <span>Job Name</span>
+                <strong>{sendConfirmRow.role || '-'}</strong>
+              </div>
+              <div className="tracking-send-confirm-item">
+                <span>Job ID</span>
+                <strong>{sendConfirmRow.job_id || '-'}</strong>
+              </div>
+              <div className="tracking-send-confirm-item">
+                <span>Mail Type</span>
+                <strong>{formatMailTypeLabel(sendConfirmRow.mail_type)}</strong>
+              </div>
+            </div>
+            <div className="tracking-send-confirm-list">
+              <div className="tracking-send-confirm-list-title">Employees</div>
+              {(Array.isArray(sendConfirmRow.selected_employees) && sendConfirmRow.selected_employees.length
+                ? sendConfirmRow.selected_employees
+                : []
+              ).map((employee, index) => (
+                <div key={`send-confirm-employee-${employee.id || index}`} className="tracking-send-confirm-person">
+                  <strong>{employee.name || '-'}</strong>
+                  <span>{employee.email || 'No email'}</span>
+                </div>
+              ))}
             </div>
             {sendConfirmError ? <p className="error">{sendConfirmError}</p> : null}
             <div className="actions">

@@ -1136,6 +1136,102 @@
     background: rgba(2, 6, 23, 0.96);
   }
 
+  .tracking-send-confirm-modal {
+    width: min(640px, calc(100vw - 32px));
+  }
+
+  .tracking-send-confirm-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .tracking-send-confirm-item {
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 14px;
+    padding: 12px 14px;
+    background: rgba(248, 250, 252, 0.9);
+  }
+
+  .tracking-send-confirm-item span {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #64748b;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .tracking-send-confirm-item strong {
+    display: block;
+    color: #0f172a;
+    line-height: 1.4;
+  }
+
+  .tracking-send-confirm-list {
+    margin-top: 14px;
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 16px;
+    background: rgba(248, 250, 252, 0.9);
+    padding: 14px;
+  }
+
+  .tracking-send-confirm-list-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 10px;
+  }
+
+  .tracking-send-confirm-person + .tracking-send-confirm-person {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(148, 163, 184, 0.18);
+  }
+
+  .tracking-send-confirm-person strong {
+    display: block;
+    color: #0f172a;
+    line-height: 1.4;
+  }
+
+  .tracking-send-confirm-person span {
+    display: block;
+    color: #475569;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  [data-theme='dark'] .tracking-send-confirm-item,
+  [data-theme='dark'] .tracking-send-confirm-list {
+    background: rgba(15, 23, 42, 0.9);
+    border-color: rgba(71, 85, 105, 0.5);
+  }
+
+  [data-theme='dark'] .tracking-send-confirm-item strong,
+  [data-theme='dark'] .tracking-send-confirm-person strong {
+    color: #e2e8f0;
+  }
+
+  [data-theme='dark'] .tracking-send-confirm-item span,
+  [data-theme='dark'] .tracking-send-confirm-list-title {
+    color: #94a3b8;
+  }
+
+  [data-theme='dark'] .tracking-send-confirm-person span {
+    color: #cbd5e1;
+  }
+
+  @media (max-width: 640px) {
+    .tracking-send-confirm-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
   .tracking-primary-cell {
     font-weight: 700;
     color: #0f172a;

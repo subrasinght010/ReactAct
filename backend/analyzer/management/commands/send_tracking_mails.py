@@ -353,6 +353,8 @@ class Command(BaseCommand):
             thread_context = self._resolve_thread_context(mail_tracking, row, to_email)
             if thread_context.get("subject"):
                 subject = thread_context["subject"]
+            if str(getattr(row, "mail_type", "") or "").strip().lower() != "followed_up":
+                subject = self._fresh_subject(subject)
             try:
                 if dry_run:
                     self._emit(
