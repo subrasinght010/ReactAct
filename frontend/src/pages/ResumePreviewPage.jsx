@@ -20,7 +20,7 @@ function ResumePreviewPage() {
         return
       }
       if (!resumeId) {
-        navigate('/dashboard')
+        navigate('/')
         return
       }
       setError('')
@@ -48,6 +48,7 @@ function ResumePreviewPage() {
       setLoading(true)
       const full = await fetchResume(access, resumeId)
       sessionStorage.setItem('builderImport', JSON.stringify(full.builder_data || {}))
+      sessionStorage.setItem('builderSaveMode', 'edit')
       sessionStorage.setItem('builderResumeId', String(resumeId))
       navigate('/builder')
     } catch (err) {
@@ -72,7 +73,7 @@ function ResumePreviewPage() {
           </p>
         </div>
         <div className="actions">
-          <button type="button" className="secondary" onClick={() => navigate('/dashboard')}>
+          <button type="button" className="secondary" onClick={() => navigate('/')}>
             Back
           </button>
           <button type="button" onClick={handleEdit} disabled={loading || !resumeId}>
