@@ -1100,10 +1100,6 @@
     @apply inline-flex h-7 items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700 hover:border-blue-300 hover:bg-blue-100 dark:border-sky-900/60 dark:bg-sky-950/35 dark:text-sky-300 dark:hover:bg-sky-950/55;
   }
 
-  .tracking-action-state {
-    min-width: 52px;
-  }
-
   .tracking-actions-compact {
     display: inline-flex;
     align-items: center;

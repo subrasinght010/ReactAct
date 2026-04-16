@@ -232,186 +232,208 @@ class Command(BaseCommand):
         total_failed = 0
 
         for row in rows:
-            job = row.job
-            company = job.company if row.job_id and job and job.company_id else None
-            pattern = str(getattr(company, "mail_format", "") or "").strip()
-            mail_tracking = ensure_mail_tracking(row)
-            row_started_scheduled = bool(getattr(row, "schedule_time", None))
-            if not company or not pattern:
-                row.mail_delivery_status = "failed"
-                row.save(update_fields=["mail_delivery_status", "updated_at"])
-                if not dry_run:
-                    self._clear_schedule_if_processed(row)
+            row_sent, row_failed = self._process_tracking_row(
+                row,
+                include_mailed=include_mailed,
+                dry_run=dry_run,
+                test_mode=test_mode,
+                use_ai=use_ai,
+                sleep_seconds=sleep_seconds,
+                clear_schedule=not dry_run,
+                append_tracking_action=True,
+                force_resend=False,
+            )
+            total_sent += row_sent
+            total_failed += row_failed
+
+        self._emit(f"Done. sent={total_sent} failed={total_failed}", level="info", style=self.style.SUCCESS)
+
+    def _process_tracking_row(
+        self,
+        row,
+        *,
+        include_mailed=False,
+        dry_run=False,
+        test_mode=False,
+        use_ai=False,
+        sleep_seconds=0.0,
+        clear_schedule=True,
+        append_tracking_action=True,
+        force_resend=False,
+    ):
+        job = row.job
+        company = job.company if row.job_id and job and job.company_id else None
+        pattern = str(getattr(company, "mail_format", "") or "").strip()
+        mail_tracking = ensure_mail_tracking(row)
+        row_started_scheduled = bool(getattr(row, "schedule_time", None))
+        if not company or not pattern:
+            row.mail_delivery_status = "failed"
+            row.save(update_fields=["mail_delivery_status", "updated_at"])
+            if clear_schedule and not dry_run:
+                self._clear_schedule_if_processed(row)
+            self._log_event(
+                mail_tracking=mail_tracking,
+                tracking=row,
+                employee=None,
+                success=False,
+                subject="",
+                body="",
+                to_email="",
+                notes="Skipped: company mail pattern is missing.",
+            )
+            self._emit(f"[tracking:{row.id}] skipped (missing company/pattern)", level="warning", style=self.style.WARNING)
+            return 0, 1
+
+        profile = self._get_profile(row.user_id)
+        employees = [emp for emp in row.selected_hrs.all() if bool(getattr(emp, "working_mail", True))]
+        if not employees:
+            row.mail_delivery_status = "failed"
+            row.save(update_fields=["mail_delivery_status", "updated_at"])
+            if clear_schedule and not dry_run:
+                self._clear_schedule_if_processed(row)
+            self._log_event(
+                mail_tracking=mail_tracking,
+                tracking=row,
+                employee=None,
+                success=False,
+                subject="",
+                body="",
+                to_email="",
+                notes="Skipped: no selected employees found for this tracking row.",
+            )
+            self._emit(f"[tracking:{row.id}] skipped (no selected employees to target)", level="warning", style=self.style.WARNING)
+            return 0, 1
+
+        row_sent = 0
+        row_failed = 0
+        achievements = self._get_achievements(row)
+        attachment_path = self._resolve_attachment_file(row)
+        latest_status_map = build_mail_tracking_status_map(mail_tracking)
+        is_scheduled_replay = bool(getattr(row, "schedule_time", None))
+        pending_employees = []
+        for emp in employees:
+            to_email = self._resolve_employee_email(emp, pattern)
+            existing_status = latest_status_map.get(f"employee:{emp.id}")
+            if not existing_status and to_email:
+                existing_status = latest_status_map.get(f"email:{to_email.strip().lower()}")
+            status_value = str(existing_status.get("status") or "").strip().lower() if existing_status else ""
+            if not include_mailed and not is_scheduled_replay and not force_resend and status_value in {"sent", "failed", "bounced"}:
+                continue
+            pending_employees.append((emp, to_email))
+
+        if not pending_employees:
+            recompute_tracking_delivery_status(row)
+            if clear_schedule and not dry_run:
+                self._clear_schedule_if_processed(row)
+            self._emit(f"[tracking:{row.id}] skipped (no pending employees left to process)", level="warning", style=self.style.WARNING)
+            return 0, 0
+
+        for emp, to_email in pending_employees:
+            if not to_email:
                 self._log_event(
                     mail_tracking=mail_tracking,
                     tracking=row,
-                    employee=None,
+                    employee=emp,
                     success=False,
                     subject="",
                     body="",
                     to_email="",
-                    notes="Skipped: company mail pattern is missing.",
+                    notes="Could not resolve recipient email from company mail pattern.",
                 )
-                self._emit(f"[tracking:{row.id}] skipped (missing company/pattern)", level="warning", style=self.style.WARNING)
-                total_failed += 1
+                row_failed += 1
                 continue
 
-            profile = self._get_profile(row.user_id)
-            employees = [emp for emp in row.selected_hrs.all() if bool(getattr(emp, "working_mail", True))]
-            if not employees:
-                row.mail_delivery_status = "failed"
-                row.save(update_fields=["mail_delivery_status", "updated_at"])
-                if not dry_run:
-                    self._clear_schedule_if_processed(row)
-                self._log_event(
-                    mail_tracking=mail_tracking,
-                    tracking=row,
-                    employee=None,
-                    success=False,
-                    subject="",
-                    body="",
-                    to_email="",
-                    notes="Skipped: no selected employees found for this tracking row.",
-                )
-                self._emit(f"[tracking:{row.id}] skipped (no selected employees to target)", level="warning", style=self.style.WARNING)
-                total_failed += 1
-                continue
-
-            row_sent = 0
-            row_failed = 0
-            achievements = self._get_achievements(row)
-            attachment_path = self._resolve_attachment_file(row)
-            latest_status_map = build_mail_tracking_status_map(mail_tracking)
-            is_scheduled_replay = bool(getattr(row, "schedule_time", None))
-            pending_employees = []
-            for emp in employees:
-                to_email = self._resolve_employee_email(emp, pattern)
-                existing_status = latest_status_map.get(f"employee:{emp.id}")
-                if not existing_status and to_email:
-                    existing_status = latest_status_map.get(f"email:{to_email.strip().lower()}")
-                status_value = str(existing_status.get("status") or "").strip().lower() if existing_status else ""
-                # Rescheduled rows should be allowed to send again even if a prior cycle
-                # for the same tracking row already logged sent/failed/bounced.
-                if not include_mailed and not is_scheduled_replay and status_value in {"sent", "failed", "bounced"}:
-                    continue
-                pending_employees.append((emp, to_email))
-
-            if not pending_employees:
-                recompute_tracking_delivery_status(row)
-                if not dry_run:
-                    self._clear_schedule_if_processed(row)
-                self._emit(f"[tracking:{row.id}] skipped (no pending employees left to process)", level="warning", style=self.style.WARNING)
-                continue
-
-            for emp, to_email in pending_employees:
-                if not to_email:
-                    self._log_event(
-                        mail_tracking=mail_tracking,
-                        tracking=row,
-                        employee=emp,
-                        success=False,
-                        subject="",
-                        body="",
-                        to_email="",
-                        notes="Could not resolve recipient email from company mail pattern.",
+            subject, body = self._build_mail(
+                row,
+                emp,
+                profile,
+                achievements,
+                use_ai=self._should_use_ai_for_row(row, explicit_use_ai=use_ai),
+            )
+            thread_context = self._resolve_thread_context(mail_tracking, row, to_email)
+            if thread_context.get("subject"):
+                subject = thread_context["subject"]
+            try:
+                if dry_run:
+                    self._emit(
+                        f"[tracking:{row.id}] dry run planned for {to_email or 'unresolved-recipient'}",
+                        level="info",
+                        style=self.style.HTTP_INFO,
                     )
-                    row_failed += 1
                     continue
 
-                subject, body = self._build_mail(
-                    row,
-                    emp,
-                    profile,
-                    achievements,
-                    use_ai=self._should_use_ai_for_row(row, explicit_use_ai=use_ai),
-                )
-                thread_context = self._resolve_thread_context(mail_tracking, row, to_email)
-                if thread_context.get("subject"):
-                    subject = thread_context["subject"]
-                try:
-                    if dry_run:
-                        self._emit(
-                            f"[tracking:{row.id}] dry run planned for {to_email or 'unresolved-recipient'}",
-                            level="info",
-                            style=self.style.HTTP_INFO,
-                        )
-                        continue
-
-                    if test_mode:
-                        self._emit(
-                            f"[tracking:{row.id}] test mode simulated send to {to_email}",
-                            level="info",
-                            style=self.style.HTTP_INFO,
-                        )
-                        sent_message_id = self._normalize_message_id(make_msgid())
-                    else:
-                        sent_message_id = self._send_email(
-                            row.user,
-                            to_email,
-                            subject,
-                            body,
-                            attachment_path=attachment_path,
-                            in_reply_to=thread_context.get("in_reply_to", ""),
-                            references=thread_context.get("references", []),
-                        )
-
-                    # Keep employee email synced once resolved via pattern.
-                    if not str(emp.email or "").strip():
-                        emp.email = to_email
-                        emp.save(update_fields=["email", "updated_at"])
-
-                    self._log_success(
-                        mail_tracking,
-                        row,
-                        emp,
+                if test_mode:
+                    self._emit(
+                        f"[tracking:{row.id}] test mode simulated send to {to_email}",
+                        level="info",
+                        style=self.style.HTTP_INFO,
+                    )
+                    sent_message_id = self._normalize_message_id(make_msgid())
+                else:
+                    sent_message_id = self._send_email(
+                        row.user,
+                        to_email,
                         subject,
                         body,
-                        to_email,
-                        simulated=test_mode,
-                        message_id=sent_message_id,
+                        attachment_path=attachment_path,
                         in_reply_to=thread_context.get("in_reply_to", ""),
                         references=thread_context.get("references", []),
                     )
-                    self._set_employee_working_mail(emp, True)
-                    row_sent += 1
-                    total_sent += 1
 
-                    if sleep_seconds > 0 and not test_mode:
-                        time.sleep(sleep_seconds)
-                except Exception as exc:  # noqa: BLE001
-                    self._log_event(
-                        mail_tracking=mail_tracking,
-                        tracking=row,
-                        employee=emp,
-                        success=False,
-                        subject=subject,
-                        body=body,
-                        to_email=to_email,
-                        notes=f"Send failed: {exc}",
-                    )
-                    self._set_employee_working_mail(emp, False)
-                    row_failed += 1
-                    total_failed += 1
+                if not str(emp.email or "").strip():
+                    emp.email = to_email
+                    emp.save(update_fields=["email", "updated_at"])
 
-            if dry_run:
-                self._emit(f"[tracking:{row.id}] dry run only; planned recipients={len(pending_employees)}", level="warning", style=self.style.WARNING)
-                continue
-
-            if row_sent > 0:
-                self._append_tracking_action_for_send(
+                self._log_success(
+                    mail_tracking,
                     row,
-                    action_at=timezone.now(),
-                    send_mode="scheduled" if row_started_scheduled else "sent",
+                    emp,
+                    subject,
+                    body,
+                    to_email,
+                    simulated=test_mode,
+                    message_id=sent_message_id,
+                    in_reply_to=thread_context.get("in_reply_to", ""),
+                    references=thread_context.get("references", []),
                 )
-            recompute_tracking_delivery_status(row)
-            self._clear_schedule_if_processed(row)
-            attempted_count = row_sent + row_failed
-            if attempted_count > 0:
-                self._emit(f"[tracking:{row.id}] sent={row_sent} failed={row_failed}", level="info", style=self.style.SUCCESS)
-            else:
-                self._emit(f"[tracking:{row.id}] no pending sends attempted", level="warning", style=self.style.WARNING)
+                self._set_employee_working_mail(emp, True)
+                row_sent += 1
 
-        self._emit(f"Done. sent={total_sent} failed={total_failed}", level="info", style=self.style.SUCCESS)
+                if sleep_seconds > 0 and not test_mode:
+                    time.sleep(sleep_seconds)
+            except Exception as exc:  # noqa: BLE001
+                self._log_event(
+                    mail_tracking=mail_tracking,
+                    tracking=row,
+                    employee=emp,
+                    success=False,
+                    subject=subject,
+                    body=body,
+                    to_email=to_email,
+                    notes=f"Send failed: {exc}",
+                )
+                self._set_employee_working_mail(emp, False)
+                row_failed += 1
+
+        if dry_run:
+            self._emit(f"[tracking:{row.id}] dry run only; planned recipients={len(pending_employees)}", level="warning", style=self.style.WARNING)
+            return row_sent, row_failed
+
+        if row_sent > 0 and append_tracking_action:
+            self._append_tracking_action_for_send(
+                row,
+                action_at=timezone.now(),
+                send_mode="scheduled" if row_started_scheduled else "sent",
+            )
+        recompute_tracking_delivery_status(row)
+        if clear_schedule:
+            self._clear_schedule_if_processed(row)
+        attempted_count = row_sent + row_failed
+        if attempted_count > 0:
+            self._emit(f"[tracking:{row.id}] sent={row_sent} failed={row_failed}", level="info", style=self.style.SUCCESS)
+        else:
+            self._emit(f"[tracking:{row.id}] no pending sends attempted", level="warning", style=self.style.WARNING)
+        return row_sent, row_failed
 
     def _clear_schedule_if_processed(self, row, *, extra_fields=None):
         if not row or not getattr(row, "schedule_time", None):

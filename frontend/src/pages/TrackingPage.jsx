@@ -193,8 +193,8 @@ function formatSendModeLabel(value) {
 
 function formatStatusLabel(value) {
   const text = String(value || 'pending').trim().toLowerCase()
-  if (text === 'complete_sent') return 'Complete Sent'
-  if (text === 'partial_sent') return 'Partial Sent'
+  if (text === 'complete_sent') return 'Sent'
+  if (text === 'partial_sent') return 'Partially'
   if (text === 'failed') return 'Failed'
   return 'Pending'
 }
@@ -996,6 +996,8 @@ function TrackingPage() {
       setEditFormError('')
       const payload = {
         ...basePayload,
+        mailed: false,
+        mail_delivery_status: 'pending',
         resume: editForm.has_attachment ? (editForm.resume_id || null) : null,
         tailored_resume: editForm.has_attachment ? (editForm.tailored_resume_id || null) : null,
       }
@@ -1034,11 +1036,6 @@ function TrackingPage() {
         : (Array.isArray(fullRow?.achievement_ids_ordered) && fullRow.achievement_ids_ordered.length
           ? fullRow.achievement_ids_ordered.map((id) => String(id))
           : (fullRow?.template_id ? [String(fullRow.template_id)] : []))
-      const hasMilestones = Array.isArray(fullRow?.milestones) && fullRow.milestones.length > 0
-      const nextActionType = hasMilestones
-        ? mailTypeToActionType(fullRow?.mail_type)
-        : 'fresh'
-
       const payload = {
         company: fullRow?.company || null,
         job: fullRow?.job || null,
@@ -1062,11 +1059,7 @@ function TrackingPage() {
         posting_date: fullRow?.posting_date || null,
         is_open: Boolean(fullRow?.is_open),
         selected_hr_ids: Array.isArray(fullRow?.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
-        append_action: {
-          type: nextActionType,
-          send_mode: 'now',
-          action_at: new Date().toISOString(),
-        },
+        send_now: true,
       }
 
       const updated = await updateTrackingRow(access, row.id, payload)
@@ -1547,9 +1540,7 @@ function TrackingPage() {
                     <td className="tracking-action-cell">
                       <div className="tracking-actions-compact">
                         {String(rowLastSendMode(row) || '').trim().toLowerCase() === 'on time' ? (
-                          row.mailed ? (
-                            <span className="tracking-action-state tracking-badge is-positive" title="Mail Sent">Sent</span>
-                          ) : (
+                          row.mailed ? null : (
                             <button
                               type="button"
                               className="tracking-send-now-btn"

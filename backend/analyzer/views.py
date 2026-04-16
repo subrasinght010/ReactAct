@@ -2924,13 +2924,11 @@ class ApplicationTrackingListCreateView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(job.is_closed) if job else False,
             'is_removed': bool(job.is_removed) if job else False,
-            'mailed': False if is_currently_scheduled else bool(mailed_at_value or tracking.mailed or action_delivery_fallback['mailed']),
+            'mailed': False if is_currently_scheduled else bool(tracking.mailed),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
                 [] if is_currently_scheduled else delivery_events,
                 fallback_status='pending' if is_currently_scheduled else (
-                    'complete_sent'
-                    if mailed_at_value or tracking.mailed or action_delivery_fallback['mailed']
-                    else action_delivery_fallback['status']
+                    (str(tracking.mail_delivery_status or '').strip().lower() or 'pending')
                 ),
             ),
             'applied_date': job.applied_at.isoformat() if job and job.applied_at else None,
@@ -3396,13 +3394,11 @@ class ApplicationTrackingDetailView(APIView):
             'tailored_resume_name': str(tailored_resume.title or '').strip() if tailored_resume else '',
             'is_closed': bool(row.job.is_closed) if row.job_id and row.job else False,
             'is_removed': bool(row.job.is_removed) if row.job_id and row.job else False,
-            'mailed': False if is_currently_scheduled else bool(mailed_at_value or row.mailed or action_delivery_fallback['mailed']),
+            'mailed': False if is_currently_scheduled else bool(row.mailed),
             'mail_delivery_status': _resolve_tracking_delivery_status_from_events(
                 [] if is_currently_scheduled else event_rows,
                 fallback_status='pending' if is_currently_scheduled else (
-                    'complete_sent'
-                    if mailed_at_value or row.mailed or action_delivery_fallback['mailed']
-                    else action_delivery_fallback['status']
+                    (str(row.mail_delivery_status or '').strip().lower() or 'pending')
                 ),
             ),
             'applied_date': row.job.applied_at.isoformat() if row.job_id and row.job and row.job.applied_at else None,
@@ -3505,6 +3501,7 @@ class ApplicationTrackingDetailView(APIView):
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
 
         payload = request.data or {}
+        send_now = self._to_bool(payload.get('send_now'), default=False)
         job = row.job
 
         company_id = payload.get('company')
@@ -3618,6 +3615,8 @@ class ApplicationTrackingDetailView(APIView):
             if row.schedule_time:
                 row.mailed = False
                 row.mail_delivery_status = 'pending'
+        elif send_now:
+            row.schedule_time = None
         if 'is_freezed' in payload:
             next_freezed = self._to_bool(payload.get('is_freezed'), default=row.is_freezed)
             row.is_freezed = next_freezed
@@ -3707,6 +3706,24 @@ class ApplicationTrackingDetailView(APIView):
             )
 
         append_action = payload.get('append_action')
+        if send_now:
+            row.mailed = False
+            row.mail_delivery_status = 'pending'
+            row.save()
+            command = SendTrackingMailsCommand()
+            command._process_tracking_row(
+                row,
+                include_mailed=False,
+                dry_run=False,
+                test_mode=False,
+                use_ai=False,
+                sleep_seconds=0.0,
+                clear_schedule=True,
+                append_tracking_action=True,
+                force_resend=True,
+            )
+            fresh = Tracking.objects.filter(id=row.id).select_related('job__company', 'resume', 'mail_tracking_record', 'template', 'personalized_template').prefetch_related('selected_hrs', 'actions', 'job__resumes').first()
+            return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
         if isinstance(append_action, dict):
             action_type = str(append_action.get('type') or '').strip().lower()
             if action_type not in {'fresh', 'followup'}:
