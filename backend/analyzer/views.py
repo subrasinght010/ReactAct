@@ -154,7 +154,8 @@ def _resolve_tracking_delivery_status_from_events(event_rows, fallback_status='p
 
 
 def _build_tracking_delivery_summary(event_rows):
-    latest_by_target = {}
+    passed_by_target = {}
+    failed_by_target = {}
 
     for item in event_rows:
         payload = item.raw_payload if isinstance(getattr(item, 'raw_payload', None), dict) else {}
@@ -176,31 +177,39 @@ def _build_tracking_delivery_summary(event_rows):
             or ''
         ).strip()
 
-        latest_by_target[target_key] = {
+        entry = {
             'employee_id': employee_id,
             'employee_name': employee_name,
             'email': to_email,
-            'status': 'failed' if status_value == 'bounced' else status_value,
             'failure_type': 'bounced' if status_value == 'bounced' else status_value,
             'reason': reason,
             'action_at': item.action_at.isoformat() if item.action_at else '',
         }
+        if status_value == 'sent':
+            passed_by_target[target_key] = entry
+        elif status_value in {'failed', 'bounced'}:
+            failed_by_target[target_key] = entry
 
     passed = []
     failed = []
-    for entry in latest_by_target.values():
-        item = {
+    for entry in passed_by_target.values():
+        passed.append({
             'employee_id': entry['employee_id'],
             'employee_name': entry['employee_name'],
             'email': entry['email'],
             'reason': entry.get('reason', ''),
             'failure_type': entry.get('failure_type', ''),
             'action_at': entry['action_at'],
-        }
-        if entry['status'] == 'sent':
-            passed.append(item)
-        elif entry['status'] == 'failed':
-            failed.append(item)
+        })
+    for entry in failed_by_target.values():
+        failed.append({
+            'employee_id': entry['employee_id'],
+            'employee_name': entry['employee_name'],
+            'email': entry['email'],
+            'reason': entry.get('reason', ''),
+            'failure_type': entry.get('failure_type', ''),
+            'action_at': entry['action_at'],
+        })
 
     passed.sort(key=lambda item: ((item.get('employee_name') or '').lower(), (item.get('email') or '').lower()))
     failed.sort(key=lambda item: ((item.get('employee_name') or '').lower(), (item.get('email') or '').lower()))
@@ -214,22 +223,82 @@ def _build_tracking_delivery_summary(event_rows):
 
 
 def _build_tracking_employee_delivery_overview(selected_employees, mail_tracking):
-    status_map = build_mail_tracking_status_map(mail_tracking)
+    selected_list = selected_employees if isinstance(selected_employees, list) else []
+    event_rows = []
+    if mail_tracking:
+        event_rows = list(
+            MailTrackingEvent.objects
+            .filter(mail_tracking=mail_tracking)
+            .select_related('employee')
+            .order_by('action_at', 'created_at')
+        )
+
+    events_by_employee = {}
+    for item in event_rows:
+        payload = item.raw_payload if isinstance(getattr(item, 'raw_payload', None), dict) else {}
+        payload_status = str(payload.get('status') or '').strip().lower()
+        status_value = str(getattr(item, 'status', '') or payload_status or '').strip().lower()
+        if status_value == 'replied':
+            continue
+
+        employee_id = getattr(item, 'employee_id', None)
+        to_email = str(payload.get('to_email') or payload.get('recipient_email') or payload.get('receiver') or '').strip().lower()
+        if employee_id:
+            key = f'employee:{employee_id}'
+        elif to_email:
+            key = f'email:{to_email}'
+        else:
+            continue
+        events_by_employee.setdefault(key, []).append((item, payload, status_value))
+
     overview = []
-    for employee in selected_employees:
+    for employee in selected_list:
         employee_id = employee.get('id')
         email = str(employee.get('email') or '').strip()
-        current = status_map.get(f'employee:{employee_id}')
-        if not current and email:
-            current = status_map.get(f'email:{email.lower()}')
-        status_value = str((current or {}).get('status') or '').strip().lower()
+        employee_events = events_by_employee.get(f'employee:{employee_id}') or events_by_employee.get(f'email:{email.lower()}') or []
+
+        last_reason = ''
+        latest_delivery_email = email
+        latest_status_value = 'pending'
+        latest_mail_type = ''
+        latest_send_mode = ''
+        latest_action_at = ''
+
+        if employee_events:
+            last_item = employee_events[-1][0]
+            last_payload = employee_events[-1][1]
+            latest_status_value = employee_events[-1][2] or 'pending'
+            latest_action_at = last_item.action_at.isoformat() if last_item.action_at else ''
+            latest_mail_type = str(getattr(last_item, 'mail_type', '') or '').strip()
+            latest_send_mode = str(getattr(last_item, 'send_mode', '') or '').strip()
+            latest_delivery_email = str(
+                last_payload.get('to_email')
+                or last_payload.get('recipient_email')
+                or last_payload.get('receiver')
+                or email
+                or ''
+            ).strip()
+
+            for item, payload, item_status in employee_events:
+                reason = str(
+                    payload.get('reason')
+                    or payload.get('failure_reason')
+                    or payload.get('bounce_reason')
+                    or getattr(item, 'notes', '')
+                    or ''
+                ).strip()
+                if reason:
+                    last_reason = reason
+
         overview.append({
             'employee_id': employee_id,
             'employee_name': str(employee.get('name') or '').strip(),
-            'email': str((current or {}).get('email') or email or '').strip(),
-            'status': status_value or 'pending',
-            'reason': str((current or {}).get('reason') or '').strip(),
-            'action_at': str((current or {}).get('action_at') or '').strip(),
+            'email': latest_delivery_email,
+            'mail_type': latest_mail_type,
+            'send_mode': latest_send_mode,
+            'status': latest_status_value,
+            'reason': last_reason,
+            'action_at': latest_action_at,
         })
     return overview
 
@@ -3262,6 +3331,10 @@ class ApplicationTrackingDetailView(APIView):
             subject = str(payload.get('subject') or payload.get('mail_subject') or payload.get('generated_subject') or '').strip()
             message = str(payload.get('body') or payload.get('mail_body') or payload.get('generated_body') or payload.get('message') or '').strip()
             receiver = str(payload.get('to_email') or payload.get('recipient_email') or payload.get('receiver') or '').strip()
+            sender = str(payload.get('from_email') or '').strip()
+            event_status = str(item.status or '').strip().lower()
+            payload_status = str(payload.get('status') or '').strip().lower()
+            direction = 'incoming' if ((payload_status == 'replied') or (_event_got_replied(item) and sender)) else 'outgoing'
             mail_events.append(
                 {
                     'id': item.id,
@@ -3275,7 +3348,15 @@ class ApplicationTrackingDetailView(APIView):
                     'notes': str(item.notes or '').strip(),
                     'subject': subject,
                     'message': message,
+                    'from_email': sender,
                     'to_email': receiver,
+                    'direction': direction,
+                    'message_id': str(payload.get('message_id') or item.source_message_id or '').strip(),
+                    'thread_message_ids': [
+                        str(value or '').strip()
+                        for value in (payload.get('thread_message_ids') or payload.get('references') or [])
+                        if str(value or '').strip()
+                    ],
                 }
             )
         template_choice = 'follow_up_applied' if str(row.mail_type or 'fresh').strip() == 'followed_up' else 'cold_applied'

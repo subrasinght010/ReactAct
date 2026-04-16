@@ -89,6 +89,90 @@ function formatDeliveryStatus(value) {
   return 'Pending'
 }
 
+function formatChatParty(item) {
+  const direction = String(item?.direction || '').trim().toLowerCase()
+  if (direction === 'incoming') {
+    const fromEmail = String(item?.from_email || '').trim()
+    return fromEmail || (item?.employee_name || '-')
+  }
+  const toEmail = String(item?.to_email || '').trim()
+  return toEmail || '-'
+}
+
+function formatRecipient(item) {
+  const toEmail = String(item?.to_email || '').trim()
+  return toEmail || '-'
+}
+
+function cleanMailBody(text, { incoming = false } = {}) {
+  const normalized = String(text || '').replaceAll('\r\n', '\n').trim()
+  if (!normalized) return '-'
+
+  const lines = normalized.split('\n')
+  const visibleLines = []
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (
+      incoming && (
+        trimmed.startsWith('>') ||
+        /^On .+wrote:$/i.test(trimmed) ||
+        /^From:\s/i.test(trimmed) ||
+        /^Sent:\s/i.test(trimmed) ||
+        /^Subject:\s/i.test(trimmed) ||
+        /^To:\s/i.test(trimmed) ||
+        /^Cc:\s/i.test(trimmed)
+      )
+    ) {
+      break
+    }
+    visibleLines.push(line)
+  }
+
+  const cleaned = visibleLines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  return cleaned || normalized
+}
+
+function formatChatDirection(item) {
+  return String(item?.direction || '').trim().toLowerCase() === 'incoming' ? 'Reply' : 'Sent'
+}
+
+function threadIdsText(item) {
+  const values = Array.isArray(item?.thread_message_ids) ? item.thread_message_ids : []
+  return values.filter(Boolean).join(', ')
+}
+
+function buildThreadGroups(sentEvents, receivedEvents) {
+  const sent = Array.isArray(sentEvents) ? sentEvents : []
+  const received = Array.isArray(receivedEvents) ? receivedEvents : []
+  const groups = sent.map((item) => ({
+    key: String(item?.message_id || item?.id || Math.random()),
+    sent: item,
+    replies: [],
+  }))
+  const groupByMessageId = new Map(
+    groups
+      .map((group) => [String(group.sent?.message_id || '').trim(), group])
+      .filter(([key]) => Boolean(key)),
+  )
+
+  received.forEach((reply) => {
+    const threadIds = Array.isArray(reply?.thread_message_ids) ? reply.thread_message_ids.map((item) => String(item || '').trim()) : []
+    const matchedGroup = threadIds.map((id) => groupByMessageId.get(id)).find(Boolean)
+    if (matchedGroup) {
+      matchedGroup.replies.push(reply)
+      return
+    }
+    groups.push({
+      key: `reply-${reply?.id}`,
+      sent: null,
+      replies: [reply],
+    })
+  })
+
+  return groups
+}
+
 function actionRowsForDetail(row, filteredMailEvents) {
   const milestones = Array.isArray(row?.milestones) ? row.milestones : []
   const milestoneRows = milestones.map((item, index) => ({
@@ -208,7 +292,14 @@ function TrackingDetailPage() {
   const passedEmployees = Array.isArray(row?.delivery_summary?.passed) ? row.delivery_summary.passed : []
   const failedEmployees = Array.isArray(row?.delivery_summary?.failed) ? row.delivery_summary.failed : []
   const employeeDeliveryOverview = Array.isArray(row?.employee_delivery_overview) ? row.employee_delivery_overview : []
+  const filteredEmployeeDeliveryOverview = employeeDeliveryOverview.filter((item) => {
+    if (selectedEmployeeId === ALL_EMPLOYEES_VALUE) return true
+    return String(item.employee_id || '') === String(selectedEmployeeId)
+  })
   const trackingSendMode = resolveTrackingSendMode(row, filteredMailEvents, row?.milestones)
+  const sentMailEvents = filteredMailEvents.filter((item) => String(item?.direction || '').trim().toLowerCase() !== 'incoming')
+  const receivedMailEvents = filteredMailEvents.filter((item) => String(item?.direction || '').trim().toLowerCase() === 'incoming')
+  const chatThreadGroups = buildThreadGroups(sentMailEvents, receivedMailEvents)
 
   return (
     <main className="page page-wide mx-auto w-full">
@@ -237,20 +328,11 @@ function TrackingDetailPage() {
               <div className="tracking-detail-item"><span className="tracking-detail-label">Job ID</span><span className="tracking-detail-value">{row.job_id || '-'}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Role</span><span className="tracking-detail-value">{row.role || '-'}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Job URL</span><span className="tracking-detail-value">{row.job_url ? <a href={row.job_url} target="_blank" rel="noreferrer">Open</a> : '-'}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Selected HR</span><span className="tracking-detail-value">{Array.isArray(row.selected_hrs) && row.selected_hrs.length ? row.selected_hrs.join(', ') : '-'}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Status</span><span className="tracking-detail-value">{row.is_open ? 'Open' : 'Closed'}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Mail Status</span><span className="tracking-detail-value">{String(row.mail_delivery_status || 'pending').replaceAll('_', ' ')}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Template Type</span><span className="tracking-detail-value">{formatTemplateType(row.template_choice)}</span></div>
+              <div className="tracking-detail-item"><span className="tracking-detail-label">Selected Employee</span><span className="tracking-detail-value">{Array.isArray(row.selected_employees) && row.selected_employees.length ? row.selected_employees.map((item) => String(item?.name || '').trim()).filter(Boolean).join(', ') : '-'}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Mail Type</span><span className="tracking-detail-value">{formatMailType(row.mail_type)}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Send Mode</span><span className="tracking-detail-value">{formatSendMode(trackingSendMode)}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Selected Resume</span><span className="tracking-detail-value">{row.resume_preview?.title || row.tailored_resume_preview?.title || '-'}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Freeze</span><span className="tracking-detail-value">{row.is_freezed ? 'Yes' : 'No'}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Schedule Time</span><span className="tracking-detail-value">{toFriendlyDateTime(row.schedule_time)}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Created At</span><span className="tracking-detail-value">{toFriendlyDateTime(row.created_at)}</span></div>
               <div className="tracking-detail-item"><span className="tracking-detail-label">Last Updated</span><span className="tracking-detail-value">{toFriendlyDateTime(row.updated_at)}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Mailed</span><span className="tracking-detail-value">{(row.mailed || scopedEvents.length) ? 'Yes' : 'No'} {mailedAt ? `(${toFriendlyDateTime(mailedAt)})` : ''}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Got Response</span><span className="tracking-detail-value">{(row.got_replied || repliedEvents.length) ? 'Yes' : 'No'} {repliedAt ? `(${toFriendlyDateTime(repliedAt)})` : ''}</span></div>
-              <div className="tracking-detail-item"><span className="tracking-detail-label">Response From Employee</span><span className="tracking-detail-value">{repliedBy.length ? repliedBy.join(', ') : '-'}</span></div>
             </div>
           </section>
 
@@ -290,37 +372,6 @@ function TrackingDetailPage() {
           </section>
 
           <section className="dash-card">
-            <h2>Employee Delivery Overview</h2>
-            <div className="tracking-table-wrap tracking-section-scroll">
-              <table className="tracking-table">
-                <thead>
-                  <tr>
-                    <th>Employee</th>
-                    <th>Mail ID</th>
-                    <th>Status</th>
-                    <th>Reason</th>
-                    <th>Last Action</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {employeeDeliveryOverview.map((item, index) => (
-                    <tr key={`overview-${item.employee_id || index}`}>
-                      <td>{item.employee_name || '-'}</td>
-                      <td>{item.email || '-'}</td>
-                      <td>{formatDeliveryStatus(item.status)}</td>
-                      <td>{formatDeliveryReason(item) || '-'}</td>
-                      <td>{toFriendlyDateTime(item.action_at)}</td>
-                    </tr>
-                  ))}
-                  {!employeeDeliveryOverview.length ? (
-                    <tr><td colSpan={5}>No employee delivery details available.</td></tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          </section>
-
-          <section className="dash-card">
             <div className="tracking-detail-filter">
               <label className="tracking-detail-select">
                 Select Employee
@@ -339,33 +390,99 @@ function TrackingDetailPage() {
           </section>
 
           <section className="dash-card">
-            <h2>Mail Chat History</h2>
+            <h2>Employee Delivery Overview</h2>
             <div className="tracking-table-wrap tracking-section-scroll">
-            <table className="tracking-table">
-              <thead>
-                <tr>
-                  <th>Employee</th>
-                  <th>To</th>
-                  <th>Subject</th>
-                  <th>Message / Notes</th>
-                  <th>At</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredMailEvents.map((item) => (
-                  <tr key={`chat-${item.id}`}>
-                    <td>{item.employee_name || '-'}</td>
-                    <td>{item.to_email || '-'}</td>
-                    <td>{item.subject || '-'}</td>
-                    <td>{item.message || item.notes || '-'}</td>
-                    <td>{toFriendlyDateTime(item.action_at)}</td>
+              <table className="tracking-table">
+                <thead>
+                  <tr>
+                    <th>Employee Name</th>
+                    <th>Mail Type</th>
+                    <th>Mail Mode</th>
+                    <th>Employee Mail ID</th>
+                    <th>Status</th>
+                    <th>Sent Time</th>
                   </tr>
-                ))}
-                {!filteredMailEvents.length ? (
-                  <tr><td colSpan={5}>No mail chat history available for this employee.</td></tr>
-                ) : null}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filteredEmployeeDeliveryOverview.map((item, index) => (
+                    <tr key={`overview-${item.employee_id || index}`}>
+                      <td>{item.employee_name || '-'}</td>
+                      <td>{formatMailType(item.mail_type)}</td>
+                      <td>{formatSendMode(item.send_mode)}</td>
+                      <td>{item.email || '-'}</td>
+                      <td>{formatDeliveryStatus(item.status)}</td>
+                      <td>{toFriendlyDateTime(item.action_at)}</td>
+                    </tr>
+                  ))}
+                  {!filteredEmployeeDeliveryOverview.length ? (
+                    <tr><td colSpan={6}>No employee delivery details available.</td></tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="dash-card">
+            <h2>Mail Chat History</h2>
+            <div className="tracking-table-wrap tracking-chat-scroll">
+              <table className="tracking-table tracking-chat-table">
+                <thead>
+                  <tr>
+                    <th>Sent Time</th>
+                    <th>Mail Type</th>
+                    <th>Recipient</th>
+                    <th>Reply Sender</th>
+                    <th>Sent Text</th>
+                    <th>Received Text</th>
+                    <th>Received Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chatThreadGroups.length ? chatThreadGroups.flatMap((group) => {
+                    if (group.replies.length) {
+                      return group.replies.map((reply) => (
+                        <tr key={`${group.key}-${reply.id}`}>
+                          <td>{group.sent ? toFriendlyDateTime(group.sent.action_at) : '-'}</td>
+                          <td>{group.sent ? formatMailType(group.sent.mail_type) : '-'}</td>
+                          <td>{group.sent ? formatRecipient(group.sent) : '-'}</td>
+                          <td>{formatChatParty(reply)}</td>
+                          <td>
+                            <div className="tracking-chat-cell">
+                              <strong>{group.sent?.subject || '-'}</strong>
+                              <p>{cleanMailBody(group.sent?.message || group.sent?.notes || '-')}</p>
+                            </div>
+                          </td>
+                          <td>
+                            <div className="tracking-chat-cell">
+                              <strong>{reply.subject || '-'}</strong>
+                              <p>{cleanMailBody(reply.message || reply.notes || '-', { incoming: true })}</p>
+                            </div>
+                          </td>
+                          <td>{toFriendlyDateTime(reply.action_at)}</td>
+                        </tr>
+                      ))
+                    }
+                    return [
+                      <tr key={`${group.key}-no-reply`}>
+                        <td>{group.sent ? toFriendlyDateTime(group.sent.action_at) : '-'}</td>
+                        <td>{group.sent ? formatMailType(group.sent.mail_type) : '-'}</td>
+                        <td>{group.sent ? formatRecipient(group.sent) : '-'}</td>
+                        <td>-</td>
+                        <td>
+                          <div className="tracking-chat-cell">
+                            <strong>{group.sent?.subject || '-'}</strong>
+                            <p>{cleanMailBody(group.sent?.message || group.sent?.notes || '-')}</p>
+                          </div>
+                        </td>
+                        <td className="hint">No reply in this thread yet.</td>
+                        <td>-</td>
+                      </tr>,
+                    ]
+                  }) : (
+                    <tr><td colSpan={7}>No mail chat history available for this employee.</td></tr>
+                  )}
+                </tbody>
+              </table>
             </div>
           </section>
 

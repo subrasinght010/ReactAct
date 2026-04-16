@@ -112,6 +112,12 @@ class Command(BaseCommand):
             return "Re:"
         return normalized if normalized.lower().startswith("re:") else f"Re: {normalized}"
 
+    def _fresh_subject(self, subject):
+        normalized = str(subject or "").strip()
+        if not normalized:
+            return ""
+        return re.sub(r"^\s*re\s*:\s*", "", normalized, flags=re.I).strip()
+
     def _resolve_thread_context(self, mail_tracking, tracking, to_email):
         normalized_to = str(to_email or "").strip().lower()
         if not mail_tracking or not normalized_to:
@@ -880,6 +886,7 @@ class Command(BaseCommand):
         payloads = getattr(row, "approved_test_mail_payloads", None)
         if not isinstance(payloads, list):
             return None
+        normalized_mail_type = str(getattr(row, "mail_type", "fresh") or "fresh").strip().lower()
         employee_id = getattr(employee, "id", None)
         normalized_email = str(to_email or getattr(employee, "email", "") or "").strip().lower()
         for item in payloads:
@@ -889,6 +896,10 @@ class Command(BaseCommand):
             body = str(item.get("body") or "").strip()
             if not subject or not body:
                 continue
+            if normalized_mail_type != "followed_up":
+                subject = self._fresh_subject(subject)
+                if not subject:
+                    continue
             item_employee_id = item.get("employee_id")
             item_email = str(item.get("email") or "").strip().lower()
             if employee_id and str(item_employee_id or "") == str(employee_id):
@@ -1153,6 +1164,8 @@ class Command(BaseCommand):
             linkedin=str(getattr(profile, "linkedin_url", "") or "").strip(),
         )
         subject = self._inject_dynamic_names(subject, emp_name, sender_name)
+        if mail_type != "followed_up":
+            subject = self._fresh_subject(subject)
         body = self._inject_dynamic_names(body, emp_name, sender_name)
         return subject, body
 

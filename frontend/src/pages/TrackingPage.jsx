@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ResumeSheet from '../components/ResumeSheet'
-import { SingleSelectDropdown } from '../components/SearchableDropdown'
+import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
 import { MailTestIcon } from './TrackingMailTestPage'
 
 import {
@@ -31,7 +31,7 @@ function DetailIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
       <path
         fill="currentColor"
-        d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z"
+        d="M4 5.75A1.75 1.75 0 0 1 5.75 4h12.5A1.75 1.75 0 0 1 20 5.75v12.5A1.75 1.75 0 0 1 18.25 20H5.75A1.75 1.75 0 0 1 4 18.25V5.75Zm3 1.75a.75.75 0 0 0-.75.75v8.5c0 .41.34.75.75.75h10a.75.75 0 0 0 .75-.75v-8.5a.75.75 0 0 0-.75-.75H7Zm1.5 2h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1 0-1.5Zm0 3.5h7a.75.75 0 0 1 0 1.5h-7a.75.75 0 0 1 0-1.5Z"
       />
     </svg>
   )
@@ -65,6 +65,17 @@ function PreviewIcon() {
       <path
         fill="currentColor"
         d="M12 5c5.5 0 9.6 5.2 10.8 6.9c.3.4.3.9 0 1.3C21.6 14.8 17.5 20 12 20S2.4 14.8 1.2 13.1a1 1 0 0 1 0-1.3C2.4 10.2 6.5 5 12 5Zm0 3.5A4.5 4.5 0 1 0 12 17a4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5a2.5 2.5 0 0 1 0-5Z"
+      />
+    </svg>
+  )
+}
+
+function SendNowIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M3.4 20.4L21 12L3.4 3.6L3.3 10l12.2 2l-12.2 2z"
       />
     </svg>
   )
@@ -160,10 +171,6 @@ function uniqueArray(values) {
 
 function normalizeId(value) {
   return String(value || '').trim()
-}
-
-function selectedValuesFromEvent(event) {
-  return Array.from(event?.target?.selectedOptions || []).map((option) => String(option.value || ''))
 }
 
 function humanizeLabel(value, fallback = '-') {
@@ -519,6 +526,9 @@ function TrackingPage() {
   const [achievementOptions, setAchievementOptions] = useState([])
   const [previewResume, setPreviewResume] = useState(null)
   const [employeePreview, setEmployeePreview] = useState(null)
+  const [sendingRowId, setSendingRowId] = useState(null)
+  const [sendConfirmRow, setSendConfirmRow] = useState(null)
+  const [sendConfirmError, setSendConfirmError] = useState('')
 
   const tailoredOptionsForJob = (jobId) => {
     const job = jobOptions.find((item) => String(item.id) === String(jobId || ''))
@@ -729,18 +739,11 @@ function TrackingPage() {
         resume: createForm.has_attachment ? (createForm.resume_id || null) : null,
         tailored_resume: createForm.has_attachment ? (createForm.tailored_resume_id || null) : null,
         is_freezed: Boolean(createForm.is_freezed),
-        mailed: createForm.send_mode === 'sent' ? true : Boolean(createForm.mailed),
+        mailed: Boolean(createForm.mailed),
         applied_date: createForm.applied_date || null,
         posting_date: createForm.posting_date || null,
         is_open: Boolean(createForm.is_open),
         selected_hr_ids: Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids : [],
-      }
-      if (createForm.send_mode === 'sent') {
-        payload.append_action = {
-          type: 'fresh',
-          send_mode: 'now',
-          action_at: new Date().toISOString(),
-        }
       }
       const created = await createTrackingRow(access, payload)
       setRows((prev) => [created, ...prev])
@@ -901,17 +904,6 @@ function TrackingPage() {
         resume: editForm.has_attachment ? (editForm.resume_id || null) : null,
         tailored_resume: editForm.has_attachment ? (editForm.tailored_resume_id || null) : null,
       }
-      const nextActionType = Number(editForm.initial_milestone_count || 0) === 0
-        ? 'fresh'
-        : mailTypeToActionType(editForm.mail_type)
-      const shouldAppendAction = String(editForm.send_mode || 'sent') === 'sent'
-      if (shouldAppendAction) {
-        payload.append_action = {
-          type: nextActionType,
-          send_mode: 'now',
-          action_at: new Date().toISOString(),
-        }
-      }
       const updated = await updateTrackingRow(access, editForm.id, payload)
       setRows((prev) => prev.map((row) => (row.id === editForm.id ? updated : row)))
       setEditForm(null)
@@ -926,6 +918,71 @@ function TrackingPage() {
       await load()
     } catch (err) {
       console.error(err.message || 'Could not delete row.')
+    }
+  }
+
+  const sendRowImmediately = async (row) => {
+    if (!row || !row.id) return
+    if (row.is_freezed) return
+    setSendConfirmError('')
+    setSendConfirmRow(row)
+  }
+
+  const confirmSendRowImmediately = async () => {
+    const row = sendConfirmRow
+    if (!row || !row.id) return
+    try {
+      setSendingRowId(row.id)
+      const fullRow = await fetchTrackingRow(access, row.id)
+      const templateIds = Array.isArray(fullRow?.template_ids_ordered) && fullRow.template_ids_ordered.length
+        ? fullRow.template_ids_ordered.map((id) => String(id))
+        : (Array.isArray(fullRow?.achievement_ids_ordered) && fullRow.achievement_ids_ordered.length
+          ? fullRow.achievement_ids_ordered.map((id) => String(id))
+          : (fullRow?.template_id ? [String(fullRow.template_id)] : []))
+      const hasMilestones = Array.isArray(fullRow?.milestones) && fullRow.milestones.length > 0
+      const nextActionType = hasMilestones
+        ? mailTypeToActionType(fullRow?.mail_type)
+        : 'fresh'
+
+      const payload = {
+        company: fullRow?.company || null,
+        job: fullRow?.job || null,
+        template: templateIds[0] || null,
+        template_id: templateIds[0] || null,
+        template_ids_ordered: templateIds,
+        personalized_template: fullRow?.personalized_template_id || null,
+        use_hardcoded_personalized_intro: Boolean(fullRow?.use_hardcoded_personalized_intro),
+        achievement: templateIds[0] || null,
+        achievement_ids_ordered: templateIds,
+        company_name: fullRow?.company_name || '',
+        job_id: fullRow?.job_id || '',
+        role: fullRow?.role || '',
+        job_url: fullRow?.job_url || '',
+        schedule_time: null,
+        mail_type: fullRow?.mail_type || 'fresh',
+        resume: fullRow?.resume_preview?.id || null,
+        tailored_resume: fullRow?.tailored_resume || null,
+        is_freezed: Boolean(fullRow?.is_freezed),
+        applied_date: fullRow?.applied_date || null,
+        posting_date: fullRow?.posting_date || null,
+        is_open: Boolean(fullRow?.is_open),
+        selected_hr_ids: Array.isArray(fullRow?.selected_hr_ids) ? fullRow.selected_hr_ids.map((id) => String(id)) : [],
+        append_action: {
+          type: nextActionType,
+          send_mode: 'now',
+          action_at: new Date().toISOString(),
+        },
+      }
+
+      const updated = await updateTrackingRow(access, row.id, payload)
+      setRows((prev) => prev.map((item) => (item.id === row.id ? updated : item)))
+      setSendConfirmRow(null)
+      setSendConfirmError('')
+      await load()
+    } catch (err) {
+      setSendConfirmError(err.message || 'Could not send tracking mail immediately.')
+    } finally {
+      setSendingRowId(null)
     }
   }
 
@@ -1316,10 +1373,26 @@ function TrackingPage() {
                     </td>
                     <td className="tracking-action-cell">
                       <div className="tracking-actions-compact">
+                        {String(rowLastSendMode(row) || '').trim().toLowerCase() === 'on time' ? (
+                          row.mailed ? (
+                            <span className="tracking-action-state tracking-badge is-positive" title="Mail Sent">Sent</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="tracking-send-now-btn"
+                              title="Send Mail Now"
+                              aria-label="Send Mail Now"
+                            onClick={() => sendRowImmediately(row)}
+                            disabled={row.is_freezed || sendingRowId === row.id}
+                          >
+                            <SendNowIcon />
+                          </button>
+                        )
+                        ) : null}
                         <button type="button" className="secondary tracking-icon-btn" title="Detail" onClick={() => navigate(`/tracking/${row.id}`)}><DetailIcon /></button>
                         <button type="button" className="secondary tracking-icon-btn" title="Test Mail" onClick={() => navigate(`/tracking/${row.id}/test-mail`)}><MailTestIcon /></button>
                         <button type="button" className="secondary tracking-icon-btn" title="Edit" onClick={() => openEditForm(row)} disabled={row.is_freezed}><EditIcon /></button>
-                        <button type="button" className="tracking-remove-inline tracking-icon-btn" title="Delete" onClick={() => removeRow(row.id)}><DeleteIcon /></button>
+                        <button type="button" className="tracking-delete-btn tracking-icon-btn" title="Delete" onClick={() => removeRow(row.id)}><DeleteIcon /></button>
                       </div>
                     </td>
                   </tr>
@@ -1434,20 +1507,14 @@ function TrackingPage() {
             </label>
             <label className="tracking-form-span-2">
               Employee (multi-select)
-              <select
-                multiple
-                className="tracking-native-multi"
-                value={Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids.map((id) => String(id)) : []}
-                onChange={(event) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: selectedValuesFromEvent(event) }))}
-              >
-                {activeEmployeeOptions
+              <MultiSelectDropdown
+                values={Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids : []}
+                placeholder="Select employee(s)"
+                options={activeEmployeeOptions
                   .filter((emp) => !createForm.department || String(emp.department || '') === String(createForm.department || ''))
-                  .map((emp) => (
-                    <option key={String(emp.id)} value={String(emp.id)}>
-                      {String(emp.name || '')}
-                    </option>
-                  ))}
-              </select>
+                  .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
+                onChange={(nextValues) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))}
+              />
             </label>
             <div className="tracking-form-section-title tracking-form-span-2">Job & Mail Setup</div>
             <label>
@@ -1666,20 +1733,14 @@ function TrackingPage() {
             </label>
             <label className="tracking-form-span-2">
               Employee (multi-select)
-              <select
-                multiple
-                className="tracking-native-multi"
-                value={Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids.map((id) => String(id)) : []}
-                onChange={(event) => {
-                  setEditForm((prev) => ({ ...prev, selected_hr_ids: selectedValuesFromEvent(event) }))
+              <MultiSelectDropdown
+                values={Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids : []}
+                placeholder="Select employee(s)"
+                options={editEmployeeDropdownOptions}
+                onChange={(nextValues) => {
+                  setEditForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))
                 }}
-              >
-                {editEmployeeDropdownOptions.map((opt) => (
-                  <option key={String(opt.value)} value={String(opt.value)}>
-                    {String(opt.label || '')}
-                  </option>
-                ))}
-              </select>
+              />
             </label>
             <div className="tracking-form-section-title tracking-form-span-2">Job & Mail Setup</div>
             <label>
@@ -1927,6 +1988,37 @@ function TrackingPage() {
             <p className="tracking-employee-preview-text">
               {(Array.isArray(employeePreview.employees) ? employeePreview.employees : []).join(', ') || 'No employees'}
             </p>
+          </div>
+        </div>
+      ) : null}
+
+      {sendConfirmRow ? (
+        <div className="modal-overlay" onClick={() => { if (!sendingRowId) { setSendConfirmRow(null); setSendConfirmError('') } }}>
+          <div className="modal-panel tracking-employee-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Send Mail Now</h2>
+            <p className="subtitle">Re-check everything before sending this mail immediately.</p>
+            <div className="tracking-preview-block">
+              <strong>{sendConfirmRow.company_name || '-'}</strong>
+              <p>{sendConfirmRow.job_id || '-'}</p>
+              <p>{Array.isArray(sendConfirmRow.selected_hrs) && sendConfirmRow.selected_hrs.length ? sendConfirmRow.selected_hrs.join(', ') : 'No employees selected'}</p>
+            </div>
+            {sendConfirmError ? <p className="error">{sendConfirmError}</p> : null}
+            <div className="actions">
+              <button type="button" onClick={confirmSendRowImmediately} disabled={sendingRowId === sendConfirmRow.id}>
+                {sendingRowId === sendConfirmRow.id ? 'Sending...' : 'Confirm Send'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  if (sendingRowId) return
+                  setSendConfirmRow(null)
+                  setSendConfirmError('')
+                }}
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
