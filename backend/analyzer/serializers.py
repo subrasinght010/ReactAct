@@ -75,8 +75,22 @@ class SignupSerializer(serializers.ModelSerializer):
 
 class ResumeSerializer(serializers.ModelSerializer):
     job_id = serializers.IntegerField(source='job.id', read_only=True)
+    job_label = serializers.SerializerMethodField()
     source_resume_id = serializers.IntegerField(source='source_resume.id', read_only=True)
+    source_resume_title = serializers.SerializerMethodField()
     is_tailored = serializers.BooleanField(required=False)
+
+    def get_job_label(self, obj):
+        if not getattr(obj, 'job_id', None) or not obj.job:
+            return ''
+        company_name = obj.job.company.name if getattr(obj.job, 'company_id', None) else ''
+        parts = [str(obj.job.job_id or '').strip(), str(company_name or '').strip(), str(obj.job.role or '').strip()]
+        return ' | '.join([part for part in parts if part])
+
+    def get_source_resume_title(self, obj):
+        if not getattr(obj, 'source_resume_id', None) or not obj.source_resume:
+            return ''
+        return str(obj.source_resume.title or '').strip()
 
     class Meta:
         model = Resume
@@ -91,13 +105,15 @@ class ResumeSerializer(serializers.ModelSerializer):
             'is_tailored',
             'job',
             'job_id',
+            'job_label',
             'source_resume',
             'source_resume_id',
+            'source_resume_title',
             'status',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'optimized_text', 'status', 'ats_pdf_path', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'optimized_text', 'status', 'ats_pdf_path', 'job_id', 'job_label', 'source_resume_id', 'source_resume_title', 'created_at', 'updated_at']
 
 
 class TailoredResumeSerializer(serializers.ModelSerializer):
@@ -507,10 +523,18 @@ class UserProfileSerializer(serializers.ModelSerializer):
     def validate_summary(self, value):
         return _normalize_text(value)
 
+    def validate_role(self, value):
+        text = _normalize_text(value).lower()
+        allowed = {choice[0] for choice in UserProfile.ROLE_CHOICES}
+        if text not in allowed:
+            raise serializers.ValidationError('Role must be superadmin, admin, or read_only.')
+        return text
+
     class Meta:
         model = UserProfile
         fields = [
             'id',
+            'role',
             'full_name',
             'email',
             'contact_number',

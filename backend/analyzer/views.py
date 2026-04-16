@@ -56,39 +56,64 @@ from .management.commands.send_tracking_mails import Command as SendTrackingMail
 APP_UI_TIME_ZONE = ZoneInfo('Asia/Kolkata')
 
 
+def _user_profile_for_permissions(user):
+    if not getattr(user, 'is_authenticated', False):
+        return None
+    profile = getattr(user, 'profile_info', None)
+    if profile is not None:
+        return profile
+    return UserProfile.objects.filter(user=user).first()
+
+
+def _user_role(user):
+    if not getattr(user, 'is_authenticated', False):
+        return UserProfile.ROLE_READ_ONLY
+    if bool(getattr(user, 'is_superuser', False)):
+        return UserProfile.ROLE_SUPERADMIN
+    profile = _user_profile_for_permissions(user)
+    role = str(getattr(profile, 'role', '') or '').strip().lower()
+    allowed = {choice[0] for choice in UserProfile.ROLE_CHOICES}
+    return role if role in allowed else UserProfile.ROLE_ADMIN
+
+
+def _is_superadmin(user):
+    return _user_role(user) == UserProfile.ROLE_SUPERADMIN
+
+
+def _is_read_only_user(user):
+    return _user_role(user) == UserProfile.ROLE_READ_ONLY
+
+
+def _ensure_write_allowed(request):
+    if _is_read_only_user(request.user):
+        return Response({'detail': 'Read only users cannot create, update, or delete data.'}, status=status.HTTP_403_FORBIDDEN)
+    return None
+
+
+def _visible_user_ids_for_user(user):
+    if not getattr(user, 'is_authenticated', False):
+        return []
+    if _is_superadmin(user):
+        return list(User.objects.values_list('id', flat=True))
+    return [user.id]
+
+
 def _workspace_owner_for_user(user):
     if not getattr(user, 'is_authenticated', False):
         return None
-    membership = (
-        WorkspaceMember.objects
-        .filter(member=user, is_active=True)
-        .select_related('owner')
-        .order_by('-updated_at', '-created_at')
-        .first()
-    )
-    return membership.owner if membership and membership.owner_id else user
+    return user
 
 
 def _accessible_owner_ids_for_user(user):
-    if not getattr(user, 'is_authenticated', False):
-        return []
-    owner_ids = {user.id}
-    owner_ids.update(
-        WorkspaceMember.objects
-        .filter(member=user, is_active=True)
-        .values_list('owner_id', flat=True)
-    )
-    return list(owner_ids)
+    return _visible_user_ids_for_user(user)
 
 
 def _is_workspace_owner(user):
-    if not getattr(user, 'is_authenticated', False):
-        return False
-    return not WorkspaceMember.objects.filter(member=user, is_active=True).exists()
+    return bool(getattr(user, 'is_authenticated', False)) and not _is_read_only_user(user)
 
 
 def _can_manage_workspace_fully(user):
-    return _is_workspace_owner(user)
+    return bool(getattr(user, 'is_authenticated', False)) and not _is_read_only_user(user)
 
 
 def _paginate_queryset(queryset, request, default_page_size=10, max_page_size=100):
@@ -684,6 +709,23 @@ def _plain_text_from_html(value: str) -> str:
     t = t.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
     t = re.sub(r"\s+", " ", t).strip()
     return t
+
+
+def _remove_resume_file(resume):
+    if not resume:
+        return
+    file_field = getattr(resume, 'file', None)
+    if not file_field:
+        return
+    file_name = str(getattr(file_field, 'name', '') or '').strip()
+    if not file_name:
+        return
+    try:
+        file_field.delete(save=False)
+    except Exception:
+        pass
+    if getattr(resume, 'file', None):
+        resume.file = None
 
 
 def _builder_data_to_text(builder_data: dict) -> str:
@@ -1450,6 +1492,7 @@ class ProfileView(APIView):
         profile, _ = UserProfile.objects.get_or_create(
             user=request.user,
             defaults={
+                'role': UserProfile.ROLE_ADMIN,
                 'full_name': request.user.username,
                 'email': request.user.email or '',
             },
@@ -1472,6 +1515,7 @@ class ProfileInfoView(APIView):
         profile, _ = UserProfile.objects.get_or_create(
             user=request.user,
             defaults={
+                'role': UserProfile.ROLE_ADMIN,
                 'full_name': request.user.username,
                 'email': request.user.email or '',
             },
@@ -1488,8 +1532,13 @@ class ProfileInfoView(APIView):
         return Response(UserProfileSerializer(profile).data, status=status.HTTP_200_OK)
 
     def put(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         profile = self._get_or_create(request)
         payload = dict(request.data or {})
+        if not _is_superadmin(request.user):
+            payload.pop('role', None)
         location_ref_raw = str(payload.get('location_ref') or '').strip()
         if 'location_ref' in payload and not location_ref_raw:
             payload['location_ref'] = None
@@ -1522,10 +1571,13 @@ class ProfilePanelListCreateView(APIView):
     max_panels = 2
 
     def get(self, request):
-        rows = ProfilePanel.objects.filter(user=request.user).order_by('-updated_at', '-created_at')
+        rows = ProfilePanel.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user)).order_by('-updated_at', '-created_at')
         return Response(ProfilePanelSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         if ProfilePanel.objects.filter(user=request.user).count() >= self.max_panels:
             return Response({'detail': 'Maximum 2 profile panels allowed.'}, status=status.HTTP_400_BAD_REQUEST)
         payload = dict(request.data or {})
@@ -1560,9 +1612,12 @@ class ProfilePanelDetailView(APIView):
     parser_classes = [JSONParser]
 
     def _get_row(self, request, panel_id):
-        return ProfilePanel.objects.filter(user=request.user, id=panel_id).first()
+        return ProfilePanel.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user), id=panel_id).first()
 
     def put(self, request, panel_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         row = self._get_row(request, panel_id)
         if not row:
             return Response({'detail': 'Profile panel not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -1593,6 +1648,9 @@ class ProfilePanelDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, panel_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         row = self._get_row(request, panel_id)
         if not row:
             return Response({'detail': 'Profile panel not found.'}, status=status.HTTP_404_NOT_FOUND)
@@ -1605,10 +1663,14 @@ class WorkspaceMemberListCreateView(APIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        rows = WorkspaceMember.objects.filter(owner=request.user).select_related('member').order_by('-updated_at', '-created_at')
+        owner_ids = _accessible_owner_ids_for_user(request.user)
+        rows = WorkspaceMember.objects.filter(owner_id__in=owner_ids).select_related('member').order_by('-updated_at', '-created_at')
         return Response(WorkspaceMemberSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         payload = dict(request.data or {})
         username = str(payload.get('username') or payload.get('member_username') or '').strip()
         if not username:
@@ -1639,7 +1701,10 @@ class WorkspaceMemberDetailView(APIView):
     parser_classes = [JSONParser]
 
     def delete(self, request, member_id):
-        row = WorkspaceMember.objects.filter(owner=request.user, id=member_id).first()
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
+        row = WorkspaceMember.objects.filter(owner_id__in=_accessible_owner_ids_for_user(request.user), id=member_id).first()
         if not row:
             return Response({'detail': 'Workspace member not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.hard_delete()
@@ -1651,15 +1716,19 @@ class TemplateListCreateView(APIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        rows = Template.objects.filter(user=request.user).order_by('-created_at')
+        rows = Template.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user)).order_by('-created_at')
         return Response(TemplateSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         serializer = TemplateSerializer(data=request.data, context={'request': request})
         if serializer.is_valid():
             profile, _ = UserProfile.objects.get_or_create(
                 user=request.user,
                 defaults={
+                    'role': UserProfile.ROLE_ADMIN,
                     'full_name': request.user.username,
                     'email': request.user.email or '',
                 },
@@ -1677,9 +1746,12 @@ class TemplateDetailView(APIView):
         return template_id if template_id is not None else achievement_id
 
     def _get_object(self, request, template_id=None, achievement_id=None):
-        return Template.objects.get(id=self._resolve_id(template_id, achievement_id), user=request.user)
+        return Template.objects.get(id=self._resolve_id(template_id, achievement_id), user_id__in=_accessible_owner_ids_for_user(request.user))
 
     def put(self, request, template_id=None, achievement_id=None):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object(request, template_id, achievement_id)
         except Template.DoesNotExist:
@@ -1691,6 +1763,9 @@ class TemplateDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, template_id=None, achievement_id=None):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object(request, template_id, achievement_id)
         except Template.DoesNotExist:
@@ -1735,7 +1810,11 @@ class InterviewListCreateView(APIView):
         job_key = str(job_role or '').strip().lower()
         if not company_key or not job_key:
             return False
-        rows = Interview.objects.filter(user=request.user, company_key=company_key, job_role_key=job_key)
+        rows = Interview.objects.filter(
+            user_id__in=_accessible_owner_ids_for_user(request.user),
+            company_key=company_key,
+            job_role_key=job_key,
+        )
         if exclude_id:
             rows = rows.exclude(id=exclude_id)
         return rows.exists()
@@ -1782,17 +1861,24 @@ class InterviewListCreateView(APIView):
         row.save(update_fields=['milestone_events', 'updated_at'])
 
     def get(self, request):
-        rows = Interview.objects.filter(user=request.user).order_by('-updated_at', '-created_at')
+        rows = Interview.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user)).order_by('-updated_at', '-created_at')
         return Response(InterviewSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         payload = dict(request.data or {})
         payload['action'] = str(payload.get('action') or payload.get('section') or 'active').strip().lower() or 'active'
         raw_job_id = str(payload.get('job') or '').strip()
         selected_job = None
         if raw_job_id:
             try:
-                selected_job = Job.objects.get(id=raw_job_id, user=request.user, is_removed=False)
+                selected_job = Job.objects.get(
+                    id=raw_job_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    is_removed=False,
+                )
             except Job.DoesNotExist:
                 return Response({'detail': 'Selected job not found.'}, status=status.HTTP_400_BAD_REQUEST)
         company_name = str(payload.get('company_name') or '').strip()
@@ -1840,7 +1926,7 @@ class InterviewDetailView(APIView):
     ACTION_LABELS = InterviewListCreateView.ACTION_LABELS
 
     def _get_object(self, request, interview_id):
-        return Interview.objects.get(id=interview_id, user=request.user)
+        return Interview.objects.get(id=interview_id, user_id__in=_accessible_owner_ids_for_user(request.user))
 
     def _round_value(self, stage):
         raw = str(stage or '').strip().lower()
@@ -1884,6 +1970,9 @@ class InterviewDetailView(APIView):
         row.save(update_fields=['milestone_events', 'updated_at'])
 
     def put(self, request, interview_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object(request, interview_id)
         except Interview.DoesNotExist:
@@ -1897,7 +1986,11 @@ class InterviewDetailView(APIView):
         selected_job = row.job if row.job_id else None
         if raw_job_id:
             try:
-                selected_job = Job.objects.get(id=raw_job_id, user=request.user, is_removed=False)
+                selected_job = Job.objects.get(
+                    id=raw_job_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    is_removed=False,
+                )
             except Job.DoesNotExist:
                 return Response({'detail': 'Selected job not found.'}, status=status.HTTP_400_BAD_REQUEST)
         company_name = payload.get('company_name', row.company_name)
@@ -1919,7 +2012,11 @@ class InterviewDetailView(APIView):
                 job_code = selected_job.job_id or job_code
         company_key = str(company_name or '').strip().lower()
         job_key = str(job_role or '').strip().lower()
-        duplicate = Interview.objects.filter(user=request.user, company_key=company_key, job_role_key=job_key).exclude(id=row.id).exists()
+        duplicate = Interview.objects.filter(
+            user_id__in=_accessible_owner_ids_for_user(request.user),
+            company_key=company_key,
+            job_role_key=job_key,
+        ).exclude(id=row.id).exists()
         if duplicate:
             return Response({'detail': 'Interview with same company and job already exists.'}, status=status.HTTP_400_BAD_REQUEST)
         next_stage = payload.get('stage', row.stage)
@@ -1955,6 +2052,9 @@ class InterviewDetailView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, interview_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object(request, interview_id)
         except Interview.DoesNotExist:
@@ -1971,6 +2071,9 @@ class ProfileConfigView(APIView):
         return Response(_get_user_profile_config(request.user))
 
     def put(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         saved = _set_user_profile_config(request.user, request.data if isinstance(request.data, dict) else {})
         return Response(saved)
 
@@ -1991,10 +2094,19 @@ class ResumeListCreateView(APIView):
             return
         Resume.objects.filter(user=user).exclude(id=resume.id).update(is_default=False)
 
+    def _resolve_job(self, request, raw_value):
+        job_id = str(raw_value or '').strip()
+        if not job_id:
+            return None
+        try:
+            return Job.objects.get(id=job_id, user_id__in=_accessible_owner_ids_for_user(request.user), is_removed=False)
+        except Job.DoesNotExist:
+            raise ValidationError({'job': 'Job not found.'})
+
     def get(self, request):
         # Always return the latest 6 resumes (do not de-dupe by title).
         include_tailored = str(request.query_params.get('include_tailored') or '').strip().lower() in {'1', 'true', 'yes'}
-        qs = Resume.objects.filter(user=request.user)
+        qs = Resume.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user))
         if not include_tailored:
             qs = qs.filter(is_tailored=False)
         qs = qs.order_by('-updated_at', '-created_at')[:6]
@@ -2002,6 +2114,9 @@ class ResumeListCreateView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         serializer = ResumeSerializer(data=request.data)
         if serializer.is_valid():
             title = (serializer.validated_data.get('title') or '').strip()
@@ -2012,15 +2127,22 @@ class ResumeListCreateView(APIView):
             incoming_text = (serializer.validated_data.get("original_text") or "").strip()
             if not incoming_text and incoming_builder:
                 incoming_text = _builder_data_to_text(incoming_builder)
+            try:
+                selected_job = self._resolve_job(request, serializer.validated_data.get('job') or request.data.get('job'))
+            except ValidationError as exc:
+                return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
 
             created = serializer.save(
                 user=request.user,
                 is_tailored=False,
-                job=None,
+                job=selected_job,
                 source_resume=None,
                 ats_pdf_path='',
+                file=None,
                 original_text=incoming_text or serializer.validated_data.get("original_text") or "",
             )
+            _remove_resume_file(created)
+            created.save(update_fields=['file'])
             self._apply_default_resume(request.user, created)
 
             # Enforce max 6 resumes by deleting older ones (by updated_at/created_at).
@@ -2051,8 +2173,19 @@ class ResumeDetailView(APIView):
             return
         Resume.objects.filter(user=user).exclude(id=resume.id).update(is_default=False)
 
+    def _resolve_job(self, request, raw_value):
+        if raw_value in [None, '']:
+            return None
+        job_id = str(raw_value or '').strip()
+        if not job_id:
+            return None
+        try:
+            return Job.objects.get(id=job_id, user_id__in=_accessible_owner_ids_for_user(request.user), is_removed=False)
+        except Job.DoesNotExist:
+            raise ValidationError({'job': 'Job not found.'})
+
     def get_object(self, request, resume_id):
-        return Resume.objects.get(id=resume_id, user=request.user)
+        return Resume.objects.get(id=resume_id, user_id__in=_accessible_owner_ids_for_user(request.user))
 
     def get(self, request, resume_id):
         try:
@@ -2063,6 +2196,9 @@ class ResumeDetailView(APIView):
         return Response(serializer.data)
 
     def put(self, request, resume_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             resume = self.get_object(request, resume_id)
         except Resume.DoesNotExist:
@@ -2072,12 +2208,26 @@ class ResumeDetailView(APIView):
         if serializer.is_valid():
             builder_changed = 'builder_data' in serializer.validated_data
             title_changed = 'title' in serializer.validated_data
-            updated = serializer.save(ats_pdf_path='' if (builder_changed or title_changed) else resume.ats_pdf_path)
+            save_kwargs = {
+                'ats_pdf_path': '' if (builder_changed or title_changed) else resume.ats_pdf_path,
+                'file': None,
+            }
+            if 'job' in request.data or 'job' in serializer.validated_data:
+                try:
+                    save_kwargs['job'] = self._resolve_job(request, serializer.validated_data.get('job') if 'job' in serializer.validated_data else request.data.get('job'))
+                except ValidationError as exc:
+                    return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
+            updated = serializer.save(**save_kwargs)
+            _remove_resume_file(updated)
+            updated.save(update_fields=['file'])
             self._apply_default_resume(request.user, updated)
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, resume_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             resume = self.get_object(request, resume_id)
         except Resume.DoesNotExist:
@@ -2093,7 +2243,7 @@ class TailoredResumeListCreateView(APIView):
     def get(self, request):
         rows = (
             Resume.objects
-            .filter(user=request.user, is_tailored=True)
+            .filter(user_id__in=_accessible_owner_ids_for_user(request.user), is_tailored=True)
             .select_related('job', 'source_resume')
             .order_by('-updated_at', '-created_at')
         )
@@ -2106,6 +2256,9 @@ class TailoredResumeListCreateView(APIView):
         return Response(TailoredResumeSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         payload = dict(request.data or {})
         name = str(payload.get('name') or '').strip() or 'Tailored Resume'
         builder_data = payload.get('builder_data') or {}
@@ -2123,12 +2276,12 @@ class TailoredResumeListCreateView(APIView):
         raw_resume = str(payload.get('resume') or '').strip()
         if raw_job:
             try:
-                job = Job.objects.get(id=raw_job, user=request.user)
+                job = Job.objects.get(id=raw_job, user_id__in=_accessible_owner_ids_for_user(request.user))
             except Job.DoesNotExist:
                 return Response({'job': ['Job not found.']}, status=status.HTTP_400_BAD_REQUEST)
         if raw_resume:
             try:
-                resume = Resume.objects.get(id=raw_resume, user=request.user)
+                resume = Resume.objects.get(id=raw_resume, user_id__in=_accessible_owner_ids_for_user(request.user))
             except Resume.DoesNotExist:
                 return Response({'resume': ['Resume not found.']}, status=status.HTTP_400_BAD_REQUEST)
         else:
@@ -2142,6 +2295,7 @@ class TailoredResumeListCreateView(APIView):
             job=job,
             source_resume=resume,
             status='optimized',
+            file=None,
         )
         return Response(TailoredResumeSerializer(created).data, status=status.HTTP_201_CREATED)
 
@@ -2292,7 +2446,7 @@ class TailorResumeView(APIView):
         reference_resume_id = str(request.data.get('reference_resume_id') or '').strip()
         if is_authenticated and reference_resume_id:
             try:
-                reference_resume = Resume.objects.get(id=int(reference_resume_id), user=request.user)
+                reference_resume = Resume.objects.get(id=int(reference_resume_id), user_id__in=_accessible_owner_ids_for_user(request.user))
             except Exception:  # noqa: BLE001
                 reference_resume = None
 
@@ -2311,9 +2465,12 @@ class TailorResumeView(APIView):
         if not keywords:
             return Response({'detail': 'Could not extract JD keywords.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        resumes = list(Resume.objects.filter(user=request.user, is_tailored=False).order_by('-updated_at', '-created_at')) if is_authenticated else []
+        resumes = list(Resume.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user), is_tailored=False).order_by('-updated_at', '-created_at')) if is_authenticated else []
         best = find_best_resume_match(keywords, resumes)
         latest_resume = resumes[0] if resumes else None
+        selected_job = None
+        if is_authenticated and job_id:
+            selected_job = Job.objects.filter(user_id__in=_accessible_owner_ids_for_user(request.user), job_id__iexact=job_id, is_removed=False).order_by('-updated_at', '-created_at').first()
 
         if is_authenticated and (not force_rewrite) and (reference_resume is None) and best.resume and min_match <= best.score <= max_match:
             payload = ResumeSerializer(best.resume).data
@@ -2394,6 +2551,8 @@ class TailorResumeView(APIView):
                 {'detail': 'Saving tailored resumes requires authentication. Use preview mode only.'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+        if _is_read_only_user(request.user):
+            return Response({'detail': 'Read only users cannot create, update, or delete data.'}, status=status.HTTP_403_FORBIDDEN)
 
         created = Resume.objects.create(
             user=request.user,
@@ -2401,8 +2560,10 @@ class TailorResumeView(APIView):
             original_text=plain_text,
             builder_data=tailored_builder,
             is_tailored=True,
+            job=selected_job,
             source_resume=reference_resume or best.resume or latest_resume,
             status='optimized',
+            file=None,
         )
         self._enforce_resume_limit(request.user)
 
@@ -2436,6 +2597,9 @@ class OptimizeResumeQualityView(APIView):
         return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         if not os.getenv('OPENAI_API_KEY', '').strip():
             return Response(
                 {'detail': 'AI optimization is required. Configure OPENAI_API_KEY on backend to continue.'},
@@ -2503,6 +2667,9 @@ class ExportAtsPdfLocalView(APIView):
     parser_classes = [JSONParser]
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         builder_data = request.data.get("builder_data")
         if isinstance(builder_data, str):
             try:
@@ -2521,7 +2688,7 @@ class ExportAtsPdfLocalView(APIView):
         resume_id = str(request.data.get("resume_id") or "").strip()
         if resume_id:
             try:
-                resume = Resume.objects.get(id=resume_id, user=request.user)
+                resume = Resume.objects.get(id=resume_id, user_id__in=_accessible_owner_ids_for_user(request.user))
             except Resume.DoesNotExist:
                 return Response({"detail": "Resume not found for PDF export."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2611,35 +2778,46 @@ class ApplicationTrackingListCreateView(APIView):
         company_id = payload.get('company')
         if company_id:
             try:
-                return Company.objects.get(id=company_id, user=request.user)
+                return Company.objects.get(
+                    id=company_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                )
             except Company.DoesNotExist:
                 return None
 
         company_name = str(payload.get('company_name') or '').strip()
         if not company_name:
             company_name = 'New Company'
-        company, _ = Company.objects.get_or_create(user=request.user, name=company_name)
+        company, _ = Company.objects.get_or_create(
+            user=_workspace_owner_for_user(request.user),
+            name=company_name,
+        )
         return company
 
     def _resolve_job(self, request, company, payload):
         explicit_job_id = payload.get('job')
         if explicit_job_id:
             try:
-                return Job.objects.get(id=explicit_job_id, user=request.user, is_removed=False)
+                return Job.objects.get(
+                    id=explicit_job_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    is_removed=False,
+                )
             except Job.DoesNotExist:
                 return None
 
         job_code = str(payload.get('job_id') or '').strip()
+        workspace_owner = _workspace_owner_for_user(request.user)
         if job_code:
             job = Job.objects.filter(
-                user=request.user,
+                user=workspace_owner,
                 company=company,
                 job_id__iexact=job_code,
                 is_removed=False,
             ).first()
             if not job:
                 job = Job.objects.create(
-                    user=request.user,
+                    user=workspace_owner,
                     company=company,
                     job_id=job_code,
                     role=str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
@@ -2647,7 +2825,7 @@ class ApplicationTrackingListCreateView(APIView):
                 )
         else:
             job = Job.objects.create(
-                user=request.user,
+                user=workspace_owner,
                 company=company,
                 job_id=f"JOB-{int(timezone.now().timestamp())}",
                 role=str(payload.get('role') or 'Software Developer').strip() or 'Software Developer',
@@ -2686,7 +2864,7 @@ class ApplicationTrackingListCreateView(APIView):
         if not raw:
             return None
         try:
-            return Resume.objects.get(id=raw, user=request.user)
+            return Resume.objects.get(id=raw, user_id__in=_accessible_owner_ids_for_user(request.user))
         except Resume.DoesNotExist:
             return None
 
@@ -2713,10 +2891,14 @@ class ApplicationTrackingListCreateView(APIView):
             selected_names = [x.strip() for x in selected_names.split(',') if x.strip()]
 
         if isinstance(selected_ids, list) and selected_ids:
-            targets = Employee.objects.filter(user=request.user, id__in=selected_ids, working_mail=True)
+            targets = Employee.objects.filter(
+                user_id__in=_accessible_owner_ids_for_user(request.user),
+                id__in=selected_ids,
+                working_mail=True,
+            )
         elif isinstance(selected_names, list) and selected_names and company_id:
             targets = Employee.objects.filter(
-                user=request.user,
+                user_id__in=_accessible_owner_ids_for_user(request.user),
                 company_id=company_id,
                 working_mail=True,
                 name__in=[str(name or '').strip() for name in selected_names if str(name or '').strip()],
@@ -3019,8 +3201,9 @@ class ApplicationTrackingListCreateView(APIView):
         return bool(company and str(getattr(company, 'mail_format', '') or '').strip())
 
     def get(self, request):
+        visible_owner_ids = _accessible_owner_ids_for_user(request.user)
         queryset = (
-            Tracking.objects.filter(user=request.user)
+            Tracking.objects.filter(user_id__in=visible_owner_ids)
             .select_related('job__company', 'resume', 'mail_tracking_record', 'template')
             .prefetch_related('selected_hrs', 'actions', 'job__resumes')
             .order_by('-created_at')
@@ -3031,7 +3214,11 @@ class ApplicationTrackingListCreateView(APIView):
             for row in rows
             if row.job_id and row.job and row.job.company_id
         }
-        employees = Employee.objects.filter(user=request.user, company_id__in=company_ids, working_mail=True).order_by('name')
+        employees = Employee.objects.filter(
+            user_id__in=visible_owner_ids,
+            company_id__in=company_ids,
+            working_mail=True,
+        ).order_by('name')
         available_hr_map = {}
         for emp in employees:
             available_hr_map.setdefault(emp.company_id, []).append(emp)
@@ -3045,6 +3232,9 @@ class ApplicationTrackingListCreateView(APIView):
         )
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         payload = request.data or {}
         schedule_time = self._to_datetime(payload.get('schedule_time'))
         mail_type = str(payload.get('mail_type') or payload.get('action') or 'fresh').strip().lower()
@@ -3065,9 +3255,16 @@ class ApplicationTrackingListCreateView(APIView):
         tailored_resume = None
         tailored_resume_id = str(payload.get('tailored_resume') or '').strip()
         if tailored_resume_id:
-            tailored_resume = Resume.objects.filter(id=tailored_resume_id, user=request.user, is_tailored=True).first()
+            tailored_resume = Resume.objects.filter(
+                id=tailored_resume_id,
+                user_id__in=_accessible_owner_ids_for_user(request.user),
+                is_tailored=True,
+            ).first()
             if not tailored_resume and job:
-                tailored_resume = job.resumes.filter(user=request.user, is_tailored=True).order_by('created_at', 'id').first()
+                tailored_resume = job.resumes.filter(
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    is_tailored=True,
+                ).order_by('created_at', 'id').first()
             if not tailored_resume:
                 return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
         template_ids_ordered = _normalize_tracking_template_ids(payload, request.data)
@@ -3075,7 +3272,7 @@ class ApplicationTrackingListCreateView(APIView):
             legacy_template_raw = str(payload.get('template') or payload.get('template_id') or payload.get('achievement') or payload.get('achievement_id') or '').strip()
             if legacy_template_raw:
                 template_ids_ordered = [legacy_template_raw]
-        templates = _resolve_tracking_templates(request.user, template_ids_ordered)
+        templates = _resolve_tracking_templates(_workspace_owner_for_user(request.user), template_ids_ordered)
         if template_ids_ordered and len(templates) != len(template_ids_ordered):
             return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
         template_error = _validate_tracking_templates(templates, mail_type)
@@ -3086,6 +3283,12 @@ class ApplicationTrackingListCreateView(APIView):
         personalized_template_id = str(payload.get('personalized_template') or '').strip()
         if personalized_template_id:
             personalized_template = Template.objects.filter(id=personalized_template_id, user=request.user, category='personalized').first()
+            if not personalized_template:
+                personalized_template = Template.objects.filter(
+                    id=personalized_template_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    category='personalized',
+                ).first()
             if not personalized_template:
                 return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
         selected_targets = self._resolve_selected_hrs(
@@ -3098,7 +3301,7 @@ class ApplicationTrackingListCreateView(APIView):
 
         reuse_existing_row = None
         if mail_type == 'fresh':
-            reuse_existing_row = _same_day_job_tracking_row(request.user, job, timezone.localdate())
+            reuse_existing_row = _same_day_job_tracking_row(_workspace_owner_for_user(request.user), job, timezone.localdate())
             if reuse_existing_row:
                 existing_selected_ids = sorted(list(reuse_existing_row.selected_hrs.values_list('id', flat=True)))
                 overlap = [
@@ -3113,7 +3316,7 @@ class ApplicationTrackingListCreateView(APIView):
                     )
 
         tracking = reuse_existing_row or Tracking.objects.create(
-            user=request.user,
+            user=_workspace_owner_for_user(request.user),
             job=job,
             template=template,
             template_ids_ordered=[item.id for item in templates],
@@ -3162,7 +3365,7 @@ class ApplicationTrackingListCreateView(APIView):
             selected_employees = list(tracking.selected_hrs.all())
             selected_employee_ids = sorted([emp.id for emp in selected_employees if emp.id])
             existing_fresh_today = _user_fresh_tracking_employee_map_for_day(
-                request.user,
+                tracking.user,
                 employee_ids=selected_employee_ids,
                 exclude_tracking_id=tracking.id,
                 day=timezone.localdate(),
@@ -3199,7 +3402,11 @@ class ApplicationTrackingListCreateView(APIView):
         if action_error:
             return Response({'detail': action_error}, status=status.HTTP_400_BAD_REQUEST)
 
-        available = Employee.objects.filter(user=request.user, company_id=company.id, working_mail=True).order_by('name')
+        available = Employee.objects.filter(
+            user_id__in=_accessible_owner_ids_for_user(request.user),
+            company_id=company.id,
+            working_mail=True,
+        ).order_by('name')
         available_hr_map = {company.id: list(available)}
         return Response(
             self._serialize_tracking_row(
@@ -3215,10 +3422,10 @@ class ApplicationTrackingDetailView(APIView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def _get_object(self, request, tracking_id):
-        return Tracking.objects.get(id=tracking_id, user=request.user)
+        return Tracking.objects.get(id=tracking_id, user_id__in=_accessible_owner_ids_for_user(request.user))
 
     def _get_object_any(self, request, tracking_id):
-        return Tracking.objects.get(id=tracking_id, user=request.user)
+        return Tracking.objects.get(id=tracking_id, user_id__in=_accessible_owner_ids_for_user(request.user))
 
     def _is_hard_delete(self, request):
         mode = str(request.query_params.get('delete_mode') or '').strip().lower()
@@ -3495,7 +3702,7 @@ class ApplicationTrackingDetailView(APIView):
         try:
             row = (
                 Tracking.objects
-                .filter(id=tracking_id, user=request.user)
+                .filter(id=tracking_id, user_id__in=_accessible_owner_ids_for_user(request.user))
                 .select_related('job__company', 'mail_tracking_record', 'resume', 'template', 'personalized_template')
                 .prefetch_related('selected_hrs', 'actions', 'job__resumes')
                 .first()
@@ -3507,6 +3714,9 @@ class ApplicationTrackingDetailView(APIView):
         return Response(self._serialize_tracking_row(row), status=status.HTTP_200_OK)
 
     def put(self, request, tracking_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object(request, tracking_id)
         except Tracking.DoesNotExist:
@@ -3521,11 +3731,11 @@ class ApplicationTrackingDetailView(APIView):
         company = job.company if job and job.company_id else None
         if company_id:
             try:
-                company = Company.objects.get(id=company_id, user=request.user)
+                company = Company.objects.get(id=company_id, user_id__in=_accessible_owner_ids_for_user(request.user))
             except Company.DoesNotExist:
                 return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
         elif company_name:
-            company, _ = Company.objects.get_or_create(user=request.user, name=company_name)
+            company, _ = Company.objects.get_or_create(user=row.user, name=company_name)
 
         if job and company and job.company_id != company.id:
             job.company = company
@@ -3560,7 +3770,7 @@ class ApplicationTrackingDetailView(APIView):
                 row.resume = None
             else:
                 try:
-                    row.resume = Resume.objects.get(id=raw_resume_id, user=request.user)
+                    row.resume = Resume.objects.get(id=raw_resume_id, user_id__in=_accessible_owner_ids_for_user(request.user))
                 except Resume.DoesNotExist:
                     return Response({'detail': 'Resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
         if 'tailored_resume' in payload:
@@ -3569,9 +3779,16 @@ class ApplicationTrackingDetailView(APIView):
                 if row.resume_id and row.resume and bool(getattr(row.resume, 'is_tailored', False)):
                     row.resume = None
             else:
-                tailored = Resume.objects.filter(id=raw_tailored_id, user=request.user, is_tailored=True).first()
+                tailored = Resume.objects.filter(
+                    id=raw_tailored_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    is_tailored=True,
+                ).first()
                 if not tailored and row.job_id and row.job:
-                    tailored = row.job.resumes.filter(user=request.user, is_tailored=True).order_by('created_at', 'id').first()
+                    tailored = row.job.resumes.filter(
+                        user_id__in=_accessible_owner_ids_for_user(request.user),
+                        is_tailored=True,
+                    ).order_by('created_at', 'id').first()
                 if not tailored:
                     return Response({'detail': 'Tailored resume not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.resume = tailored
@@ -3581,7 +3798,7 @@ class ApplicationTrackingDetailView(APIView):
                 legacy_template_raw = str(payload.get('template') or payload.get('template_id') or payload.get('achievement') or payload.get('achievement_id') or '').strip()
                 if legacy_template_raw:
                     template_ids_ordered = [legacy_template_raw]
-            templates = _resolve_tracking_templates(request.user, template_ids_ordered)
+            templates = _resolve_tracking_templates(row.user, template_ids_ordered)
             if template_ids_ordered and len(templates) != len(template_ids_ordered):
                 return Response({'detail': 'One or more templates were not found.'}, status=status.HTTP_400_BAD_REQUEST)
             template_error = _validate_tracking_templates(
@@ -3597,7 +3814,11 @@ class ApplicationTrackingDetailView(APIView):
             if not raw_personalized_id:
                 row.personalized_template = None
             else:
-                selected_personalized = Template.objects.filter(id=raw_personalized_id, user=request.user, category='personalized').first()
+                selected_personalized = Template.objects.filter(
+                    id=raw_personalized_id,
+                    user_id__in=_accessible_owner_ids_for_user(request.user),
+                    category='personalized',
+                ).first()
                 if not selected_personalized:
                     return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.personalized_template = selected_personalized
@@ -3613,7 +3834,7 @@ class ApplicationTrackingDetailView(APIView):
         if not any(key in payload for key in ['template', 'template_id', 'template_ids_ordered', 'achievement', 'achievement_id', 'achievement_ids_ordered']):
             template_error = _validate_tracking_templates(
                 _resolve_tracking_templates(
-                    request.user,
+                    row.user,
                     row.template_ids_ordered if isinstance(row.template_ids_ordered, list) else (
                         [str(row.template_id)] if row.template_id else []
                     ),
@@ -3636,7 +3857,7 @@ class ApplicationTrackingDetailView(APIView):
         if any(key in payload for key in ['maild_at', 'mailed_at', 'replied_at', 'mailed']):
             mail_tracking = _mail_tracking_for_row(row)
             if not mail_tracking:
-                mail_tracking = MailTracking.objects.create(user=request.user, tracking=row, resume=row.resume)
+                mail_tracking = MailTracking.objects.create(user=row.user, tracking=row, resume=row.resume)
 
         selected_hr_ids = payload.get('selected_hr_ids')
         selected_hrs = payload.get('selected_hrs')
@@ -3654,11 +3875,20 @@ class ApplicationTrackingDetailView(APIView):
 
         next_selected = None
         if isinstance(selected_hr_ids, list):
-            next_selected = Employee.objects.filter(user=request.user, id__in=selected_hr_ids, working_mail=True)
+            next_selected = Employee.objects.filter(
+                user_id__in=_accessible_owner_ids_for_user(request.user),
+                id__in=selected_hr_ids,
+                working_mail=True,
+            )
         elif isinstance(selected_hrs, list):
             target_names = [str(name or '').strip() for name in selected_hrs if str(name or '').strip()]
             company_id_ref = row.job.company_id if row.job_id and row.job and row.job.company_id else None
-            next_selected = Employee.objects.filter(user=request.user, company_id=company_id_ref, working_mail=True, name__in=target_names)
+            next_selected = Employee.objects.filter(
+                user_id__in=_accessible_owner_ids_for_user(request.user),
+                company_id=company_id_ref,
+                working_mail=True,
+                name__in=target_names,
+            )
 
         if next_selected is not None:
             row.selected_hrs.set(next_selected)
@@ -3854,6 +4084,9 @@ class ApplicationTrackingDetailView(APIView):
         return Response(self._serialize_tracking_row(fresh), status=status.HTTP_200_OK)
 
     def delete(self, request, tracking_id):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             row = self._get_object_any(request, tracking_id)
         except Tracking.DoesNotExist:
@@ -3927,6 +4160,9 @@ class ApplicationTrackingMailTestView(APIView):
             }, status=status.HTTP_200_OK)
 
         if action == 'save':
+            denied = _ensure_write_allowed(request)
+            if denied:
+                return denied
             previews = request.data.get('previews')
             if not isinstance(previews, list) or not previews:
                 return Response({'detail': 'Preview list is required.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -3977,6 +4213,9 @@ class CompanyListCreateView(APIView):
         )
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         workspace_owner = _workspace_owner_for_user(request.user)
         serializer = CompanySerializer(data=request.data)
         if serializer.is_valid():
@@ -4029,6 +4268,9 @@ class EmployeeListCreateView(APIView):
         return Response(EmployeeSerializer(rows, many=True).data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         payload = dict(request.data or {})
         company_id = payload.get('company')
         if not company_id:
@@ -4150,6 +4392,9 @@ class JobListCreateView(APIView):
         return Response({**meta, 'results': ser.data}, status=status.HTTP_200_OK)
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         workspace_owner = _workspace_owner_for_user(request.user)
         data = request.data.copy()
         if hasattr(data, '_mutable'):
@@ -4498,6 +4743,9 @@ class BulkUploadJobsEmployeesView(APIView):
         return summary
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             payload = self._extract_payload(request)
             employees_rows = self._extract_list(payload, 'employees')
@@ -4543,6 +4791,9 @@ class BulkUploadEmployeesView(BulkUploadJobsEmployeesView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             payload = self._extract_payload(request)
             employees_rows = self._extract_list(payload, 'employees')
@@ -4572,6 +4823,9 @@ class BulkUploadJobsView(BulkUploadJobsEmployeesView):
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def post(self, request):
+        denied = _ensure_write_allowed(request)
+        if denied:
+            return denied
         try:
             payload = self._extract_payload(request)
             jobs_rows = self._extract_list(payload, 'jobs')
@@ -4717,6 +4971,8 @@ class ExtensionJobCreateView(APIView):
         actor = _resolve_extension_user(request)
         if not actor:
             return Response({'detail': 'Please login in web app'}, status=status.HTTP_401_UNAUTHORIZED)
+        if _is_read_only_user(actor):
+            return Response({'detail': 'Read-only users cannot create jobs.'}, status=status.HTTP_403_FORBIDDEN)
         workspace_owner = _workspace_owner_for_user(actor)
 
         company, company_error = self._resolve_company(
@@ -4828,6 +5084,8 @@ class ExtensionEmployeeCreateView(APIView):
         actor = _resolve_extension_user(request)
         if not actor:
             return Response({'detail': 'Please login in web app'}, status=status.HTTP_401_UNAUTHORIZED)
+        if _is_read_only_user(actor):
+            return Response({'detail': 'Read-only users cannot create employees.'}, status=status.HTTP_403_FORBIDDEN)
         workspace_owner = _workspace_owner_for_user(actor)
 
         company, company_error = self._resolve_company(

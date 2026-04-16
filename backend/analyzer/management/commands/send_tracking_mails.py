@@ -306,7 +306,9 @@ class Command(BaseCommand):
         row_sent = 0
         row_failed = 0
         achievements = self._get_achievements(row)
-        attachment_path = self._resolve_attachment_file(row)
+        attachment_payload = self._resolve_attachment_payload(row)
+        attachment_path = attachment_payload.get("path")
+        attachment_bytes = attachment_payload.get("bytes")
         latest_status_map = build_mail_tracking_status_map(mail_tracking)
         is_scheduled_replay = bool(getattr(row, "schedule_time", None))
         pending_employees = []
@@ -377,6 +379,8 @@ class Command(BaseCommand):
                         subject,
                         body,
                         attachment_path=attachment_path,
+                        attachment_bytes=attachment_bytes,
+                        attachment_name=self._attachment_download_name(row, profile, attachment_path),
                         in_reply_to=thread_context.get("in_reply_to", ""),
                         references=thread_context.get("references", []),
                     )
@@ -534,12 +538,12 @@ class Command(BaseCommand):
             notes=notes,
         )
 
-    def _resolve_attachment_file(self, row):
+    def _resolve_attachment_payload(self, row):
         saved_pdf_path = str(getattr(row.resume, "ats_pdf_path", "") or "").strip() if row and row.resume else ""
         if saved_pdf_path:
             saved_path = Path(saved_pdf_path)
             if saved_path.exists() and saved_path.is_file():
-                return str(saved_path)
+                return {"path": str(saved_path), "bytes": None}
 
         # Only use the single resume associated with this tracking row.
         builder = {}
@@ -552,8 +556,8 @@ class Command(BaseCommand):
 
         text = self._builder_data_to_text(builder, fallback_title=title)
         if not text.strip():
-            return None
-        return self._write_simple_pdf(text, filename_hint=title)
+            return {"path": None, "bytes": None}
+        return {"path": None, "bytes": self._build_simple_pdf_bytes(text, filename_hint=title)}
 
     def _builder_data_to_text(self, builder_data, fallback_title="Resume"):
         b = builder_data if isinstance(builder_data, dict) else {}
@@ -623,12 +627,7 @@ class Command(BaseCommand):
         text = re.sub(r"[ \t]{2,}", " ", text)
         return text.strip()
 
-    def _write_simple_pdf(self, text, filename_hint="resume"):
-        safe_hint = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(filename_hint or "resume")).strip("_") or "resume"
-        fd, tmp_path = tempfile.mkstemp(prefix=f"{safe_hint}_", suffix=".pdf")
-        os.close(fd)
-        path = Path(tmp_path)
-
+    def _build_simple_pdf_bytes(self, text, filename_hint="resume"):
         # Minimal one-page PDF writer.
         lines = [ln[:110] for ln in str(text or "").splitlines()[:80]]
         if not lines:
@@ -654,20 +653,33 @@ class Command(BaseCommand):
         )
         objects.append(b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n")
 
+        payload = bytearray()
+        offsets = [0]
+
+        def write(chunk):
+            payload.extend(chunk)
+
+        write(b"%PDF-1.4\n")
+        for obj in objects:
+            offsets.append(len(payload))
+            write(obj)
+        xref_pos = len(payload)
+        write(f"xref\n0 {len(offsets)}\n".encode("latin-1"))
+        write(b"0000000000 65535 f \n")
+        for off in offsets[1:]:
+            write(f"{off:010d} 00000 n \n".encode("latin-1"))
+        write(
+            f"trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("latin-1")
+        )
+        return bytes(payload)
+
+    def _write_simple_pdf(self, text, filename_hint="resume"):
+        safe_hint = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(filename_hint or "resume")).strip("_") or "resume"
+        fd, tmp_path = tempfile.mkstemp(prefix=f"{safe_hint}_", suffix=".pdf")
+        os.close(fd)
+        path = Path(tmp_path)
         with path.open("wb") as f:
-            f.write(b"%PDF-1.4\n")
-            offsets = [0]
-            for obj in objects:
-                offsets.append(f.tell())
-                f.write(obj)
-            xref_pos = f.tell()
-            f.write(f"xref\n0 {len(offsets)}\n".encode("latin-1"))
-            f.write(b"0000000000 65535 f \n")
-            for off in offsets[1:]:
-                f.write(f"{off:010d} 00000 n \n".encode("latin-1"))
-            f.write(
-                f"trailer << /Size {len(offsets)} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n".encode("latin-1")
-            )
+            f.write(self._build_simple_pdf_bytes(text, filename_hint=filename_hint))
         return str(path)
 
     def _pdf_escape(self, value):
@@ -680,6 +692,47 @@ class Command(BaseCommand):
             return UserProfile.objects.get(user_id=user_id)
         except UserProfile.DoesNotExist:
             return None
+
+    def _slug_attachment_name(self, value):
+        return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+    def _normalized_yoe_token(self, value):
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        match = re.search(r"\d+(?:\.\d+)?", raw)
+        if not match:
+            return ""
+        token = match.group(0)
+        if "." in token:
+            token = token.rstrip("0").rstrip(".")
+        return token
+
+    def _attachment_download_name(self, row, profile=None, attachment_path=None):
+        builder = row.resume.builder_data if row and row.resume and isinstance(getattr(row.resume, "builder_data", None), dict) else {}
+        basics = builder.get("basics") if isinstance(builder.get("basics"), dict) else {}
+        full_name = (
+            str(basics.get("fullName") or "").strip()
+            or str(builder.get("fullName") or "").strip()
+            or str(getattr(profile, "full_name", "") or "").strip()
+            or str(getattr(row.user, "get_full_name", lambda: "")() or "").strip()
+            or str(getattr(row.user, "username", "") or "").strip()
+        )
+        name_token = self._slug_attachment_name(full_name) or "resume"
+
+        yoe_token = (
+            self._normalized_yoe_token(getattr(profile, "years_of_experience", "") or "")
+            or self._normalized_yoe_token(basics.get("yearsOfExperience") or "")
+            or self._normalized_yoe_token(builder.get("yearsOfExperience") or "")
+        )
+        if not yoe_token and attachment_path:
+            match = re.search(r"_(\d+(?:\.\d+)?)yoe\.pdf$", Path(attachment_path).name, flags=re.I)
+            if match:
+                yoe_token = match.group(1)
+
+        if yoe_token:
+            return f"{name_token}_{yoe_token}yoe.pdf"
+        return f"{name_token}.pdf"
 
     def _get_achievements(self, row):
         template_ids = getattr(row, "template_ids_ordered", None)
@@ -1192,7 +1245,7 @@ class Command(BaseCommand):
         body = self._inject_dynamic_names(body, emp_name, sender_name)
         return subject, body
 
-    def _send_email(self, user, to_email, subject, body, attachment_path=None, *, in_reply_to="", references=None):
+    def _send_email(self, user, to_email, subject, body, attachment_path=None, attachment_bytes=None, *, attachment_name=None, in_reply_to="", references=None):
         host = str(__import__("os").environ.get("SMTP_HOST", "")).strip()
         port = int(str(__import__("os").environ.get("SMTP_PORT", "587")).strip() or 587)
         username = str(__import__("os").environ.get("SMTP_USER", "")).strip()
@@ -1202,16 +1255,22 @@ class Command(BaseCommand):
         if not host or not from_email:
             raise RuntimeError("SMTP_HOST / SMTP_FROM_EMAIL (or SMTP_USER) is not configured.")
 
-        if attachment_path:
+        if attachment_path or attachment_bytes:
             msg = MIMEMultipart()
             msg.attach(MIMEText(body, "plain", "utf-8"))
             try:
-                file_path = Path(attachment_path)
-                with file_path.open("rb") as fh:
-                    part = MIMEBase("application", "octet-stream")
-                    part.set_payload(fh.read())
+                part = MIMEBase("application", "octet-stream")
+                if attachment_bytes is not None:
+                    part.set_payload(attachment_bytes)
+                    fallback_name = "resume.pdf"
+                else:
+                    file_path = Path(attachment_path)
+                    with file_path.open("rb") as fh:
+                        part.set_payload(fh.read())
+                    fallback_name = file_path.name
                 encoders.encode_base64(part)
-                part.add_header("Content-Disposition", f'attachment; filename="{file_path.name}"')
+                download_name = str(attachment_name or "").strip() or fallback_name
+                part.add_header("Content-Disposition", f'attachment; filename="{download_name}"')
                 msg.attach(part)
             except Exception:  # noqa: BLE001
                 # Soft-fail attachment and continue with plain body.

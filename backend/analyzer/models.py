@@ -388,7 +388,17 @@ class MailTrackingEvent(BaseModel):
 
 
 class UserProfile(BaseModel):
+    ROLE_SUPERADMIN = 'superadmin'
+    ROLE_ADMIN = 'admin'
+    ROLE_READ_ONLY = 'read_only'
+    ROLE_CHOICES = [
+        (ROLE_SUPERADMIN, 'Super Admin'),
+        (ROLE_ADMIN, 'Admin'),
+        (ROLE_READ_ONLY, 'Read Only'),
+    ]
+
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile_info')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default=ROLE_ADMIN)
     full_name = models.CharField(max_length=180, blank=True)
     email = models.EmailField(blank=True, max_length=320)
     contact_number = models.CharField(max_length=32, blank=True)

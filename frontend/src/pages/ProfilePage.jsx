@@ -99,6 +99,34 @@ const OTHER_INTERVIEW_STAGES = [
   { value: 'assignment', label: 'Assignment' },
 ]
 
+const COUNTRY_STATE_DATA = [
+  { name: 'India', code: '+91', states: ['Andhra Pradesh', 'Assam', 'Bihar', 'Chandigarh', 'Chhattisgarh', 'Delhi', 'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jammu and Kashmir', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Odisha', 'Punjab', 'Rajasthan', 'Tamil Nadu', 'Telangana', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal'] },
+  { name: 'United States', code: '+1', states: ['Alabama', 'Alaska', 'Arizona', 'California', 'Colorado', 'Florida', 'Georgia', 'Illinois', 'Massachusetts', 'Michigan', 'New Jersey', 'New York', 'North Carolina', 'Ohio', 'Pennsylvania', 'Texas', 'Virginia', 'Washington'] },
+  { name: 'Canada', code: '+1', states: ['Alberta', 'British Columbia', 'Manitoba', 'New Brunswick', 'Newfoundland and Labrador', 'Nova Scotia', 'Ontario', 'Prince Edward Island', 'Quebec', 'Saskatchewan'] },
+  { name: 'United Kingdom', code: '+44', states: ['England', 'Northern Ireland', 'Scotland', 'Wales'] },
+  { name: 'Australia', code: '+61', states: ['Australian Capital Territory', 'New South Wales', 'Northern Territory', 'Queensland', 'South Australia', 'Tasmania', 'Victoria', 'Western Australia'] },
+  { name: 'United Arab Emirates', code: '+971', states: ['Abu Dhabi', 'Ajman', 'Dubai', 'Fujairah', 'Ras Al Khaimah', 'Sharjah', 'Umm Al Quwain'] },
+  { name: 'Germany', code: '+49', states: ['Baden-Wurttemberg', 'Bavaria', 'Berlin', 'Brandenburg', 'Bremen', 'Hamburg', 'Hesse', 'Lower Saxony', 'North Rhine-Westphalia', 'Saxony'] },
+  { name: 'Singapore', code: '+65', states: ['Central Region', 'East Region', 'North-East Region', 'North Region', 'West Region'] },
+]
+
+const COUNTRY_OPTIONS = COUNTRY_STATE_DATA.map((item) => ({ value: item.name, label: item.name }))
+
+function countryMeta(countryName) {
+  const normalized = String(countryName || '').trim().toLowerCase()
+  return COUNTRY_STATE_DATA.find((item) => item.name.toLowerCase() === normalized) || null
+}
+
+function stateOptionsForCountry(countryName, currentState = '') {
+  const meta = countryMeta(countryName)
+  const options = (meta?.states || []).map((state) => ({ value: state, label: state }))
+  const fallback = String(currentState || '').trim()
+  if (fallback && !options.some((item) => item.value === fallback)) {
+    options.unshift({ value: fallback, label: fallback })
+  }
+  return options
+}
+
 const EMPTY_INTERVIEW = {
   job: '',
   location_ref: '',
@@ -330,6 +358,16 @@ function ProfilePage() {
     )
     return String(match?.name || '').trim()
   }, [interviewForm.location_ref, locationOptions])
+
+  const profileStateOptions = useMemo(
+    () => stateOptionsForCountry(profileForm.country, profileForm.state),
+    [profileForm.country, profileForm.state],
+  )
+
+  const profilePanelStateOptions = useMemo(
+    () => stateOptionsForCountry(profilePanelForm.country, profilePanelForm.state),
+    [profilePanelForm.country, profilePanelForm.state],
+  )
 
   const filteredAchievements = useMemo(() => {
     const selectedCategory = String(templateCategoryFilter || '').trim().toLowerCase()
@@ -680,6 +718,8 @@ function ProfilePage() {
           {resumes.map((row) => (
             <article key={row.id} className="resume-card profile-card-shell">
               <p className="resume-card-title"><strong>{row.title || `Resume #${row.id}`}</strong></p>
+              {row.job_label ? <p className="hint">Job: {row.job_label}</p> : null}
+              {row.source_resume_title ? <p className="hint">Source: {row.source_resume_title}</p> : null}
               {skillsPreviewFromResume(row) ? <p className="hint">Skills: {skillsPreviewFromResume(row)}</p> : null}
               <p className="resume-card-meta">Updated: {row.updated_at ? new Date(row.updated_at).toLocaleString() : '-'}</p>
               <div className="resume-card-actions">
@@ -725,8 +765,36 @@ function ProfilePage() {
               <label>Contact Number<input value={profileForm.contact_number} onChange={(e) => setProfileForm((p) => ({ ...p, contact_number: e.target.value }))} /></label>
               <label>Address Line 1<input value={profileForm.address_line_1} onChange={(e) => setProfileForm((p) => ({ ...p, address_line_1: e.target.value }))} /></label>
               <label>Address Line 2<input value={profileForm.address_line_2} onChange={(e) => setProfileForm((p) => ({ ...p, address_line_2: e.target.value }))} /></label>
-              <label>State<input value={profileForm.state} onChange={(e) => setProfileForm((p) => ({ ...p, state: e.target.value }))} /></label>
-              <label>Country<input value={profileForm.country} onChange={(e) => setProfileForm((p) => ({ ...p, country: e.target.value }))} /></label>
+              <label>Country
+                <SingleSelectDropdown
+                  value={profileForm.country || ''}
+                  placeholder="Select country"
+                  searchPlaceholder="Search country"
+                  options={COUNTRY_OPTIONS}
+                  onChange={(nextValue) => {
+                    const selectedCountry = String(nextValue || '').trim()
+                    const meta = countryMeta(selectedCountry)
+                    setProfileForm((p) => {
+                      const nextState = meta?.states?.includes(String(p.state || '').trim()) ? p.state : ''
+                      return {
+                        ...p,
+                        country: selectedCountry,
+                        state: nextState,
+                        country_code: meta?.code || p.country_code,
+                      }
+                    })
+                  }}
+                />
+              </label>
+              <label>State
+                <SingleSelectDropdown
+                  value={profileForm.state || ''}
+                  placeholder={profileForm.country ? 'Select state' : 'Select country first'}
+                  searchPlaceholder="Search state"
+                  options={profileStateOptions}
+                  onChange={(nextValue) => setProfileForm((p) => ({ ...p, state: nextValue || '' }))}
+                />
+              </label>
               <label>Country Code<input value={profileForm.country_code} onChange={(e) => setProfileForm((p) => ({ ...p, country_code: e.target.value }))} placeholder="+91" /></label>
               <label>Location<input value={profileForm.location} onChange={(e) => setProfileForm((p) => ({ ...p, location: e.target.value }))} /></label>
               <label>Location Ref
@@ -795,6 +863,39 @@ function ProfilePage() {
               <label>Contact Number<input value={profilePanelForm.contact_number} onChange={(e) => setProfilePanelForm((p) => ({ ...p, contact_number: e.target.value }))} /></label>
               <label>Current Employer<input value={profilePanelForm.current_employer} onChange={(e) => setProfilePanelForm((p) => ({ ...p, current_employer: e.target.value }))} /></label>
               <label>Years of Experience<input value={profilePanelForm.years_of_experience} onChange={(e) => setProfilePanelForm((p) => ({ ...p, years_of_experience: e.target.value }))} /></label>
+              <label>Address Line 1<input value={profilePanelForm.address_line_1} onChange={(e) => setProfilePanelForm((p) => ({ ...p, address_line_1: e.target.value }))} /></label>
+              <label>Address Line 2<input value={profilePanelForm.address_line_2} onChange={(e) => setProfilePanelForm((p) => ({ ...p, address_line_2: e.target.value }))} /></label>
+              <label>Country
+                <SingleSelectDropdown
+                  value={profilePanelForm.country || ''}
+                  placeholder="Select country"
+                  searchPlaceholder="Search country"
+                  options={COUNTRY_OPTIONS}
+                  onChange={(nextValue) => {
+                    const selectedCountry = String(nextValue || '').trim()
+                    const meta = countryMeta(selectedCountry)
+                    setProfilePanelForm((p) => {
+                      const nextState = meta?.states?.includes(String(p.state || '').trim()) ? p.state : ''
+                      return {
+                        ...p,
+                        country: selectedCountry,
+                        state: nextState,
+                        country_code: meta?.code || p.country_code,
+                      }
+                    })
+                  }}
+                />
+              </label>
+              <label>State
+                <SingleSelectDropdown
+                  value={profilePanelForm.state || ''}
+                  placeholder={profilePanelForm.country ? 'Select state' : 'Select country first'}
+                  searchPlaceholder="Search state"
+                  options={profilePanelStateOptions}
+                  onChange={(nextValue) => setProfilePanelForm((p) => ({ ...p, state: nextValue || '' }))}
+                />
+              </label>
+              <label>Country Code<input value={profilePanelForm.country_code} onChange={(e) => setProfilePanelForm((p) => ({ ...p, country_code: e.target.value }))} placeholder="+91" /></label>
               <label>LinkedIn URL<input value={profilePanelForm.linkedin_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, linkedin_url: e.target.value }))} /></label>
               <label>GitHub URL<input value={profilePanelForm.github_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, github_url: e.target.value }))} /></label>
               <label>Portfolio URL<input value={profilePanelForm.portfolio_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, portfolio_url: e.target.value }))} /></label>

@@ -1,15 +1,22 @@
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from analyzer.management.commands.send_tracking_mails import Command
-from analyzer.models import Company, Employee, Job, MailTrackingEvent, Resume, Template, Tracking, TrackingAction
+from analyzer.models import Company, Employee, Job, MailTrackingEvent, Resume, Template, Tracking, TrackingAction, UserProfile
 from analyzer.serializers import CompanySerializer, InterviewSerializer, JobSerializer, ProfilePanelSerializer, UserProfileSerializer
 from analyzer.tracking_mail_utils import ensure_mail_tracking
-from analyzer.views import ApplicationTrackingDetailView, ApplicationTrackingMailTestView
+from analyzer.views import (
+    ApplicationTrackingDetailView,
+    ApplicationTrackingListCreateView,
+    ApplicationTrackingMailTestView,
+    ResumeDetailView,
+    ResumeListCreateView,
+)
 
 
 class DummySMTP:
@@ -128,6 +135,22 @@ class SendTrackingMailsThreadingTests(TestCase):
         self.assertIn("In-Reply-To: <parent@example.com>", DummySMTP.last_message)
         self.assertIn("References: <root@example.com> <parent@example.com>", DummySMTP.last_message)
 
+    def test_attachment_fallback_uses_in_memory_pdf_bytes(self):
+        self.resume.builder_data = {
+            "resumeTitle": "Base Resume",
+            "fullName": "Subrat Singh",
+            "summary": "<p>Backend engineer</p>",
+        }
+        self.resume.ats_pdf_path = ""
+        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "updated_at"])
+
+        payload = self.command._resolve_attachment_payload(self.tracking)
+
+        self.assertIsNone(payload.get("path"))
+        attachment_bytes = payload.get("bytes")
+        self.assertTrue(isinstance(attachment_bytes, (bytes, bytearray)))
+        self.assertTrue(bytes(attachment_bytes).startswith(b"%PDF-1.4"))
+
     def test_log_success_persists_message_metadata(self):
         self.command._log_success(
             self.mail_tracking,
@@ -244,6 +267,7 @@ class TrackingMailTestViewTests(TestCase):
         self.factory = APIRequestFactory()
         self.owner = User.objects.create_user(username="owner", email="owner@example.com", password="x")
         self.member = User.objects.create_user(username="member", email="member@example.com", password="x")
+        self.superadmin = User.objects.create_user(username="superadmin", email="superadmin@example.com", password="x", is_superuser=True, is_staff=True)
         self.company = Company.objects.create(user=self.owner, name="Acme")
         self.employee = Employee.objects.create(
             user=self.owner,
@@ -264,9 +288,17 @@ class TrackingMailTestViewTests(TestCase):
         from analyzer.models import WorkspaceMember
         WorkspaceMember.objects.create(owner=self.owner, member=self.member, is_active=True)
 
-    def test_member_can_access_mail_test_for_owner_tracking(self):
+    def test_admin_cannot_access_other_user_tracking(self):
         request = self.factory.get(f"/api/tracking/{self.tracking.id}/mail-test/")
         force_authenticate(request, user=self.member)
+
+        response = ApplicationTrackingMailTestView.as_view()(request, tracking_id=self.tracking.id)
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_superadmin_can_access_other_user_tracking(self):
+        request = self.factory.get(f"/api/tracking/{self.tracking.id}/mail-test/")
+        force_authenticate(request, user=self.superadmin)
 
         response = ApplicationTrackingMailTestView.as_view()(request, tracking_id=self.tracking.id)
 
@@ -287,6 +319,116 @@ class TrackingMailTestViewTests(TestCase):
         previews = response.data.get("previews") or []
         self.assertTrue(previews)
         self.assertEqual(previews[0].get("compose_mode"), "complete_ai")
+
+    def test_read_only_cannot_save_mail_test_payloads(self):
+        UserProfile.objects.create(user=self.owner, role=UserProfile.ROLE_READ_ONLY)
+        request = self.factory.post(
+            f"/api/tracking/{self.tracking.id}/mail-test/",
+            {
+                "action": "save",
+                "previews": [
+                    {
+                        "employee_id": self.employee.id,
+                        "employee_name": self.employee.name,
+                        "email": self.employee.email,
+                        "subject": "Subject",
+                        "body": "Body",
+                    }
+                ],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.owner)
+
+        response = ApplicationTrackingMailTestView.as_view()(request, tracking_id=self.tracking.id)
+
+        self.assertEqual(response.status_code, 403)
+
+
+class SuperadminVisibilityTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.owner = User.objects.create_user(username="owner-list", email="owner-list@example.com", password="x")
+        self.superadmin = User.objects.create_user(
+            username="superadmin-list",
+            email="superadmin-list@example.com",
+            password="x",
+            is_superuser=True,
+            is_staff=True,
+        )
+        self.company = Company.objects.create(user=self.owner, name="gamma", mail_format="{first}@gamma.com")
+        self.employee = Employee.objects.create(
+            user=self.owner,
+            company=self.company,
+            name="Casey",
+            department="Engineering",
+            email="casey@gamma.com",
+        )
+        self.job = Job.objects.create(user=self.owner, company=self.company, job_id="G-1", role="Platform Engineer")
+        self.resume = Resume.objects.create(user=self.owner, title="Gamma Resume")
+        self.tracking = Tracking.objects.create(user=self.owner, job=self.job, resume=self.resume, mail_type="fresh")
+        self.tracking.selected_hrs.set([self.employee])
+
+    def test_superadmin_can_see_other_user_tracking_list(self):
+        request = self.factory.get("/api/tracking/")
+        force_authenticate(request, user=self.superadmin)
+
+        response = ApplicationTrackingListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        results = response.data.get("results") or []
+        self.assertTrue(any(int(row.get("id")) == self.tracking.id for row in results))
+
+
+class ResumeSaveStorageTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username="resume-owner", email="resume-owner@example.com", password="x")
+
+    def test_create_resume_keeps_only_db_data_without_file(self):
+        request = self.factory.post(
+            "/api/resumes/",
+            {
+                "title": "DB Resume",
+                "builder_data": {"fullName": "Subrat Singh"},
+                "original_text": "Subrat Singh",
+                "is_default": False,
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = ResumeListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 201)
+        resume = Resume.objects.get(id=response.data["id"])
+        self.assertFalse(bool(resume.file))
+
+    def test_update_resume_clears_existing_file_attachment(self):
+        resume = Resume.objects.create(
+            user=self.user,
+            title="Old Resume",
+            original_text="Old text",
+            file=SimpleUploadedFile("resume.pdf", b"%PDF-1.4 test file", content_type="application/pdf"),
+        )
+        self.assertTrue(bool(resume.file))
+
+        request = self.factory.put(
+            f"/api/resumes/{resume.id}/",
+            {
+                "title": "Updated Resume",
+                "builder_data": {"fullName": "Updated User"},
+                "original_text": "Updated User",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = ResumeDetailView.as_view()(request, resume_id=resume.id)
+
+        self.assertEqual(response.status_code, 200)
+        resume.refresh_from_db()
+        self.assertFalse(bool(resume.file))
 
 
 class SerializerNormalizationTests(TestCase):
