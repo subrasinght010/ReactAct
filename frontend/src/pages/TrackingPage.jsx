@@ -212,7 +212,7 @@ const TEMPLATE_CHOICES = [
 
 const MAIL_TYPE_OPTIONS = [
   { value: 'fresh', label: 'Fresh' },
-  { value: 'followed_up', label: 'Folloup' },
+  { value: 'followed_up', label: 'Follow Up' },
 ]
 
 const SEND_MODE_OPTIONS = [
@@ -308,7 +308,7 @@ function getTemplateRestrictionError(templateChoice, buckets, mailType) {
   if (!normalizedChoice) return ''
   if (!isTemplateAllowedForMailType(normalizedChoice, mailType)) {
     return String(mailType || 'fresh').trim().toLowerCase() === 'followed_up'
-      ? 'For Folloup mail type, only follow-up templates are allowed.'
+      ? 'For Follow Up mail type, only follow-up templates are allowed.'
       : 'For Fresh mail type, only Cold Applied, Referral, Job Inquire, and Custom templates are allowed.'
   }
   if (isTemplateAllowedForBuckets(normalizedChoice, buckets)) return ''
@@ -490,11 +490,96 @@ function initialDepartmentFromRow(row) {
   return ''
 }
 
+function initialRoleFromRow(row) {
+  const selectedEmployees = Array.isArray(row?.selected_employees) ? row.selected_employees : []
+  const firstRole = String(selectedEmployees[0]?.JobRole || '').trim()
+  if (firstRole) return firstRole
+  return ''
+}
+
 function arraysMatchAsStrings(left, right) {
   const a = uniqueArray(left)
   const b = uniqueArray(right)
   if (a.length !== b.length) return false
   return a.every((value, index) => String(value) === String(b[index]))
+}
+
+function localDateKey(value) {
+  const date = value ? new Date(value) : null
+  if (!date || Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function rowEmployeeNames(row) {
+  return uniqueArray(
+    (Array.isArray(row?.selected_employees) ? row.selected_employees : [])
+      .map((item) => String(item?.name || '').trim()),
+  )
+}
+
+function rowFreshNamesToday(row, todayKey) {
+  const names = rowEmployeeNames(row)
+  if (!todayKey || !names.length) return []
+  const milestones = Array.isArray(row?.milestones) ? row.milestones : []
+  const hasFreshToday = milestones.some((item) => String(item?.type || '').trim().toLowerCase() === 'fresh' && localDateKey(item?.at) === todayKey)
+  return hasFreshToday ? names : []
+}
+
+function employeeNamesFromSelection(selectedIds, employees) {
+  const selectedSet = new Set((Array.isArray(selectedIds) ? selectedIds : []).map((id) => String(id)))
+  return uniqueArray(
+    (Array.isArray(employees) ? employees : [])
+      .filter((emp) => selectedSet.has(String(emp?.id)))
+      .map((emp) => String(emp?.name || '').trim()),
+  )
+}
+
+function buildImmediateTrackingRuleWarning({
+  form,
+  rows,
+  employees,
+  currentRowId = null,
+  hasFreshMilestone = false,
+  followUpCandidates = [],
+}) {
+  if (!form) return ''
+  const mailType = String(form.mail_type || 'fresh').trim().toLowerCase()
+  const todayKey = localDateKey(new Date())
+
+  if (mailType === 'followed_up') {
+    if (!hasFreshMilestone) return 'First time mail must be Fresh before any Follow Up mail.'
+    if (!Array.isArray(followUpCandidates) || !followUpCandidates.length) {
+      return 'No contacted employee is available for follow up yet. Send Fresh mail first.'
+    }
+    return ''
+  }
+
+  const selectedNames = employeeNamesFromSelection(form.selected_hr_ids, employees)
+  if (!selectedNames.length) return ''
+  const selectedSet = new Set(selectedNames.map((name) => name.toLowerCase()))
+  const overlap = uniqueArray(
+    (Array.isArray(rows) ? rows : [])
+      .filter((row) => Number(row?.id) !== Number(currentRowId || 0))
+      .flatMap((row) => rowFreshNamesToday(row, todayKey))
+      .filter((name) => selectedSet.has(String(name || '').trim().toLowerCase())),
+  )
+  if (overlap.length) {
+    return `Fresh mail is already used today for: ${overlap.join(', ')}. Use Follow Up, choose different employees, or send tomorrow.`
+  }
+  return ''
+}
+
+function isImmediateRuleMessage(message) {
+  const text = String(message || '').trim()
+  if (!text) return false
+  return [
+    'Fresh mail is already used today for:',
+    'First time mail must be Fresh before any Follow Up mail.',
+    'No contacted employee is available for follow up yet. Send Fresh mail first.',
+  ].some((prefix) => text.startsWith(prefix))
 }
 
 function TrackingPage() {
@@ -647,6 +732,7 @@ function TrackingPage() {
       company: '',
       job: '',
       department: '',
+      employee_role: '',
       mail_type: 'fresh',
       send_mode: 'sent',
       schedule_time: '',
@@ -671,6 +757,10 @@ function TrackingPage() {
 
   const createRow = async () => {
     if (!createForm) return
+    if (createBlockedMessage) {
+      setCreateFormError(createBlockedMessage)
+      return
+    }
     if (!createForm.company) {
       setCreateFormError('Select company from dropdown.')
       return
@@ -763,6 +853,7 @@ function TrackingPage() {
         company: fullRow.company || '',
         job: fullRow.job || '',
         department: initialDepartmentFromRow(fullRow),
+        employee_role: initialRoleFromRow(fullRow),
         company_name: fullRow.company_name || '',
         job_id: fullRow.job_id || '',
         role: fullRow.role || '',
@@ -810,6 +901,10 @@ function TrackingPage() {
 
   const saveEditForm = async () => {
     if (!editForm) return
+    if (editBlockedMessage) {
+      setEditFormError(editBlockedMessage)
+      return
+    }
     if (!editForm.company) {
       setEditFormError('Select company from dropdown.')
       return
@@ -851,7 +946,7 @@ function TrackingPage() {
       return
     }
     if (editForm.mail_type === 'followed_up' && !editHasFreshMilestone) {
-      setEditFormError('First time mail must be Fresh before any Folloup mail.')
+      setEditFormError('First time mail must be Fresh before any Follow Up mail.')
       return
     }
     if (editForm.mail_type === 'followed_up' && !editFollowUpCandidateIds.length) {
@@ -1138,11 +1233,41 @@ function TrackingPage() {
     () => editFollowUpCandidates.map((item) => item.id),
     [editFollowUpCandidates],
   )
+  const departmentOptions = useMemo(
+    () => Array.from(new Set(activeEmployeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))),
+    [activeEmployeeOptions],
+  )
+  const createRoleOptions = useMemo(
+    () => Array.from(new Set(
+      activeEmployeeOptions
+        .filter((emp) => !createForm?.department || String(emp.department || '').trim() === String(createForm?.department || '').trim())
+        .map((emp) => String(emp.JobRole || '').trim())
+        .filter(Boolean),
+    )),
+    [activeEmployeeOptions, createForm?.department],
+  )
+  const editRoleOptions = useMemo(
+    () => Array.from(new Set(
+      activeEmployeeOptions
+        .filter((emp) => !editForm?.department || String(emp.department || '').trim() === String(editForm?.department || '').trim())
+        .map((emp) => String(emp.JobRole || '').trim())
+        .filter(Boolean),
+    )),
+    [activeEmployeeOptions, editForm?.department],
+  )
+  const createEmployeeDropdownOptions = useMemo(
+    () => activeEmployeeOptions
+      .filter((emp) => !createForm?.department || String(emp.department || '').trim() === String(createForm?.department || '').trim())
+      .filter((emp) => !createForm?.employee_role || String(emp.JobRole || '').trim() === String(createForm?.employee_role || '').trim())
+      .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') })),
+    [activeEmployeeOptions, createForm?.department, createForm?.employee_role],
+  )
   const editEmployeeDropdownOptions = useMemo(
     () => activeEmployeeOptions
       .filter((emp) => !editForm?.department || String(emp.department || '') === String(editForm?.department || ''))
+      .filter((emp) => !editForm?.employee_role || String(emp.JobRole || '').trim() === String(editForm?.employee_role || '').trim())
       .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') })),
-    [activeEmployeeOptions, editForm?.department],
+    [activeEmployeeOptions, editForm?.department, editForm?.employee_role],
   )
   const editFollowThreadOptions = useMemo(
     () => editFollowUpCandidates.map((item) => ({
@@ -1150,6 +1275,7 @@ function TrackingPage() {
       label: [
         `ID ${item.id}`,
         item.name,
+        item.email,
         item.last_action_label ? `Fresh ${item.last_action_label}` : '',
         item.replied ? 'replied' : '',
       ].filter(Boolean).join(' | '),
@@ -1185,7 +1311,54 @@ function TrackingPage() {
       })),
     [achievementOptions],
   )
+  const createImmediateRuleWarning = useMemo(
+    () => buildImmediateTrackingRuleWarning({
+      form: createForm,
+      rows,
+      employees: activeEmployeeOptions,
+      hasFreshMilestone: false,
+      followUpCandidates: [],
+    }),
+    [createForm, rows, activeEmployeeOptions],
+  )
+  const editImmediateRuleWarning = useMemo(
+    () => buildImmediateTrackingRuleWarning({
+      form: editForm,
+      rows,
+      employees: activeEmployeeOptions,
+      currentRowId: editForm?.id,
+      hasFreshMilestone: editHasFreshMilestone,
+      followUpCandidates: editFollowUpCandidates,
+    }),
+    [editForm, rows, activeEmployeeOptions, editHasFreshMilestone, editFollowUpCandidates],
+  )
+  const createEmployeeFilterLocked = !createForm?.company || !createForm?.department
+  const editEmployeeFilterLocked = !editForm?.company || !editForm?.department
+  const createBlockedMessage = createForm?.mail_type === 'followed_up'
+    ? createImmediateRuleWarning
+    : (createEmployeeFilterLocked ? 'Select company and department before choosing employees.' : createImmediateRuleWarning)
+  const editBlockedMessage = editForm?.mail_type === 'followed_up'
+    ? editImmediateRuleWarning
+    : (editEmployeeFilterLocked ? 'Select company and department before choosing employees.' : editImmediateRuleWarning)
+  const createSaveBlocked = Boolean(createBlockedMessage)
+  const editSaveBlocked = Boolean(editBlockedMessage)
   const allSelected = filteredRows.length > 0 && filteredRows.every((row) => selectedIds.includes(row.id))
+  useEffect(() => {
+    if (!createForm) return
+    setCreateFormError((prev) => {
+      if (createBlockedMessage) return createBlockedMessage
+      return isImmediateRuleMessage(prev) ? '' : prev
+    })
+  }, [createForm, createBlockedMessage])
+
+  useEffect(() => {
+    if (!editForm) return
+    setEditFormError((prev) => {
+      if (editBlockedMessage) return editBlockedMessage
+      return isImmediateRuleMessage(prev) ? '' : prev
+    })
+  }, [editForm, editBlockedMessage])
+
   useEffect(() => {
     if (!createForm) return
     const currentChoice = String(createForm.template_choice || '').trim()
@@ -1491,7 +1664,7 @@ function TrackingPage() {
                 placeholder="Select company"
                 options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
                 onChange={async (nextValue) => {
-                  setCreateForm((prev) => ({ ...prev, company: nextValue, job: '', selected_hr_ids: [], tailored_resume_id: '' }))
+                  setCreateForm((prev) => ({ ...prev, company: nextValue, job: '', department: '', employee_role: '', selected_hr_ids: [], tailored_resume_id: '' }))
                   await hydrateCompanyDependent(nextValue)
                 }}
               />
@@ -1501,21 +1674,31 @@ function TrackingPage() {
               <SingleSelectDropdown
                 value={createForm.department || ''}
                 placeholder="Select department"
-                options={Array.from(new Set(activeEmployeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
-                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, department: nextValue, selected_hr_ids: [] }))}
+                options={departmentOptions.map((dept) => ({ value: dept, label: dept }))}
+                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, department: nextValue, employee_role: '', selected_hr_ids: [] }))}
+              />
+            </label>
+            <label>
+              Role
+              <SingleSelectDropdown
+                value={createForm.employee_role || ''}
+                placeholder="Select role"
+                disabled={!createForm.company || !createForm.department}
+                options={createRoleOptions.map((role) => ({ value: role, label: role }))}
+                onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, employee_role: nextValue, selected_hr_ids: [] }))}
               />
             </label>
             <label className="tracking-form-span-2">
               Employee (multi-select)
               <MultiSelectDropdown
                 values={Array.isArray(createForm.selected_hr_ids) ? createForm.selected_hr_ids : []}
-                placeholder="Select employee(s)"
-                options={activeEmployeeOptions
-                  .filter((emp) => !createForm.department || String(emp.department || '') === String(createForm.department || ''))
-                  .map((emp) => ({ value: String(emp.id), label: String(emp.name || '') }))}
+                placeholder={createEmployeeFilterLocked ? 'Select company and department first' : 'Select employee(s)'}
+                disabled={createEmployeeFilterLocked}
+                options={createEmployeeDropdownOptions}
                 onChange={(nextValues) => setCreateForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))}
               />
             </label>
+            {createBlockedMessage ? <p className="error tracking-form-span-2">{createBlockedMessage}</p> : null}
             <div className="tracking-form-section-title tracking-form-span-2">Job & Mail Setup</div>
             <label>
               Job (dropdown)
@@ -1694,7 +1877,7 @@ function TrackingPage() {
             </div>
             {createFormError ? <p className="error">{createFormError}</p> : null}
             <div className="actions">
-              <button type="button" onClick={createRow}>Create</button>
+              <button type="button" onClick={createRow} disabled={createSaveBlocked}>Create</button>
               <button type="button" className="secondary" onClick={() => { setCreateForm(null); setCreateFormError('') }}>Cancel</button>
             </div>
           </div>
@@ -1717,7 +1900,7 @@ function TrackingPage() {
                 placeholder="Select company"
                 options={companyOptions.map((company) => ({ value: String(company.id), label: String(company.name || '') }))}
                 onChange={async (value) => {
-                  setEditForm((prev) => ({ ...prev, company: value, job: '', selected_hr_ids: [] }))
+                  setEditForm((prev) => ({ ...prev, company: value, job: '', department: '', employee_role: '', selected_hr_ids: [] }))
                   await hydrateCompanyDependent(value)
                 }}
               />
@@ -1727,21 +1910,33 @@ function TrackingPage() {
               <SingleSelectDropdown
                 value={editForm.department || ''}
                 placeholder="Select department"
-                options={Array.from(new Set(activeEmployeeOptions.map((emp) => String(emp.department || '').trim()).filter(Boolean))).map((dept) => ({ value: dept, label: dept }))}
-                onChange={(value) => setEditForm((prev) => ({ ...prev, department: value, selected_hr_ids: [] }))}
+                options={departmentOptions.map((dept) => ({ value: dept, label: dept }))}
+                onChange={(value) => setEditForm((prev) => ({ ...prev, department: value, employee_role: '', selected_hr_ids: [] }))}
+              />
+            </label>
+            <label>
+              Role
+              <SingleSelectDropdown
+                value={editForm.employee_role || ''}
+                placeholder="Select role"
+                disabled={!editForm.company || !editForm.department}
+                options={editRoleOptions.map((role) => ({ value: role, label: role }))}
+                onChange={(value) => setEditForm((prev) => ({ ...prev, employee_role: value, selected_hr_ids: [] }))}
               />
             </label>
             <label className="tracking-form-span-2">
               Employee (multi-select)
               <MultiSelectDropdown
                 values={Array.isArray(editForm.selected_hr_ids) ? editForm.selected_hr_ids : []}
-                placeholder="Select employee(s)"
+                placeholder={editForm.mail_type === 'followed_up' ? 'Employee is locked for follow up mode' : (editEmployeeFilterLocked ? 'Select company and department first' : 'Select employee(s)')}
                 options={editEmployeeDropdownOptions}
+                disabled={editForm.mail_type === 'followed_up' || editEmployeeFilterLocked}
                 onChange={(nextValues) => {
                   setEditForm((prev) => ({ ...prev, selected_hr_ids: Array.isArray(nextValues) ? nextValues : [] }))
                 }}
               />
             </label>
+            {editBlockedMessage ? <p className="error tracking-form-span-2">{editBlockedMessage}</p> : null}
             <div className="tracking-form-section-title tracking-form-span-2">Job & Mail Setup</div>
             <label>
               Job (dropdown)
@@ -1761,7 +1956,13 @@ function TrackingPage() {
                 options={editMailTypeOptions}
                 onChange={(value) => setEditForm((prev) => {
                   const nextMailType = value || 'fresh'
-                  if (nextMailType !== 'followed_up') return { ...prev, mail_type: nextMailType }
+                  if (nextMailType !== 'followed_up') {
+                    return {
+                      ...prev,
+                      mail_type: nextMailType,
+                      follow_thread_id: '',
+                    }
+                  }
                   const currentIds = Array.isArray(prev.selected_hr_ids) ? prev.selected_hr_ids.map((id) => String(id)) : []
                   const candidateSet = new Set(editFollowUpCandidateIds.map((id) => String(id)))
                   const matchingIds = currentIds.filter((id) => candidateSet.has(String(id)))
@@ -1769,6 +1970,7 @@ function TrackingPage() {
                     ...prev,
                     mail_type: nextMailType,
                     selected_hr_ids: matchingIds.length ? matchingIds : [...editFollowUpCandidateIds],
+                    follow_thread_id: matchingIds[0] || editFollowUpCandidateIds[0] || '',
                   }
                 })}
               />
@@ -1818,7 +2020,7 @@ function TrackingPage() {
                 </label>
                 <p className="hint tracking-form-span-2">
                   {editFollowUpCandidates.length
-                    ? 'Choose the follow thread from its own dropdown. Employee selection stays separate.'
+                    ? 'Employee selection is frozen in Follow Up mode. Choose the thread by ID, name, email, and fresh-mail time.'
                     : 'No employee is eligible for follow-up yet. Send a fresh mail first.'}
                 </p>
               </>
@@ -1956,7 +2158,7 @@ function TrackingPage() {
             </div>
             {editFormError ? <p className="error">{editFormError}</p> : null}
             <div className="actions">
-              <button type="button" onClick={saveEditForm}>Save</button>
+              <button type="button" onClick={saveEditForm} disabled={editSaveBlocked}>Save</button>
               <button type="button" className="secondary" onClick={() => { setEditForm(null); setEditFormError('') }}>Cancel</button>
             </div>
           </div>

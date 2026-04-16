@@ -2,10 +2,13 @@ from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.test import TestCase
+from django.utils import timezone
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from analyzer.management.commands.send_tracking_mails import Command
-from analyzer.models import Company, Employee, Job, MailTrackingEvent, Resume, Tracking
+from analyzer.models import Company, Employee, Job, MailTrackingEvent, Resume, Template, Tracking, TrackingAction
 from analyzer.tracking_mail_utils import ensure_mail_tracking
+from analyzer.views import ApplicationTrackingDetailView
 
 
 class DummySMTP:
@@ -145,3 +148,91 @@ class SendTrackingMailsThreadingTests(TestCase):
             event.raw_payload["references"],
             ["<root@example.com>", "<parent@example.com>"],
         )
+
+
+class TrackingFreshRuleApiTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.view = ApplicationTrackingDetailView.as_view()
+        self.user = User.objects.create_user(username="tracker", email="tracker@example.com", password="x")
+        self.company = Company.objects.create(user=self.user, name="beta", mail_format="{first}@beta.com")
+        self.employee_one = Employee.objects.create(
+            user=self.user,
+            company=self.company,
+            name="Alice",
+            department="Engineering",
+            email="alice@beta.com",
+        )
+        self.employee_two = Employee.objects.create(
+            user=self.user,
+            company=self.company,
+            name="Bob",
+            department="Engineering",
+            email="bob@beta.com",
+        )
+        self.job = Job.objects.create(user=self.user, company=self.company, job_id="J-2", role="Backend")
+        self.resume = Resume.objects.create(user=self.user, title="Resume")
+        self.template_opening = Template.objects.create(user=self.user, name="Opening", category="opening", achievement="Open")
+        self.template_experience = Template.objects.create(user=self.user, name="Experience", category="experience", achievement="Exp")
+        self.template_closing = Template.objects.create(user=self.user, name="Closing", category="closing", achievement="Close")
+        self.tracking = Tracking.objects.create(
+            user=self.user,
+            job=self.job,
+            resume=self.resume,
+            mail_type="fresh",
+            template=self.template_opening,
+            template_ids_ordered=[self.template_opening.id, self.template_experience.id, self.template_closing.id],
+        )
+        self.tracking.selected_hrs.set([self.employee_one])
+        TrackingAction.objects.create(
+            tracking=self.tracking,
+            action_type="fresh",
+            send_mode="sent",
+            action_at=timezone.now(),
+            notes='{"employee_ids":[%d]}' % self.employee_one.id,
+        )
+
+    def test_update_blocks_same_day_same_employee_fresh(self):
+        request = self.factory.put(
+            f"/api/tracking/{self.tracking.id}/",
+            {
+                "company": self.company.id,
+                "job": self.job.id,
+                "mail_type": "fresh",
+                "template_ids_ordered": [
+                    str(self.template_opening.id),
+                    str(self.template_experience.id),
+                    str(self.template_closing.id),
+                ],
+                "selected_hr_ids": [str(self.employee_one.id)],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = self.view(request, tracking_id=self.tracking.id)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Fresh mail already used these employees earlier today in this tracking", str(response.data.get("detail", "")))
+
+    def test_update_allows_same_day_fresh_for_fully_different_employee(self):
+        request = self.factory.put(
+            f"/api/tracking/{self.tracking.id}/",
+            {
+                "company": self.company.id,
+                "job": self.job.id,
+                "mail_type": "fresh",
+                "template_ids_ordered": [
+                    str(self.template_opening.id),
+                    str(self.template_experience.id),
+                    str(self.template_closing.id),
+                ],
+                "selected_hr_ids": [str(self.employee_two.id)],
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = self.view(request, tracking_id=self.tracking.id)
+
+        self.assertEqual(response.status_code, 200)

@@ -2794,16 +2794,16 @@ class ApplicationTrackingListCreateView(APIView):
             if overlap:
                 return f'Already sent Fresh mail today to: {", ".join(overlap)}. Use different employees today or send tomorrow.'
             if sent_today and selected_employees:
-                notes = _build_tracking_action_notes(label='Emp Changed', employee_ids=selected_employee_ids)
+                notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
             elif last_action and str(last_action.action_type or '') == 'fresh':
                 last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
                 current_day = timezone.localdate(action_at)
                 last_meta = _tracking_action_note_meta(last_action.notes)
                 last_employee_ids = sorted(last_meta.get('employee_ids') or [])
                 if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
-                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                    notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
             elif same_job_fresh_today and selected_employees:
-                notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
         elif action_type == 'followup':
             if last_action and str(last_action.action_type or '') == 'followup':
                 last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
@@ -2811,7 +2811,7 @@ class ApplicationTrackingListCreateView(APIView):
                 last_meta = _tracking_action_note_meta(last_action.notes)
                 last_employee_ids = sorted(last_meta.get('employee_ids') or [])
                 if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
-                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                    notes = _build_tracking_action_notes(label='FUD', employee_ids=selected_employee_ids)
 
         TrackingAction.objects.create(
             tracking=tracking,
@@ -3166,6 +3166,19 @@ class ApplicationTrackingListCreateView(APIView):
                     tracking.hard_delete()
                 return Response(
                     {'detail': f'Fresh tracking already exists today for: {", ".join(overlap)}. Use Follow Up, choose different employees, or try tomorrow.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            same_tracking_fresh_today = _fresh_action_employee_map_for_day(
+                tracking,
+                timezone.now(),
+                employee_ids=selected_employee_ids,
+            )
+            overlap = [same_tracking_fresh_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in same_tracking_fresh_today]
+            if overlap:
+                if not reuse_existing_row:
+                    tracking.hard_delete()
+                return Response(
+                    {'detail': f'Fresh mail already used these employees earlier today in this tracking: {", ".join(overlap)}. Choose fully different employees, use Follow Up, or send tomorrow.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
         if not self._has_company_mail_pattern(company):
@@ -3672,6 +3685,17 @@ class ApplicationTrackingDetailView(APIView):
                     {'detail': f'Fresh tracking already exists today for: {", ".join(overlap)}. Use Follow Up, choose different employees, or try tomorrow.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            same_tracking_fresh_today = _fresh_action_employee_map_for_day(
+                row,
+                timezone.now(),
+                employee_ids=selected_employee_ids,
+            )
+            overlap = [same_tracking_fresh_today.get(emp.id) or str(emp.name or '').strip() or f'Employee #{emp.id}' for emp in selected_employees if emp.id in same_tracking_fresh_today]
+            if overlap:
+                return Response(
+                    {'detail': f'Fresh mail already used these employees earlier today in this tracking: {", ".join(overlap)}. Choose fully different employees, use Follow Up, or send tomorrow.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         row.save()
 
@@ -3763,16 +3787,16 @@ class ApplicationTrackingDetailView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 if sent_today and selected_employees:
-                    notes = _build_tracking_action_notes(label='Emp Changed', employee_ids=selected_employee_ids)
+                    notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
                 elif last_action and str(last_action.action_type or '') == 'fresh':
                     last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
                     current_day = timezone.localdate(action_at)
                     last_meta = _tracking_action_note_meta(last_action.notes)
                     last_employee_ids = sorted(last_meta.get('employee_ids') or [])
                     if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
-                        notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                        notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
                 elif same_job_fresh_today and selected_employees:
-                    notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                    notes = _build_tracking_action_notes(label='FD', employee_ids=selected_employee_ids)
             elif action_type == 'followup':
                 if last_action and str(last_action.action_type or '') == 'followup':
                     last_day = timezone.localdate(last_action.action_at) if last_action.action_at else None
@@ -3780,7 +3804,7 @@ class ApplicationTrackingDetailView(APIView):
                     last_meta = _tracking_action_note_meta(last_action.notes)
                     last_employee_ids = sorted(last_meta.get('employee_ids') or [])
                     if last_day == current_day and last_employee_ids and last_employee_ids != selected_employee_ids:
-                        notes = _build_tracking_action_notes(label='Emp Diff', employee_ids=selected_employee_ids)
+                        notes = _build_tracking_action_notes(label='FUD', employee_ids=selected_employee_ids)
             TrackingAction.objects.create(
                 tracking=row,
                 action_type=action_type,
