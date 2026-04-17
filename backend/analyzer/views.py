@@ -401,6 +401,11 @@ def _template_category(template_row):
     return str(getattr(template_row, 'category', 'general') or 'general').strip().lower() or 'general'
 
 
+def _selected_intro_template_category(mail_type='fresh'):
+    normalized_mail_type = str(mail_type or 'fresh').strip().lower()
+    return 'follow_up' if normalized_mail_type == 'followed_up' else 'personalized'
+
+
 def _validate_tracking_templates(templates, mail_type='fresh'):
     normalized_mail_type = str(mail_type or 'fresh').strip().lower()
     rows = list(templates or [])
@@ -3094,7 +3099,7 @@ class ApplicationTrackingListCreateView(APIView):
             .order_by('action_at', 'created_at')
         )
         template_choice = 'follow_up_applied' if str(tracking.mail_type or 'fresh').strip() == 'followed_up' else 'cold_applied'
-        compose_mode = 'hardcoded' if bool(tracking.use_hardcoded_personalized_intro) else 'complete_ai'
+        compose_mode = 'template_based'
         mailed_at_value = _mail_tracking_sent_at(mail_tracking)
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
@@ -3174,7 +3179,7 @@ class ApplicationTrackingListCreateView(APIView):
                 if tracking.personalized_template_id and tracking.personalized_template else None
             ),
             'template_choice': template_choice,
-            'template_subject': '',
+            'template_subject': str(tracking.mail_subject or '').strip(),
             'template_message': '',
             'compose_mode': compose_mode,
             'hardcoded_follow_up': True,
@@ -3282,15 +3287,20 @@ class ApplicationTrackingListCreateView(APIView):
         personalized_template = None
         personalized_template_id = str(payload.get('personalized_template') or '').strip()
         if personalized_template_id:
-            personalized_template = Template.objects.filter(id=personalized_template_id, user=request.user, category='personalized').first()
+            intro_category = _selected_intro_template_category(mail_type)
+            personalized_template = Template.objects.filter(
+                id=personalized_template_id,
+                user=request.user,
+                category=intro_category,
+            ).first()
             if not personalized_template:
                 personalized_template = Template.objects.filter(
                     id=personalized_template_id,
                     user_id__in=_accessible_owner_ids_for_user(request.user),
-                    category='personalized',
+                    category=intro_category,
                 ).first()
             if not personalized_template:
-                return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'detail': f'{intro_category.replace("_", " ").title()} template not found.'}, status=status.HTTP_400_BAD_REQUEST)
         selected_targets = self._resolve_selected_hrs(
             request,
             job.company_id if job and job.company_id else None,
@@ -3327,6 +3337,7 @@ class ApplicationTrackingListCreateView(APIView):
             mail_delivery_status='pending',
             mailed=self._to_bool(payload.get('mailed'), default=False),
             mail_type=mail_type,
+            mail_subject=str(payload.get('template_subject') or payload.get('mail_subject') or payload.get('subject') or '').strip(),
         )
         tracking.job = job
         tracking.template = template
@@ -3336,6 +3347,7 @@ class ApplicationTrackingListCreateView(APIView):
         tracking.use_hardcoded_personalized_intro = self._to_bool(payload.get('use_hardcoded_personalized_intro'), default=False)
         tracking.schedule_time = schedule_time
         tracking.mail_type = mail_type
+        tracking.mail_subject = str(payload.get('template_subject') or payload.get('mail_subject') or payload.get('subject') or tracking.mail_subject or '').strip()
         tracking.mailed = self._to_bool(payload.get('mailed'), default=tracking.mailed if reuse_existing_row else False)
         tracking.save()
         if selected_targets is not None:
@@ -3588,7 +3600,7 @@ class ApplicationTrackingDetailView(APIView):
                 }
             )
         template_choice = 'follow_up_applied' if str(row.mail_type or 'fresh').strip() == 'followed_up' else 'cold_applied'
-        compose_mode = 'hardcoded' if bool(row.use_hardcoded_personalized_intro) else 'complete_ai'
+        compose_mode = 'template_based'
         mailed_at_value = _mail_tracking_sent_at(mail_tracking)
         replied_at_value = _mail_tracking_replied_at(mail_tracking)
         got_replied_value = _mail_tracking_got_replied(mail_tracking)
@@ -3673,7 +3685,7 @@ class ApplicationTrackingDetailView(APIView):
             ),
             'selected_employees': selected_employees,
             'template_choice': template_choice,
-            'template_subject': '',
+            'template_subject': str(row.mail_subject or '').strip(),
             'template_message': '',
             'compose_mode': compose_mode,
             'hardcoded_follow_up': True,
@@ -3814,18 +3826,23 @@ class ApplicationTrackingDetailView(APIView):
             if not raw_personalized_id:
                 row.personalized_template = None
             else:
+                intro_category = _selected_intro_template_category(
+                    payload.get('mail_type') or payload.get('action') or row.mail_type or 'fresh'
+                )
                 selected_personalized = Template.objects.filter(
                     id=raw_personalized_id,
                     user_id__in=_accessible_owner_ids_for_user(request.user),
-                    category='personalized',
+                    category=intro_category,
                 ).first()
                 if not selected_personalized:
-                    return Response({'detail': 'Personalized template not found.'}, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({'detail': f'{intro_category.replace("_", " ").title()} template not found.'}, status=status.HTTP_400_BAD_REQUEST)
                 row.personalized_template = selected_personalized
         if 'mail_type' in payload or 'action' in payload:
             action_text = str(payload.get('mail_type') or payload.get('action') or '').strip()
             if action_text in {'fresh', 'followed_up'}:
                 row.mail_type = action_text
+        if 'template_subject' in payload or 'mail_subject' in payload or 'subject' in payload:
+            row.mail_subject = str(payload.get('template_subject') or payload.get('mail_subject') or payload.get('subject') or '').strip()
         if 'use_hardcoded_personalized_intro' in payload:
             row.use_hardcoded_personalized_intro = self._to_bool(
                 payload.get('use_hardcoded_personalized_intro'),
@@ -4114,7 +4131,7 @@ class ApplicationTrackingMailTestView(APIView):
         company = row.job.company if row.job_id and row.job and row.job.company_id else None
         pattern = str(getattr(company, 'mail_format', '') or '').strip()
         effective_use_ai = command._should_use_ai_for_row(row)
-        compose_mode = 'complete_ai' if effective_use_ai else 'hardcoded'
+        compose_mode = 'complete_ai' if effective_use_ai else 'template_based'
         employees = [emp for emp in row.selected_hrs.all()]
         previews = []
         for employee in employees:
@@ -4217,7 +4234,15 @@ class CompanyListCreateView(APIView):
         if denied:
             return denied
         workspace_owner = _workspace_owner_for_user(request.user)
-        serializer = CompanySerializer(data=request.data)
+        payload = dict(request.data or {})
+        company_name = normalize_company_name(payload.get('name'))
+        if not company_name:
+            return Response({'name': ['Company name is required.']}, status=status.HTTP_400_BAD_REQUEST)
+        exists = Company.objects.filter(user=workspace_owner, name__iexact=company_name).exists()
+        if exists:
+            return Response({'name': ['This company already exists.']}, status=status.HTTP_400_BAD_REQUEST)
+        payload['name'] = company_name
+        serializer = CompanySerializer(data=payload)
         if serializer.is_valid():
             created = serializer.save(user=workspace_owner)
             return Response(CompanySerializer(created).data, status=status.HTTP_201_CREATED)
@@ -4238,7 +4263,19 @@ class CompanyDetailView(APIView):
             row = self._get_object(request, company_id)
         except Company.DoesNotExist:
             return Response({'detail': 'Company not found.'}, status=status.HTTP_404_NOT_FOUND)
-        serializer = CompanySerializer(row, data=request.data, partial=True)
+        payload = dict(request.data or {})
+        if 'name' in payload:
+            company_name = normalize_company_name(payload.get('name'))
+            if not company_name:
+                return Response({'name': ['Company name is required.']}, status=status.HTTP_400_BAD_REQUEST)
+            duplicate = Company.objects.filter(
+                user=row.user,
+                name__iexact=company_name,
+            ).exclude(id=row.id).exists()
+            if duplicate:
+                return Response({'name': ['This company already exists.']}, status=status.HTTP_400_BAD_REQUEST)
+            payload['name'] = company_name
+        serializer = CompanySerializer(row, data=payload, partial=True)
         if serializer.is_valid():
             updated = serializer.save()
             return Response(CompanySerializer(updated).data, status=status.HTTP_200_OK)

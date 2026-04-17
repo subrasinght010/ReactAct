@@ -166,7 +166,7 @@ function TrackingMailTestPage() {
               {aiEnabled ? <button type="button" className="secondary" onClick={() => generate(true)} disabled={generating}>{generating ? 'Regenerating...' : 'Regenerate With Options'}</button> : null}
               <button type="button" className="secondary" onClick={save} disabled={saving || !previews.length}>{saving ? 'Saving...' : 'Save Approved Mail'}</button>
             </div>
-            {!aiEnabled ? <p className="hint">Mail preview uses your selected achievement paragraphs. AI is only used for the employee intro fallback on `Cold Applied` when personalized employee text is missing.</p> : null}
+            {!aiEnabled ? <p className="hint">Mail preview uses your selected templates. If you choose a personalized template, that content is added as the employee-specific intro block.</p> : null}
           </section>
 
           <section className="tracking-mail-preview-list">

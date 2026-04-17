@@ -37,6 +37,7 @@ const EMPTY_PROFILE = {
   linkedin_url: '',
   github_url: '',
   portfolio_url: '',
+  resume_link: '',
   current_employer: '',
   years_of_experience: '',
   address_line_1: '',
@@ -64,6 +65,7 @@ const EMPTY_ACH = {
 const TEMPLATE_CATEGORY_OPTIONS = [
   { value: '', label: 'All Categories' },
   { value: 'personalized', label: 'Personalized' },
+  { value: 'follow_up', label: 'Follow Up' },
   { value: 'opening', label: 'Opening' },
   { value: 'experience', label: 'Experience' },
   { value: 'closing', label: 'Closing' },
@@ -148,6 +150,7 @@ function profileRows(profile) {
     ['LinkedIn', profile.linkedin_url],
     ['GitHub', profile.github_url],
     ['Portfolio', profile.portfolio_url],
+    ['Resume Link', profile.resume_link],
     ['Current Employer', profile.current_employer],
     ['Years of Experience', profile.years_of_experience],
     ['Address Line 1', profile.address_line_1],
@@ -168,6 +171,24 @@ function profilePanelTitle(panel, index) {
   const fullName = String(panel?.full_name || '').trim()
   if (fullName) return fullName
   return `Profile Panel ${index + 1}`
+}
+
+function looksLikeUrl(value) {
+  const text = String(value || '').trim()
+  return /^https?:\/\//i.test(text)
+}
+
+function renderProfileValue(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  if (looksLikeUrl(text)) {
+    return (
+      <a className="profile-info-link" href={text} target="_blank" rel="noreferrer">
+        {text}
+      </a>
+    )
+  }
+  return text
 }
 
 function normalizeProfileLike(data, fallbackFullName = '') {
@@ -747,7 +768,7 @@ function ProfilePage() {
             {profileRows(profile).map(([label, value]) => (
               <div key={label} className="profile-info-item">
                 <span className="profile-info-label">{label}</span>
-                <span className="profile-info-value">{String(value)}</span>
+                <span className="profile-info-value">{renderProfileValue(value)}</span>
               </div>
             ))}
             {!profileRows(profile).length ? (
@@ -829,6 +850,7 @@ function ProfilePage() {
               <label>LinkedIn URL<input value={profileForm.linkedin_url} onChange={(e) => setProfileForm((p) => ({ ...p, linkedin_url: e.target.value }))} /></label>
               <label>GitHub URL<input value={profileForm.github_url} onChange={(e) => setProfileForm((p) => ({ ...p, github_url: e.target.value }))} /></label>
               <label>Portfolio URL<input value={profileForm.portfolio_url} onChange={(e) => setProfileForm((p) => ({ ...p, portfolio_url: e.target.value }))} /></label>
+              <label>Resume Link<input value={profileForm.resume_link} onChange={(e) => setProfileForm((p) => ({ ...p, resume_link: e.target.value }))} /></label>
               <label>Summary<textarea rows={3} value={profileForm.summary} onChange={(e) => setProfileForm((p) => ({ ...p, summary: e.target.value }))} /></label>
             </div>
             <div className="actions">
@@ -899,6 +921,7 @@ function ProfilePage() {
               <label>LinkedIn URL<input value={profilePanelForm.linkedin_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, linkedin_url: e.target.value }))} /></label>
               <label>GitHub URL<input value={profilePanelForm.github_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, github_url: e.target.value }))} /></label>
               <label>Portfolio URL<input value={profilePanelForm.portfolio_url} onChange={(e) => setProfilePanelForm((p) => ({ ...p, portfolio_url: e.target.value }))} /></label>
+              <label>Resume Link<input value={profilePanelForm.resume_link} onChange={(e) => setProfilePanelForm((p) => ({ ...p, resume_link: e.target.value }))} /></label>
               <label>Location<input value={profilePanelForm.location} onChange={(e) => setProfilePanelForm((p) => ({ ...p, location: e.target.value }))} /></label>
               <label>Location Ref
                 <SingleSelectDropdown
@@ -952,7 +975,7 @@ function ProfilePage() {
                 {profileRows(row).map(([label, value]) => (
                   <div key={`${row.id}-${label}`} className="profile-info-item">
                     <span className="profile-info-label">{label}</span>
-                    <span className="profile-info-value">{String(value)}</span>
+                    <span className="profile-info-value">{renderProfileValue(value)}</span>
                   </div>
                 ))}
                 {!profileRows(row).length ? (
@@ -1036,7 +1059,7 @@ function ProfilePage() {
           <>
             <div className="profile-form-grid">
               <label>Name<input value={achForm.name} onChange={(e) => setAchForm((p) => ({ ...p, name: e.target.value }))} /></label>
-              <label>Category<select value={achForm.category || 'general'} onChange={(e) => setAchForm((p) => ({ ...p, category: e.target.value }))}><option value="personalized">Personalized</option><option value="opening">Opening</option><option value="experience">Experience</option><option value="closing">Closing</option><option value="general">General</option></select></label>
+              <label>Category<select value={achForm.category || 'general'} onChange={(e) => setAchForm((p) => ({ ...p, category: e.target.value }))}><option value="personalized">Personalized</option><option value="follow_up">Follow Up</option><option value="opening">Opening</option><option value="experience">Experience</option><option value="closing">Closing</option><option value="general">General</option></select></label>
               <label className="md:col-span-2">Paragraph<textarea rows={4} value={achForm.paragraph} onChange={(e) => setAchForm((p) => ({ ...p, paragraph: e.target.value }))} /></label>
             </div>
             <div className="actions">

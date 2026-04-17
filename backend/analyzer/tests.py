@@ -304,7 +304,7 @@ class TrackingMailTestViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-    def test_generate_reports_complete_ai_when_hardcoded_intro_disabled(self):
+    def test_generate_reports_template_based_when_personalized_intro_is_not_selected(self):
         request = self.factory.post(
             f"/api/tracking/{self.tracking.id}/mail-test/",
             {"action": "generate"},
@@ -315,10 +315,10 @@ class TrackingMailTestViewTests(TestCase):
         response = ApplicationTrackingMailTestView.as_view()(request, tracking_id=self.tracking.id)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data.get("compose_mode"), "complete_ai")
+        self.assertEqual(response.data.get("compose_mode"), "template_based")
         previews = response.data.get("previews") or []
         self.assertTrue(previews)
-        self.assertEqual(previews[0].get("compose_mode"), "complete_ai")
+        self.assertEqual(previews[0].get("compose_mode"), "template_based")
 
     def test_read_only_cannot_save_mail_test_payloads(self):
         UserProfile.objects.create(user=self.owner, role=UserProfile.ROLE_READ_ONLY)

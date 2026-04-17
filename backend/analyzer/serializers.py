@@ -476,6 +476,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
     linkedin_url = serializers.CharField(required=False, allow_blank=True)
     github_url = serializers.CharField(required=False, allow_blank=True)
     portfolio_url = serializers.CharField(required=False, allow_blank=True)
+    resume_link = serializers.CharField(required=False, allow_blank=True)
     location_name = serializers.SerializerMethodField()
     preferred_location_refs = serializers.PrimaryKeyRelatedField(
         source='preferred_locations',
@@ -503,6 +504,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
         return _normalize_url(value)
 
     def validate_portfolio_url(self, value):
+        return _normalize_url(value)
+
+    def validate_resume_link(self, value):
         return _normalize_url(value)
 
     def validate_full_name(self, value):
@@ -541,6 +545,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'linkedin_url',
             'github_url',
             'portfolio_url',
+            'resume_link',
             'current_employer',
             'years_of_experience',
             'address_line_1',
@@ -565,6 +570,7 @@ class ProfilePanelSerializer(serializers.ModelSerializer):
     linkedin_url = serializers.CharField(required=False, allow_blank=True)
     github_url = serializers.CharField(required=False, allow_blank=True)
     portfolio_url = serializers.CharField(required=False, allow_blank=True)
+    resume_link = serializers.CharField(required=False, allow_blank=True)
     location_name = serializers.SerializerMethodField()
     preferred_location_refs = serializers.PrimaryKeyRelatedField(
         source='preferred_locations',
@@ -603,6 +609,9 @@ class ProfilePanelSerializer(serializers.ModelSerializer):
     def validate_portfolio_url(self, value):
         return _normalize_url(value)
 
+    def validate_resume_link(self, value):
+        return _normalize_url(value)
+
     def validate_current_employer(self, value):
         return _normalize_text(value)
 
@@ -626,6 +635,7 @@ class ProfilePanelSerializer(serializers.ModelSerializer):
             'linkedin_url',
             'github_url',
             'portfolio_url',
+            'resume_link',
             'current_employer',
             'years_of_experience',
             'address_line_1',
@@ -694,8 +704,8 @@ class TemplateSerializer(serializers.ModelSerializer):
 
     def validate_category(self, value):
         text = str(value or '').strip().lower()
-        if text not in {'personalized', 'opening', 'experience', 'closing', 'general'}:
-            raise serializers.ValidationError('Category must be Personalized, Opening, Experience, Closing, or General.')
+        if text not in {'personalized', 'follow_up', 'opening', 'experience', 'closing', 'general'}:
+            raise serializers.ValidationError('Category must be Personalized, Follow Up, Opening, Experience, Closing, or General.')
         return text
 
     def validate_paragraph(self, value):

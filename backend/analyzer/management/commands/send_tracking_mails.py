@@ -1,5 +1,6 @@
 import re
 import json
+import html
 import os
 import smtplib
 import time
@@ -27,6 +28,11 @@ LOGGER_NAME = "analyzer.send_tracking_mails"
 
 class Command(BaseCommand):
     help = "Send tracking mails one-by-one using company mail pattern; log all attempts in MailTracking and MailTrackingEvent."
+    HARDCODED_SIGNATURE_NAME = "Subrat Singh"
+    HARDCODED_SIGNATURE_LINKEDIN = "https://www.linkedin.com/in/subrat-s-81720a22a/"
+    HARDCODED_SIGNATURE_EMAIL = "subratsingh010@gmail.com"
+    HARDCODED_SIGNATURE_CONTACT = "+91 8546075639"
+    HARDCODED_RESUME_LINK = "https://drive.google.com/file/d/1WtbiqcSXz-xjAT4y84ggbGtpEBwx-uz-/view?usp=sharing"
 
     def add_arguments(self, parser):
         parser.add_argument("--user-id", type=int, default=None, help="Process only this user id")
@@ -156,9 +162,7 @@ class Command(BaseCommand):
         return {}
 
     def _should_use_ai_for_row(self, row, explicit_use_ai=False):
-        if explicit_use_ai:
-            return True
-        return not bool(getattr(row, "use_hardcoded_personalized_intro", False))
+        return bool(explicit_use_ai)
 
     def _set_employee_working_mail(self, employee, is_working):
         if not employee:
@@ -840,6 +844,50 @@ class Command(BaseCommand):
             return "Your company"
         return raw[:1].upper() + raw[1:]
 
+    def _capitalize_inserted_value(self, key, value):
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return ""
+        normalized_key = str(key or "").strip().lower()
+        if normalized_key in {"name", "employee_name", "first_name"}:
+            return self._display_first_name(text)
+        if normalized_key in {"company_name", "role", "profile_role", "employee_role", "employee_department"}:
+            return text[:1].upper() + text[1:]
+        if normalized_key in {"resume_link", "job_link", "sender_linkedin", "employee_email", "sender_email"}:
+            return text
+        if normalized_key == "skills_text":
+            parts = [part.strip() for part in re.split(r"\s*,\s*", text) if part.strip()]
+            if not parts:
+                return text[:1].upper() + text[1:]
+            return ", ".join(part[:1].upper() + part[1:] for part in parts)
+        return text
+
+    def _profile_role_text(self, row, profile):
+        job = getattr(row, "job", None)
+        if getattr(row, "job_id", None) and job and str(getattr(job, "role", "") or "").strip():
+            return str(job.role).strip()
+        summary = self._plain_text_from_html(getattr(profile, "summary", "") or "") if profile else ""
+        first_line = next((line.strip() for line in summary.splitlines() if line.strip()), "")
+        if first_line:
+            return first_line
+        return "Software engineer"
+
+    def _profile_skills_text(self, row):
+        builder = row.resume.builder_data if row and row.resume and isinstance(getattr(row.resume, "builder_data", None), dict) else {}
+        skills = builder.get("skills")
+        if isinstance(skills, list):
+            values = [str(item).strip() for item in skills if str(item).strip()]
+            if values:
+                return ", ".join(values)
+        text = self._plain_text_from_html(skills or "")
+        if text:
+            return text
+        return "Python, Django, React, FastAPI, MCP"
+
+    def _profile_resume_link(self, profile):
+        configured = str(getattr(profile, "resume_link", "") or "").strip() if profile else ""
+        return configured or self.HARDCODED_RESUME_LINK
+
     def _sender_first_name(self, row, profile):
         first_name = self._display_first_name(getattr(profile, "first_name", "") or "")
         if first_name:
@@ -910,18 +958,13 @@ class Command(BaseCommand):
         return "I am happy to share my resume if helpful."
 
     def _build_signature(self, row, profile):
-        full_name = self._sender_first_name(row, profile)
-        linkedin = str(getattr(profile, "linkedin_url", "") or "").strip()
-        contact = str(getattr(profile, "contact_number", "") or "").strip()
-        email = str(getattr(profile, "email", "") or row.user.email or "").strip()
-
-        sign_parts = [f"Sincerely,\n{full_name}".strip()]
-        if linkedin:
-            sign_parts.append(f"LinkedIn: {linkedin}")
-        if email:
-            sign_parts.append(f"Email: {email}")
-        if contact:
-            sign_parts.append(contact)
+        sign_parts = [
+            "Thanks,",
+            self.HARDCODED_SIGNATURE_NAME,
+            f"LinkedIn: {self.HARDCODED_SIGNATURE_LINKEDIN}",
+            f"Email: {self.HARDCODED_SIGNATURE_EMAIL}",
+            self.HARDCODED_SIGNATURE_CONTACT,
+        ]
         return "\n".join([p for p in sign_parts if str(p or "").strip()])
 
     def _inject_dynamic_names(self, text, employee_name, sender_name):
@@ -930,7 +973,7 @@ class Command(BaseCommand):
         snd = str(sender_name or "").strip()
 
         if emp:
-            for token in ["[Name]", "[Employee Name]", "<name>", "<employee_name>", "{{name}}", "{name}"]:
+            for token in ["[]", "[Name]", "[Employee Name]", "<name>", "<employee_name>", "{{name}}", "{name}"]:
                 value = value.replace(token, emp)
             value = re.sub(r"\bHi\s+there\s*,", f"Hi {emp},", value, flags=re.I)
             value = re.sub(r"\bHello\s+there\s*,", f"Hi {emp},", value, flags=re.I)
@@ -1079,16 +1122,18 @@ class Command(BaseCommand):
 
     def _mail_placeholder_map(self, row, employee, profile, *, company_name="", role="", job_id="", job_link="", sender_name="", employee_email=""):
         current_employer = str(getattr(profile, "current_employer", "") or "").strip() if profile else ""
-        sender_email = str(getattr(profile, "email", "") or getattr(getattr(row, "user", None), "email", "") or "").strip()
-        sender_contact = str(getattr(profile, "contact_number", "") or "").strip()
-        sender_linkedin = str(getattr(profile, "linkedin_url", "") or "").strip()
+        sender_email = self.HARDCODED_SIGNATURE_EMAIL
+        sender_contact = self.HARDCODED_SIGNATURE_CONTACT
+        sender_linkedin = self.HARDCODED_SIGNATURE_LINKEDIN
         employee_name = self._preferred_employee_name(employee)
         employee_role = str(getattr(employee, "JobRole", "") or "").strip()
         employee_department = str(getattr(employee, "department", "") or "").strip()
         normalized_job_link = str(job_link or "").strip()
+        first_name = self._display_first_name(employee_name)
         return {
             "name": employee_name,
             "employee_name": employee_name,
+            "first_name": first_name,
             "employee_email": str(employee_email or getattr(employee, "email", "") or "").strip(),
             "employee_role": employee_role,
             "employee_department": employee_department,
@@ -1097,10 +1142,14 @@ class Command(BaseCommand):
             "job_id": str(job_id or "").strip(),
             "job_link": normalized_job_link,
             "current_employer": current_employer,
-            "sender_name": str(sender_name or "").strip(),
+            "sender_name": self.HARDCODED_SIGNATURE_NAME,
             "sender_email": sender_email,
             "sender_contact": sender_contact,
             "sender_linkedin": sender_linkedin,
+            "resume_link": self._profile_resume_link(profile),
+            "profile_role": self._profile_role_text(row, profile),
+            "years_of_experience": str(getattr(profile, "years_of_experience", "") or "").strip() if profile else "",
+            "skills_text": self._profile_skills_text(row),
         }
 
     def _render_mail_placeholders(self, text, replacements):
@@ -1109,7 +1158,7 @@ class Command(BaseCommand):
             return ""
         mapping = replacements or {}
         for key, replacement in mapping.items():
-            safe_value = str(replacement or "").strip()
+            safe_value = self._capitalize_inserted_value(key, replacement)
             value = value.replace(f"{{{key}}}", safe_value)
             value = value.replace(f"[{key}]", safe_value)
         # Clean punctuation artifacts left behind by empty placeholders.
@@ -1136,7 +1185,7 @@ class Command(BaseCommand):
 
     def _hardcoded_personalized_intro(self, row, replacements=None):
         template = getattr(row, "personalized_template", None)
-        if not getattr(row, "use_hardcoded_personalized_intro", False) or not template:
+        if not template:
             return ""
         text = self._render_mail_placeholders(getattr(template, "achievement", "") or "", replacements)
         if not text:
@@ -1178,9 +1227,9 @@ class Command(BaseCommand):
         if attachment_text:
             body_sections.append(attachment_text)
 
-        sender_lines = self._sender_detail_lines(sender_name, email, contact, linkedin)
-        if sender_lines:
-            body_sections.append("Thanks,\n" + "\n".join(sender_lines))
+        signature_text = self._build_signature(None, None)
+        if signature_text:
+            body_sections.append(signature_text)
 
         return "\n\n".join([section for section in body_sections if section])
 
@@ -1213,13 +1262,6 @@ class Command(BaseCommand):
         attachment_line = self._resume_attachment_line(row)
         ordered_template_paragraphs = self._ordered_achievement_paragraphs(achievements, placeholder_values)
         personalized_intro = self._hardcoded_personalized_intro(row, placeholder_values)
-        if not personalized_intro:
-            personalized_intro = self._cold_applied_personalized_intro(
-                employee,
-                company_name,
-                role,
-                allow_generate=bool(use_ai),
-            )
 
         subject = self._default_subject_for_template(
             choice,
@@ -1228,6 +1270,9 @@ class Command(BaseCommand):
             emp_name,
             job_id,
         )
+        saved_subject = self._render_mail_placeholders(str(getattr(row, "mail_subject", "") or "").strip(), placeholder_values)
+        if saved_subject:
+            subject = saved_subject
         body = self._build_ordered_hardcoded_mail(
             emp_name=emp_name,
             intro_paragraphs=[personalized_intro] if personalized_intro else [],
@@ -1245,6 +1290,37 @@ class Command(BaseCommand):
         body = self._inject_dynamic_names(body, emp_name, sender_name)
         return subject, body
 
+    def _body_html(self, body):
+        text = str(body or "").replace("\r\n", "\n")
+        if not text.strip():
+            return ""
+
+        def _linkify(segment):
+            escaped = html.escape(segment, quote=True)
+            escaped = re.sub(
+                r'(https?://[^\s<]+)',
+                lambda match: f'<a href="{match.group(1)}">{match.group(1)}</a>',
+                escaped,
+            )
+            escaped = re.sub(
+                r'(?<!["/=])\b([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})\b',
+                lambda match: f'<a href="mailto:{match.group(1)}">{match.group(1)}</a>',
+                escaped,
+            )
+            return escaped
+
+        paragraphs = []
+        for block in re.split(r"\n\s*\n", text):
+            lines = [line.strip() for line in block.split("\n")]
+            rendered_lines = [_linkify(line) if line else "" for line in lines]
+            paragraphs.append("<br>".join(rendered_lines))
+
+        return (
+            '<html><body style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #111827;">'
+            + "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs if paragraph.strip())
+            + "</body></html>"
+        )
+
     def _send_email(self, user, to_email, subject, body, attachment_path=None, attachment_bytes=None, *, attachment_name=None, in_reply_to="", references=None):
         host = str(__import__("os").environ.get("SMTP_HOST", "")).strip()
         port = int(str(__import__("os").environ.get("SMTP_PORT", "587")).strip() or 587)
@@ -1255,9 +1331,15 @@ class Command(BaseCommand):
         if not host or not from_email:
             raise RuntimeError("SMTP_HOST / SMTP_FROM_EMAIL (or SMTP_USER) is not configured.")
 
+        html_body = self._body_html(body)
+        content_part = MIMEMultipart("alternative")
+        content_part.attach(MIMEText(body, "plain", "utf-8"))
+        if html_body:
+            content_part.attach(MIMEText(html_body, "html", "utf-8"))
+
         if attachment_path or attachment_bytes:
             msg = MIMEMultipart()
-            msg.attach(MIMEText(body, "plain", "utf-8"))
+            msg.attach(content_part)
             try:
                 part = MIMEBase("application", "octet-stream")
                 if attachment_bytes is not None:
@@ -1273,10 +1355,10 @@ class Command(BaseCommand):
                 part.add_header("Content-Disposition", f'attachment; filename="{download_name}"')
                 msg.attach(part)
             except Exception:  # noqa: BLE001
-                # Soft-fail attachment and continue with plain body.
-                msg = MIMEText(body, "plain", "utf-8")
+                # Soft-fail attachment and continue with multipart mail body.
+                msg = content_part
         else:
-            msg = MIMEText(body, "plain", "utf-8")
+            msg = content_part
         msg["Subject"] = subject
         msg["From"] = from_email
         msg["To"] = to_email

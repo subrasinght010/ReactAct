@@ -81,6 +81,13 @@ class Company(BaseModel):
 
     class Meta:
         ordering = ['name']
+        constraints = [
+            models.UniqueConstraint(
+                Lower('name'),
+                'user',
+                name='uniq_company_user_name_ci',
+            ),
+        ]
 
     def save(self, *args, **kwargs):
         self.name = ' '.join(str(self.name or '').split()).lower()
@@ -271,6 +278,7 @@ class Tracking(BaseModel):
         default='fresh',
     )
     approved_test_mail_payloads = models.JSONField(default=list, blank=True)
+    mail_subject = models.CharField(max_length=255, blank=True, default='')
     is_freezed = models.BooleanField(default=False)
     freezed_at = models.DateTimeField(blank=True, null=True)
     class Meta:
@@ -405,6 +413,7 @@ class UserProfile(BaseModel):
     linkedin_url = models.URLField(blank=True, max_length=1000)
     github_url = models.URLField(blank=True, max_length=1000)
     portfolio_url = models.URLField(blank=True, max_length=1000)
+    resume_link = models.URLField(blank=True, max_length=1000)
     current_employer = models.CharField(max_length=180, blank=True)
     years_of_experience = models.CharField(max_length=60, blank=True)
     address_line_1 = models.CharField(max_length=220, blank=True)
@@ -443,6 +452,7 @@ class ProfilePanel(BaseModel):
     linkedin_url = models.URLField(blank=True, max_length=1000)
     github_url = models.URLField(blank=True, max_length=1000)
     portfolio_url = models.URLField(blank=True, max_length=1000)
+    resume_link = models.URLField(blank=True, max_length=1000)
     current_employer = models.CharField(max_length=180, blank=True)
     years_of_experience = models.CharField(max_length=60, blank=True)
     address_line_1 = models.CharField(max_length=220, blank=True)
@@ -491,6 +501,7 @@ class WorkspaceMember(BaseModel):
 class Template(BaseModel):
     CATEGORY_CHOICES = [
         ('personalized', 'Personalized'),
+        ('follow_up', 'Follow Up'),
         ('opening', 'Opening'),
         ('experience', 'Experience'),
         ('closing', 'Closing'),
