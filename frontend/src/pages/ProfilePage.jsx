@@ -198,14 +198,6 @@ function profileRows(profile) {
   return rows.filter(([, value]) => String(value || '').trim())
 }
 
-function profilePanelTitle(panel, index) {
-  const explicitTitle = String(panel?.title || '').trim()
-  if (explicitTitle) return explicitTitle
-  const fullName = String(panel?.full_name || '').trim()
-  if (fullName) return fullName
-  return `Profile Panel ${index + 1}`
-}
-
 function looksLikeUrl(value) {
   const text = String(value || '').trim()
   return /^https?:\/\//i.test(text)
@@ -442,40 +434,50 @@ function ProfilePage() {
     return rows.filter((row) => String(row?.category || '').trim().toLowerCase() === selectedCategory)
   }, [subjectTemplates, subjectTemplateCategoryFilter])
 
-  const loadAll = async () => {
-    setLoading(true)
-    setError('')
-    try {
-      const [profileBase, info, resumeRows, achRows, subjectRows, interviewRows, jobsData, locationRows] = await Promise.all([
-        fetchProfile(access),
-        fetchProfileInfo(access),
-        fetchResumes(access),
-        fetchTemplates(access),
-        fetchSubjectTemplates(access),
-        fetchInterviews(access),
-        fetchAllJobs(access),
-        fetchLocations(access),
-      ])
-      const nextProfile = normalizeProfileLike(info, String(profileBase?.username || ''))
-      setProfile(nextProfile)
-      setProfileForm(nextProfile)
-      setProfileUsername(String(profileBase?.username || ''))
-      setResumes(Array.isArray(resumeRows) ? resumeRows : [])
-      setAchievements(Array.isArray(achRows) ? achRows : [])
-      setSubjectTemplates(Array.isArray(subjectRows) ? subjectRows : [])
-      setInterviews(Array.isArray(interviewRows) ? interviewRows : [])
-      setJobOptions(Array.isArray(jobsData) ? jobsData : [])
-      setLocationOptions(Array.isArray(locationRows) ? locationRows : [])
-    } catch (err) {
-      setError(err.message || 'Could not load profile data.')
-    } finally {
-      setLoading(false)
-    }
-  }
-
   useEffect(() => {
     if (!access) return
+    let cancelled = false
+
+    const loadAll = async () => {
+      setLoading(true)
+      setError('')
+      try {
+        const [profileBase, info, resumeRows, achRows, subjectRows, interviewRows, jobsData, locationRows] = await Promise.all([
+          fetchProfile(access),
+          fetchProfileInfo(access),
+          fetchResumes(access),
+          fetchTemplates(access),
+          fetchSubjectTemplates(access),
+          fetchInterviews(access),
+          fetchAllJobs(access),
+          fetchLocations(access),
+        ])
+        if (cancelled) return
+        const nextProfile = normalizeProfileLike(info, String(profileBase?.username || ''))
+        setProfile(nextProfile)
+        setProfileForm(nextProfile)
+        setProfileUsername(String(profileBase?.username || ''))
+        setResumes(Array.isArray(resumeRows) ? resumeRows : [])
+        setAchievements(Array.isArray(achRows) ? achRows : [])
+        setSubjectTemplates(Array.isArray(subjectRows) ? subjectRows : [])
+        setInterviews(Array.isArray(interviewRows) ? interviewRows : [])
+        setJobOptions(Array.isArray(jobsData) ? jobsData : [])
+        setLocationOptions(Array.isArray(locationRows) ? locationRows : [])
+      } catch (err) {
+        if (!cancelled) {
+          setError(err.message || 'Could not load profile data.')
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false)
+        }
+      }
+    }
+
     loadAll()
+    return () => {
+      cancelled = true
+    }
   }, [access])
 
   const saveProfile = async () => {

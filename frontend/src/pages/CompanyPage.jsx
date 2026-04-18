@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { SingleSelectDropdown } from '../components/SearchableDropdown'
 import { capitalizeFirstDisplay } from '../utils/displayText'
 
@@ -152,7 +152,7 @@ function CompanyPage() {
     return filteredCompanies.slice(start, start + pageSize)
   }, [filteredCompanies, page, pageSize])
 
-  const load = async () => {
+  const load = useCallback(async () => {
     if (!access) {
       setCompanies([])
       setEmployees([])
@@ -186,11 +186,11 @@ function CompanyPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [access])
 
   useEffect(() => {
     load()
-  }, [access])
+  }, [load])
 
   useEffect(() => {
     setPage(1)

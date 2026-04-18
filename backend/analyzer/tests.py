@@ -1,9 +1,12 @@
+import shutil
+import tempfile
 from unittest.mock import patch
 
 from django.contrib.auth.models import Group, Permission, User
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.test.utils import override_settings
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -1000,9 +1003,17 @@ class CompanyEmployeeAccessControlTests(TestCase):
 
 class ResumeSaveStorageTests(TestCase):
     def setUp(self):
+        self._temp_media_dir = tempfile.mkdtemp(prefix="reactact-test-media-")
+        self._override = override_settings(MEDIA_ROOT=self._temp_media_dir, MEDIA_URL="/media/")
+        self._override.enable()
         self.factory = APIRequestFactory()
         self.user = User.objects.create_user(username="resume-owner", email="resume-owner@example.com", password="x")
         self.profile = UserProfile.objects.create(user=self.user)
+
+    def tearDown(self):
+        self._override.disable()
+        shutil.rmtree(self._temp_media_dir, ignore_errors=True)
+        super().tearDown()
 
     def test_create_resume_keeps_only_db_data_without_file(self):
         request = self.factory.post(
@@ -1031,6 +1042,8 @@ class ResumeSaveStorageTests(TestCase):
             file=SimpleUploadedFile("resume.pdf", b"%PDF-1.4 test file", content_type="application/pdf"),
         )
         self.assertTrue(bool(resume.file))
+        old_file_name = str(resume.file.name or '').strip()
+        self.assertTrue(resume.file.storage.exists(old_file_name))
 
         request = self.factory.put(
             f"/api/resumes/{resume.id}/",
@@ -1048,6 +1061,26 @@ class ResumeSaveStorageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         resume.refresh_from_db()
         self.assertFalse(bool(resume.file))
+        self.assertFalse(resume.file.storage.exists(old_file_name))
+
+    def test_delete_resume_removes_existing_file_attachment(self):
+        resume = Resume.objects.create(
+            profile=self.profile,
+            title="Delete Resume",
+            original_text="Delete text",
+            file=SimpleUploadedFile("delete-resume.pdf", b"%PDF-1.4 delete file", content_type="application/pdf"),
+        )
+        old_file_name = str(resume.file.name or '').strip()
+        self.assertTrue(resume.file.storage.exists(old_file_name))
+
+        request = self.factory.delete(f"/api/resumes/{resume.id}/")
+        force_authenticate(request, user=self.user)
+
+        response = ResumeDetailView.as_view()(request, resume_id=resume.id)
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Resume.objects.filter(id=resume.id).exists())
+        self.assertFalse(resume.file.storage.exists(old_file_name))
 
 
 class SerializerNormalizationTests(TestCase):

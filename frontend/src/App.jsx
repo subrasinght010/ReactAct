@@ -25,7 +25,8 @@ function RequireAuth({ children }) {
   const location = useLocation()
 
   if (!isLoggedIn) {
-    sessionStorage.setItem('redirectAfterLogin', location.pathname || '/')
+    const redirectPath = `${location.pathname || '/'}${location.search || ''}${location.hash || ''}`
+    sessionStorage.setItem('redirectAfterLogin', redirectPath)
     return <Navigate to="/login" replace />
   }
 
@@ -38,8 +39,9 @@ function PublicOnly({ children }) {
   if (!isLoggedIn) return children
 
   const redirect = sessionStorage.getItem('redirectAfterLogin') || '/'
+  const safeRedirect = redirect.startsWith('/') ? redirect : '/'
   sessionStorage.removeItem('redirectAfterLogin')
-  return <Navigate to={redirect} replace />
+  return <Navigate to={safeRedirect} replace />
 }
 
 function AppLayout() {

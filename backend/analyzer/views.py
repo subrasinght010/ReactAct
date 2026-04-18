@@ -793,6 +793,19 @@ def _remove_resume_file(resume):
         resume.file = None
 
 
+def _remove_stored_resume_file_by_name(file_name):
+    name = str(file_name or '').strip()
+    if not name:
+        return
+    try:
+        field = Resume._meta.get_field('file')
+        storage = field.storage
+        if storage.exists(name):
+            storage.delete(name)
+    except Exception:
+        pass
+
+
 def _builder_data_to_text(builder_data: dict) -> str:
     data = builder_data or {}
     parts = []
@@ -2266,6 +2279,7 @@ class ResumeDetailView(APIView):
         except Resume.DoesNotExist:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_404_NOT_FOUND)
 
+        previous_file_name = str(getattr(getattr(resume, 'file', None), 'name', '') or '').strip()
         serializer = ResumeSerializer(resume, data=self._serializer_payload(request), partial=True)
         if serializer.is_valid():
             builder_changed = 'builder_data' in serializer.validated_data
@@ -2280,6 +2294,7 @@ class ResumeDetailView(APIView):
                 except ValidationError as exc:
                     return Response(exc.detail, status=status.HTTP_400_BAD_REQUEST)
             updated = serializer.save(**save_kwargs)
+            _remove_stored_resume_file_by_name(previous_file_name)
             _remove_resume_file(updated)
             updated.save(update_fields=['file'])
             self._apply_default_resume(_workspace_profile_for_user(request.user), updated)
@@ -2294,6 +2309,7 @@ class ResumeDetailView(APIView):
             resume = self.get_object(request, resume_id)
         except Resume.DoesNotExist:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_404_NOT_FOUND)
+        _remove_resume_file(resume)
         resume.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ResumeSheet from '../components/ResumeSheet'
 import { MultiSelectDropdown, SingleSelectDropdown } from '../components/SearchableDropdown'
@@ -144,10 +144,6 @@ function formatMilestoneCode(item) {
 
 function rowHasFreshMilestone(row) {
   return (row?.milestones || []).some((item) => item.type === 'fresh')
-}
-
-function mailTypeToActionType(mailType) {
-  return String(mailType || '').trim().toLowerCase() === 'followed_up' ? 'followup' : 'fresh'
 }
 
 function rowLastActionType(row) {
@@ -343,27 +339,6 @@ const SEND_MODE_OPTIONS = [
   { value: 'scheduled', label: 'Schedule' },
 ]
 
-const COLD_MAIL_COMPOSER_OPTIONS = [
-  { value: 'hardcoded', label: 'Template Based' },
-  { value: 'partial_ai', label: 'Partial AI' },
-]
-
-const STANDARD_MAIL_COMPOSER_OPTIONS = [
-  { value: 'hardcoded', label: 'Template Based' },
-]
-
-function resolveComposeModeForTemplate(templateChoice, currentMode = 'hardcoded') {
-  const choice = String(templateChoice || '').trim()
-  const mode = String(currentMode || 'hardcoded').trim() || 'hardcoded'
-  if (choice === 'custom') return 'complete_ai'
-  if (choice === 'cold_applied') return mode === 'partial_ai' ? 'partial_ai' : 'hardcoded'
-  return 'hardcoded'
-}
-
-function composerOptionsForTemplate(templateChoice) {
-  return String(templateChoice || '').trim() === 'cold_applied' ? COLD_MAIL_COMPOSER_OPTIONS : STANDARD_MAIL_COMPOSER_OPTIONS
-}
-
 const TEMPLATE_DEPARTMENT_RULES = {
   cold_applied: ['hr'],
   follow_up_applied: ['hr'],
@@ -420,24 +395,6 @@ function mailTypeOptionsForRow(hasFreshMilestone) {
 
 function isTemplateAllowed(templateChoice, buckets, mailType) {
   return isTemplateAllowedForBuckets(templateChoice, buckets) && isTemplateAllowedForMailType(templateChoice, mailType)
-}
-
-function getTemplateOptionsForBuckets(buckets, mailType) {
-  return TEMPLATE_CHOICES.filter((item) => isTemplateAllowed(item.value, buckets, mailType))
-}
-
-function getTemplateRestrictionError(templateChoice, buckets, mailType) {
-  const normalizedChoice = String(templateChoice || '').trim()
-  if (!normalizedChoice) return ''
-  if (!isTemplateAllowedForMailType(normalizedChoice, mailType)) {
-    return String(mailType || 'fresh').trim().toLowerCase() === 'followed_up'
-      ? 'For Follow Up mail type, only follow-up templates are allowed.'
-      : 'For Fresh mail type, only Cold Applied, Referral, Job Inquire, and Custom templates are allowed.'
-  }
-  if (isTemplateAllowedForBuckets(normalizedChoice, buckets)) return ''
-  const allowed = TEMPLATE_DEPARTMENT_RULES[normalizedChoice] || []
-  const allowedText = allowed.map((item) => (item === 'hr' ? 'HR' : 'Engineering')).join(', ')
-  return `Template "${normalizedChoice}" is only allowed for ${allowedText} department contacts.`
 }
 
 function mergeAchievementOptions(baseOptions, selectedMeta) {
@@ -634,13 +591,6 @@ function initialRoleFromRow(row) {
   return ''
 }
 
-function arraysMatchAsStrings(left, right) {
-  const a = uniqueArray(left)
-  const b = uniqueArray(right)
-  if (a.length !== b.length) return false
-  return a.every((value, index) => String(value) === String(b[index]))
-}
-
 function localDateKey(value) {
   const date = value ? new Date(value) : null
   if (!date || Number.isNaN(date.getTime())) return ''
@@ -775,7 +725,7 @@ function TrackingPage() {
   const prevEditSubjectOptionsRef = useRef([])
   const employeePreviewRef = useRef(null)
 
-  const associatedResumeOptionsForJob = (jobId) => {
+  const associatedResumeOptionsForJob = useCallback((jobId) => {
     const job = jobOptions.find((item) => String(item.id) === String(jobId || ''))
     if (!job) return []
     const options = Array.isArray(job.associated_resumes) ? [...job.associated_resumes] : []
@@ -787,8 +737,8 @@ function TrackingPage() {
       label: `${String(item.title || `Resume #${item.id}`)}${item.is_tailored ? ' | Tailored' : ' | Base'}`,
       isTailored: Boolean(item.is_tailored),
     }))
-  }
-  const load = async () => {
+  }, [jobOptions])
+  const load = useCallback(async () => {
     if (!access) {
       setRows([])
       setLoading(false)
@@ -818,11 +768,11 @@ function TrackingPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [access, filters, ordering, page, pageSize])
 
   useEffect(() => {
     load()
-  }, [access, page, pageSize, filters, ordering])
+  }, [load])
 
   useEffect(() => {
     setPage(1)
@@ -1319,11 +1269,11 @@ function TrackingPage() {
 
   const createAssociatedResumeOptions = useMemo(
     () => (createForm?.job ? associatedResumeOptionsForJob(createForm.job) : []),
-    [createForm?.job, jobOptions],
+    [associatedResumeOptionsForJob, createForm?.job],
   )
   const editAssociatedResumeOptions = useMemo(
     () => (editForm?.job ? associatedResumeOptionsForJob(editForm.job) : []),
-    [editForm?.job, jobOptions],
+    [associatedResumeOptionsForJob, editForm?.job],
   )
   const baseResumeDropdownOptions = useMemo(
     () => (Array.isArray(resumeOptions) ? resumeOptions : []).map((item) => ({
@@ -1367,14 +1317,6 @@ function TrackingPage() {
       employees: activeEmployeeOptions,
     }),
     [editForm?.department, editForm?.selected_hr_ids, activeEmployeeOptions],
-  )
-  const createTemplateOptions = useMemo(
-    () => getTemplateOptionsForBuckets(createDepartmentBuckets, createForm?.mail_type || 'fresh'),
-    [createDepartmentBuckets, createForm?.mail_type],
-  )
-  const editTemplateOptions = useMemo(
-    () => getTemplateOptionsForBuckets(editDepartmentBuckets, editForm?.mail_type || 'fresh'),
-    [editDepartmentBuckets, editForm?.mail_type],
   )
   const editHasFreshMilestone = useMemo(
     () => (editForm ? Boolean(editForm.has_fresh_milestone) : false),
