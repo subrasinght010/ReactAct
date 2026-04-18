@@ -10,6 +10,7 @@ import {
   deleteTrackingRow,
   fetchAllCompanies,
   fetchAllJobs,
+  fetchSubjectTemplates,
   fetchTemplates,
   fetchEmployees,
   fetchProfile,
@@ -176,6 +177,21 @@ function humanizeLabel(value, fallback = '-') {
   return text.replaceAll('_', ' ')
 }
 
+function templateOwnerLabel(row) {
+  return String(row?.owner_label || row?.owner_name || '').trim() || 'system'
+}
+
+function templateDisplayName(row) {
+  const rawName = String(row?.name || 'Template').trim() || 'Template'
+  return rawName.replace(/^\[system seed\]\s*/i, '').trim() || rawName
+}
+
+function formatTemplateLibraryLabel(row) {
+  const category = humanizeLabel(row?.category, 'general')
+  const name = templateDisplayName(row)
+  return `${category} - ${name} | ${templateOwnerLabel(row)}`
+}
+
 function formatMailTypeLabel(value) {
   const text = String(value || '').trim().toLowerCase()
   return text === 'followup' || text === 'followed_up' ? 'Follow Up' : 'Fresh'
@@ -208,44 +224,102 @@ function subjectBaseValues(form, companies, jobs) {
   return { companyName, role, jobId }
 }
 
-function subjectOptionsForForm(form, companies, jobs, yearsOfExperience = '') {
+function renderSubjectTemplateValue(template, companies, jobs, yearsOfExperience = '') {
+  if (!template) return ''
+  const { companyName, role, jobId } = subjectBaseValues(template, companies, jobs)
+  const replacements = {
+    name: '',
+    employee_name: '',
+    first_name: '',
+    employee_role: '',
+    department: '',
+    employee_department: '',
+    company_name: companyName,
+    current_employer: companyName,
+    role,
+    job_id: jobId,
+    job_link: '',
+    resume_link: '',
+    years_of_experience: String(yearsOfExperience || '').trim(),
+    yoe: String(yearsOfExperience || '').trim(),
+    interaction_time: '',
+    interview_round: '',
+  }
+  return String(template?.subject || '')
+    .replace(/\{([a-z_]+)\}|\[([a-z_]+)\]/gi, (_, curlyKey, squareKey) => {
+      const key = String(curlyKey || squareKey || '').trim().toLowerCase()
+      return replacements[key] ?? ''
+    })
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function subjectOptionsForForm(form, companies, jobs, yearsOfExperience = '', subjectTemplates = []) {
   const { companyName, role, jobId } = subjectBaseValues(form, companies, jobs)
   const withJobId = jobId ? ` (Job ID: ${jobId})` : ''
   const yoe = String(yearsOfExperience || '').trim()
   const yoeSuffix = yoe ? ` | ${yoe.toLowerCase().replace(/\s+/g, '')}` : ''
   const mailType = String(form?.mail_type || 'fresh').trim().toLowerCase()
+  const subjectCategory = mailType === 'followed_up' ? 'follow_up' : 'fresh'
+  const subjectCategoryLabel = subjectCategory === 'follow_up' ? 'Follow Up' : 'Fresh'
   const templateChoice = String(form?.template_choice || form?.template_name || '').trim().toLowerCase()
-  let values = []
+  let templates = []
   if (templateChoice === 'referral') {
-    values = [
-      `Referral request for ${role} at ${companyName}${withJobId}${yoeSuffix}`,
-      `Referral request | ${role} | ${companyName}${yoeSuffix}`,
+    templates = [
+      { name: 'Referral Request', value: `Referral request for ${role} at ${companyName}${withJobId}${yoeSuffix}` },
+      { name: 'Referral Request Short', value: `Referral request | ${role} | ${companyName}${yoeSuffix}` },
     ]
   } else if (templateChoice === 'job_inquire') {
-    values = [
-      `Question about ${role} at ${companyName}${withJobId}${yoeSuffix}`,
-      `Job inquiry | ${role} | ${companyName}${yoeSuffix}`,
+    templates = [
+      { name: 'Job Inquiry', value: `Question about ${role} at ${companyName}${withJobId}${yoeSuffix}` },
+      { name: 'Job Inquiry Short', value: `Job inquiry | ${role} | ${companyName}${yoeSuffix}` },
     ]
   } else if (templateChoice === 'follow_up_referral') {
-    values = [
-      `Follow up on referral request for ${role} at ${companyName}${yoeSuffix}`,
-      `Referral follow up | ${role} | ${companyName}${yoeSuffix}`,
+    templates = [
+      { name: 'Referral Follow Up', value: `Follow up on referral request for ${role} at ${companyName}${yoeSuffix}` },
+      { name: 'Referral Follow Up Short', value: `Referral follow up | ${role} | ${companyName}${yoeSuffix}` },
     ]
   } else if (mailType === 'followed_up') {
-    values = [
-      `Follow up on my application for ${role} at ${companyName}${yoeSuffix}`,
-      `Application follow up | ${role} | ${companyName}${yoeSuffix}`,
+    templates = [
+      { name: 'Application Follow Up', value: `Follow up on my application for ${role} at ${companyName}${yoeSuffix}` },
+      { name: 'Application Follow Up Short', value: `Application follow up | ${role} | ${companyName}${yoeSuffix}` },
     ]
   } else {
-    values = [
-      `Application for ${role} at ${companyName}${withJobId}${yoeSuffix}`,
-      `Application for ${role} | ${companyName}${yoeSuffix}`,
+    templates = [
+      { name: 'Application', value: `Application for ${role} at ${companyName}${withJobId}${yoeSuffix}` },
+      { name: 'Application Short', value: `Application for ${role} | ${companyName}${yoeSuffix}` },
     ]
   }
-  return values
+  const generatedOptions = templates
+    .filter((item) => String(item?.value || '').trim())
+    .filter((item, index, arr) => arr.findIndex((entry) => String(entry?.value || '').trim() === String(item?.value || '').trim()) === index)
+    .map((item) => ({
+      value: item.value,
+      label: `${subjectCategoryLabel} - ${item.name} | system`,
+    }))
+
+  const savedOptions = (Array.isArray(subjectTemplates) ? subjectTemplates : [])
+    .filter((row) => String(row?.category || '').trim().toLowerCase() === subjectCategory)
+    .map((row) => {
+      const rendered = renderSubjectTemplateValue({ ...form, subject: row?.subject }, companies, jobs, yearsOfExperience)
+      if (!rendered) return null
+      const templateName = String(row?.name || '').trim() || 'Untitled'
+      return {
+        value: rendered,
+        label: `${subjectCategoryLabel} - ${templateName} | user`,
+      }
+    })
     .filter(Boolean)
-    .filter((value, index, arr) => arr.indexOf(value) === index)
-    .map((value) => ({ value, label: value }))
+
+  const merged = []
+  const seen = new Set()
+  for (const option of [...savedOptions, ...generatedOptions]) {
+    const value = String(option?.value || '').trim()
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    merged.push(option)
+  }
+  return merged
 }
 
 const TEMPLATE_CHOICES = [
@@ -265,7 +339,7 @@ const MAIL_TYPE_OPTIONS = [
 ]
 
 const SEND_MODE_OPTIONS = [
-  { value: 'sent', label: 'Sent' },
+  { value: 'sent', label: 'Manual Send' },
   { value: 'scheduled', label: 'Schedule' },
 ]
 
@@ -377,6 +451,9 @@ function mergeAchievementOptions(baseOptions, selectedMeta) {
       name: String(selectedMeta?.name || 'Template').trim() || 'Template',
       paragraph: String(selectedMeta?.text || '').trim(),
       category: String(selectedMeta?.category || 'general').trim() || 'general',
+      owner_name: String(selectedMeta?.owner_name || '').trim(),
+      owner_label: String(selectedMeta?.owner_label || '').trim() || 'system',
+      is_system: Boolean(selectedMeta?.is_system),
     },
     ...rows,
   ]
@@ -617,6 +694,22 @@ function buildImmediateTrackingRuleWarning({
     return ''
   }
 
+  const selectedCompanyId = String(form.company || '').trim()
+  const selectedJobId = String(form.job || '').trim()
+  if (selectedCompanyId && selectedJobId) {
+    const duplicateRow = (Array.isArray(rows) ? rows : []).find((row) => (
+      Number(row?.id) !== Number(currentRowId || 0)
+      && String(row?.mail_type || 'fresh').trim().toLowerCase() === 'fresh'
+      && String(row?.company || '').trim() === selectedCompanyId
+      && String(row?.job || '').trim() === selectedJobId
+    ))
+    if (duplicateRow) {
+      const companyName = capitalizeFirstDisplay(duplicateRow?.company_name || '') || 'this company'
+      const roleName = String(duplicateRow?.job_role || duplicateRow?.role || '').trim() || 'this job'
+      return `Tracking already exists for ${companyName} | ${roleName}. Keep a single tracking row per company + job and edit the existing one instead.`
+    }
+  }
+
   const selectedNames = employeeNamesFromSelection(form.selected_hr_ids, employees)
   if (!selectedNames.length) return ''
   const selectedSet = new Set(selectedNames.map((name) => name.toLowerCase()))
@@ -636,6 +729,7 @@ function isImmediateRuleMessage(message) {
   const text = String(message || '').trim()
   if (!text) return false
   return [
+    'Tracking already exists for ',
     'Fresh mail is already used today for:',
     'First time mail must be Fresh before any Follow Up mail.',
     'No contacted employee is available for follow up yet. Send Fresh mail first.',
@@ -670,6 +764,7 @@ function TrackingPage() {
   const [resumeOptions, setResumeOptions] = useState([])
   const [tailoredResumeOptions, setTailoredResumeOptions] = useState([])
   const [achievementOptions, setAchievementOptions] = useState([])
+  const [subjectTemplateOptions, setSubjectTemplateOptions] = useState([])
   const [profileYoe, setProfileYoe] = useState('')
   const [previewResume, setPreviewResume] = useState(null)
   const [employeePreview, setEmployeePreview] = useState(null)
@@ -737,23 +832,26 @@ function TrackingPage() {
     if (!access) return
     ;(async () => {
       try {
-        const [companyRows, resumesData, tailoredData, achievementsData, profileData] = await Promise.all([
+        const [companyRows, resumesData, tailoredData, achievementsData, subjectTemplatesData, profileData] = await Promise.all([
           fetchAllCompanies(access, { ready_for_tracking: true, scope: 'all' }),
           fetchResumes(access).catch(() => []),
           fetchTailoredResumes(access).catch(() => []),
           fetchTemplates(access).catch(() => []),
+          fetchSubjectTemplates(access).catch(() => []),
           fetchProfile(access).catch(() => ({})),
         ])
         setCompanyOptions(companyRows)
         setResumeOptions(Array.isArray(resumesData) ? resumesData : [])
         setTailoredResumeOptions(Array.isArray(tailoredData) ? tailoredData : [])
         setAchievementOptions(Array.isArray(achievementsData) ? achievementsData : [])
+        setSubjectTemplateOptions(Array.isArray(subjectTemplatesData) ? subjectTemplatesData : [])
         setProfileYoe(String(profileData?.years_of_experience || '').trim())
       } catch {
         setCompanyOptions([])
         setResumeOptions([])
         setTailoredResumeOptions([])
         setAchievementOptions([])
+        setSubjectTemplateOptions([])
         setProfileYoe('')
       }
     })()
@@ -1246,12 +1344,12 @@ function TrackingPage() {
     [employeeOptions],
   )
   const createSubjectOptions = useMemo(
-    () => subjectOptionsForForm(createForm, companyOptions, jobOptions, profileYoe),
-    [createForm, companyOptions, jobOptions, profileYoe],
+    () => subjectOptionsForForm(createForm, companyOptions, jobOptions, profileYoe, subjectTemplateOptions),
+    [createForm, companyOptions, jobOptions, profileYoe, subjectTemplateOptions],
   )
   const editSubjectOptions = useMemo(
-    () => subjectOptionsForForm(editForm, companyOptions, jobOptions, profileYoe),
-    [editForm, companyOptions, jobOptions, profileYoe],
+    () => subjectOptionsForForm(editForm, companyOptions, jobOptions, profileYoe, subjectTemplateOptions),
+    [editForm, companyOptions, jobOptions, profileYoe, subjectTemplateOptions],
   )
 
   const createDepartmentBuckets = useMemo(
@@ -1372,7 +1470,7 @@ function TrackingPage() {
       .filter((item) => String(item?.category || '').trim().toLowerCase() === 'personalized')
       .map((item) => ({
         value: String(item.id),
-        label: `Personalized | ${String(item.name || 'Template')}`,
+        label: formatTemplateLibraryLabel(item),
       })),
     [achievementOptions],
   )
@@ -1381,7 +1479,7 @@ function TrackingPage() {
       .filter((item) => String(item?.category || '').trim().toLowerCase() === 'follow_up')
       .map((item) => ({
         value: String(item.id),
-        label: `Follow Up - ${String(item.name || 'Template')} | Follow Up`,
+        label: formatTemplateLibraryLabel(item),
       })),
     [achievementOptions],
   )
@@ -1537,6 +1635,7 @@ function TrackingPage() {
         <div>
           <h1>Tracking</h1>
           <p className="subtitle">Manage fresh mails, follow-ups, schedules, and milestones from one clean panel.</p>
+          <p className="hint">Recommendation: always use the Test Mail panel before Manual Send or Schedule so you can verify the final subject and body first.</p>
         </div>
         <div className="actions">
           <button type="button" className="secondary" onClick={bulkFreezeSelected} disabled={!selectedIds.length || loading}>Mark Freezed</button>
@@ -1852,15 +1951,24 @@ function TrackingPage() {
             </label>
             <p className="hint tracking-form-span-2">Follow Up is available only after a fresh tracking row exists. Add Tracking always starts with Fresh mail.</p>
             <label className="tracking-form-span-2">
-              Subject
+              Subject Source
               <SingleSelectDropdown
                 value={createForm.template_subject || ''}
-                placeholder="Select subject"
-                searchPlaceholder="Search subject"
+                placeholder="Select subject source"
+                searchPlaceholder="Search subject source"
                 options={createSubjectOptions}
                 onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, template_subject: nextValue || '' }))}
               />
             </label>
+            <label className="tracking-form-span-2">
+              Subject
+              <input
+                value={createForm.template_subject || ''}
+                onChange={(event) => setCreateForm((prev) => ({ ...prev, template_subject: event.target.value }))}
+                placeholder="Example: Application for {role} at {company_name} | {job_id}"
+              />
+            </label>
+            <p className="hint tracking-form-span-2">Choose a system or user subject source above, then adjust the final subject here if needed. Dynamic values are filled automatically when you pick from the dropdown.</p>
             <label>
               Send
               <SingleSelectDropdown
@@ -1874,6 +1982,7 @@ function TrackingPage() {
                 }))}
               />
             </label>
+            <p className="hint tracking-form-span-2">Recommendation: open the Test Mail panel before Manual Send or Schedule so you can review the exact final content first.</p>
             {createForm.send_mode === 'scheduled' ? (
               <label>
                 Date & Time
@@ -1906,7 +2015,7 @@ function TrackingPage() {
                           index,
                         ).map((item) => ({
                           value: String(item.id),
-                          label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
+                          label: formatTemplateLibraryLabel(item),
                         }))}
                         disabled={hardcodedAchievementSlotDisabled(createForm.achievement_ids_ordered, index)}
                         onChange={(nextValue) => {
@@ -2196,15 +2305,24 @@ function TrackingPage() {
             </label>
             <p className="hint tracking-form-span-2">Edit Tracking can send Fresh again. Follow Up remains available when this row already has a fresh thread.</p>
             <label className="tracking-form-span-2">
-              Subject
+              Subject Source
               <SingleSelectDropdown
                 value={editForm.template_subject || ''}
-                placeholder="Select subject"
-                searchPlaceholder="Search subject"
+                placeholder="Select subject source"
+                searchPlaceholder="Search subject source"
                 options={editSubjectOptions}
                 onChange={(nextValue) => setEditForm((prev) => ({ ...prev, template_subject: nextValue || '' }))}
               />
             </label>
+            <label className="tracking-form-span-2">
+              Subject
+              <input
+                value={editForm.template_subject || ''}
+                onChange={(event) => setEditForm((prev) => ({ ...prev, template_subject: event.target.value }))}
+                placeholder="Example: Application for {role} at {company_name} | {job_id}"
+              />
+            </label>
+            <p className="hint tracking-form-span-2">Choose a system or user subject source above, then adjust the final subject here if needed. Dynamic values are filled automatically when you pick from the dropdown.</p>
             <label>
               Send
               <SingleSelectDropdown
@@ -2218,6 +2336,7 @@ function TrackingPage() {
                 }))}
               />
             </label>
+            <p className="hint tracking-form-span-2">Recommendation: open the Test Mail panel before Manual Send or Schedule so you can review the exact final content first.</p>
             {editForm.send_mode === 'scheduled' ? (
               <label>
                 Date & Time
@@ -2273,7 +2392,7 @@ function TrackingPage() {
                           index,
                         ).map((item) => ({
                           value: String(item.id),
-                          label: `${String(item.name || 'Template')} | ${String(item.category || 'general')}`,
+                          label: formatTemplateLibraryLabel(item),
                         }))}
                         disabled={hardcodedAchievementSlotDisabled(editForm.achievement_ids_ordered, index)}
                         onChange={(nextValue) => {

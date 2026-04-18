@@ -26,11 +26,12 @@ function NavBar() {
     () => [
       { label: 'Home', path: '/' },
       { label: 'Profile', path: '/profile' },
+      { label: 'Templates', path: '/templates' },
       { label: 'Companies', path: '/companies' },
       { label: 'Tracking', path: '/tracking' },
       { label: 'Schedule', path: '/tracking-schedule' },
       { label: 'Jobs', path: '/jobs' },
-      { label: 'Bulk Upload', path: '/bulk-upload' },
+      { label: 'Bulk', path: '/bulk-upload' },
     ],
     [],
   )

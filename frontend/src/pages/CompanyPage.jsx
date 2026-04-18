@@ -632,7 +632,7 @@ function CompanyPage() {
               />
             </label>
             <label>
-              Template Helpful
+              Helpful
               <select value={employeeForm.personalized_template_helpful} onChange={(event) => setEmployeeForm((prev) => ({ ...prev, personalized_template_helpful: event.target.value }))}>
                 <option value="good">Good</option>
                 <option value="partial_somewhat">Partial / Somewhat</option>
