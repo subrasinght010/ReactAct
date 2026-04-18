@@ -471,6 +471,10 @@
     color: var(--color-primary);
   }
 
+  .home-dashboard-welcome {
+    font-weight: 700;
+  }
+
   .home-hero-actions {
     display: flex;
     flex-wrap: wrap;

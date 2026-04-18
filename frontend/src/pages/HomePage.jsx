@@ -27,6 +27,10 @@ function HomePage() {
   const [error, setError] = useState('')
   const navigate = useNavigate()
   const { isLoggedIn } = useAuth()
+  const displayName = String(username || '').trim()
+  const capitalizedDisplayName = displayName
+    ? `${displayName.charAt(0).toUpperCase()}${displayName.slice(1)}`
+    : ''
 
   useEffect(() => {
     const run = async () => {
@@ -148,8 +152,8 @@ function HomePage() {
           <div className="tracking-head">
             <div>
               <p className="home-dashboard-eyebrow">Overview</p>
-              <h1>{username ? `${username} CRM Dashboard` : 'CRM Dashboard'}</h1>
-              <p className="subtitle">A cleaner view of companies, jobs, tracking schedule, and interview momentum.</p>
+              <h1>{capitalizedDisplayName ? `Hello, ${capitalizedDisplayName}` : 'Hello'}</h1>
+              <p className="subtitle home-dashboard-welcome">Welcome to Application Workflow Dashboard</p>
             </div>
             <div className="home-hero-actions">
               {HOME_ACTIONS.map((item) => (
