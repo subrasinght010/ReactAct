@@ -329,7 +329,6 @@ Notes:
 - use your app API base, not the admin URL
 
 ## Screenshots
-
 Add product screenshots in `docs/screenshots/` and reference them here.
 
 Recommended screenshots:
