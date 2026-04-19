@@ -22,6 +22,7 @@ from django.utils import timezone
 
 from .pdf_parser import parse_resume_pdf
 from .company_utils import normalize_company_name, resolve_company_for_job
+from .dummy_data import ensure_profile_for_user, shared_dummy_owner_ids_for_user
 from .models import Resume, MailTracking, MailTrackingEvent, Company, Employee, Job, Tracking, TrackingAction, UserProfile, ProfilePanel, Template, SubjectTemplate, Interview, Location
 from .permissions import (
     CompanyAccessPermission,
@@ -63,8 +64,10 @@ from .management.commands.send_tracking_mails import Command as SendTrackingMail
 from .profile_settings import resolve_openai_settings
 from .template_access import (
     owned_template_queryset_for_user,
+    owned_subject_template_queryset_for_user,
     resolve_intro_template_for_user,
     resolve_template_ids_for_user,
+    subject_template_queryset_for_user,
     template_queryset_for_user,
 )
 
@@ -73,12 +76,7 @@ APP_UI_TIME_ZONE = ZoneInfo('Asia/Kolkata')
 
 
 def _user_profile_for_permissions(user):
-    if not getattr(user, 'is_authenticated', False):
-        return None
-    profile = getattr(user, 'profile_info', None)
-    if profile is not None:
-        return profile
-    return UserProfile.objects.filter(user=user).first()
+    return ensure_profile_for_user(user)
 
 
 def _ensure_write_allowed(request):
@@ -88,7 +86,11 @@ def _ensure_write_allowed(request):
 def _visible_user_ids_for_user(user):
     if not getattr(user, 'is_authenticated', False):
         return []
-    return [user.id]
+    visible_ids = [user.id]
+    for owner_id in shared_dummy_owner_ids_for_user(user):
+        if owner_id not in visible_ids:
+            visible_ids.append(owner_id)
+    return visible_ids
 
 
 def _workspace_owner_for_user(user):
@@ -102,22 +104,14 @@ def _accessible_owner_ids_for_user(user):
 
 
 def _workspace_profile_for_user(user):
-    if not getattr(user, 'is_authenticated', False):
-        return None
-    profile, _ = UserProfile.objects.get_or_create(
-        user=user,
-        defaults={
-            'role': UserProfile.ROLE_ADMIN,
-            'full_name': user.username,
-            'email': user.email or '',
-        },
-    )
-    if not profile.full_name:
-        profile.full_name = user.username
-    if not profile.email:
-        profile.email = user.email or ''
-    profile.save(update_fields=['full_name', 'email', 'updated_at'])
-    return profile
+    return ensure_profile_for_user(user)
+
+
+def _owned_profile_ids_for_user(user):
+    profile = _workspace_profile_for_user(user)
+    if profile is None:
+        return []
+    return [profile.id]
 
 
 def _accessible_profile_ids_for_user(user):
@@ -136,6 +130,10 @@ def _accessible_profile_ids_for_user(user):
 
 def _accessible_jobs_for_user(user):
     return filter_jobs_for_user(user, Job.objects.all())
+
+
+def _writable_jobs_for_user(user):
+    return filter_jobs_for_user(user, Job.objects.all(), for_write=True)
 
 
 def _workspace_owner_jobs_for_user(user):
@@ -1570,14 +1568,7 @@ class ProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        profile, _ = UserProfile.objects.get_or_create(
-            user=request.user,
-            defaults={
-                'role': UserProfile.ROLE_ADMIN,
-                'full_name': request.user.username,
-                'email': request.user.email or '',
-            },
-        )
+        profile = _workspace_profile_for_user(request.user)
         return Response(
             {
                 'id': request.user.id,
@@ -1593,20 +1584,7 @@ class ProfileInfoView(APIView):
     parser_classes = [JSONParser]
 
     def _get_or_create(self, request):
-        profile, _ = UserProfile.objects.get_or_create(
-            user=request.user,
-            defaults={
-                'role': UserProfile.ROLE_ADMIN,
-                'full_name': request.user.username,
-                'email': request.user.email or '',
-            },
-        )
-        if not profile.full_name:
-            profile.full_name = request.user.username
-        if not profile.email:
-            profile.email = request.user.email or ''
-        profile.save(update_fields=['full_name', 'email', 'updated_at'])
-        return profile
+        return _workspace_profile_for_user(request.user)
 
     def get(self, request):
         profile = self._get_or_create(request)
@@ -1696,14 +1674,15 @@ class ProfilePanelDetailView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser]
 
-    def _get_row(self, request, panel_id):
-        return ProfilePanel.objects.filter(profile_id__in=_accessible_profile_ids_for_user(request.user), id=panel_id).first()
+    def _get_row(self, request, panel_id, *, for_write=False):
+        profile_ids = _owned_profile_ids_for_user(request.user) if for_write else _accessible_profile_ids_for_user(request.user)
+        return ProfilePanel.objects.filter(profile_id__in=profile_ids, id=panel_id).first()
 
     def put(self, request, panel_id):
         denied = _ensure_write_allowed(request)
         if denied:
             return denied
-        row = self._get_row(request, panel_id)
+        row = self._get_row(request, panel_id, for_write=True)
         if not row:
             return Response({'detail': 'Profile panel not found.'}, status=status.HTTP_404_NOT_FOUND)
         payload = dict(request.data or {})
@@ -1736,7 +1715,7 @@ class ProfilePanelDetailView(APIView):
         denied = _ensure_write_allowed(request)
         if denied:
             return denied
-        row = self._get_row(request, panel_id)
+        row = self._get_row(request, panel_id, for_write=True)
         if not row:
             return Response({'detail': 'Profile panel not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.hard_delete()
@@ -1808,8 +1787,7 @@ class SubjectTemplateListCreateView(APIView):
     parser_classes = [JSONParser]
 
     def get(self, request):
-        profile = _workspace_profile_for_user(request.user)
-        rows = SubjectTemplate.objects.filter(profile=profile).order_by('-created_at')
+        rows = subject_template_queryset_for_user(request.user).order_by('-created_at')
         return Response(SubjectTemplateSerializer(rows, many=True, context={'request': request}).data, status=status.HTTP_200_OK)
 
     def post(self, request):
@@ -1829,8 +1807,7 @@ class SubjectTemplateDetailView(APIView):
     parser_classes = [JSONParser]
 
     def _get_object(self, request, subject_template_id):
-        profile = _workspace_profile_for_user(request.user)
-        return SubjectTemplate.objects.get(profile=profile, id=subject_template_id)
+        return owned_subject_template_queryset_for_user(request.user).get(id=subject_template_id)
 
     def put(self, request, subject_template_id):
         denied = _ensure_write_allowed(request)
@@ -1891,7 +1868,7 @@ class InterviewListCreateView(APIView):
         if not company_key or not job_key:
             return False
         rows = Interview.objects.filter(
-            profile_id__in=_accessible_profile_ids_for_user(request.user),
+            profile_id__in=_owned_profile_ids_for_user(request.user),
             company_key=company_key,
             job_role_key=job_key,
         )
@@ -1954,7 +1931,7 @@ class InterviewListCreateView(APIView):
         selected_job = None
         if raw_job_id:
             try:
-                selected_job = _accessible_jobs_for_user(request.user).get(
+                selected_job = _writable_jobs_for_user(request.user).get(
                     id=raw_job_id,
                     is_removed=False,
                 )
@@ -2005,7 +1982,7 @@ class InterviewDetailView(APIView):
     ACTION_LABELS = InterviewListCreateView.ACTION_LABELS
 
     def _get_object(self, request, interview_id):
-        return Interview.objects.get(id=interview_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+        return Interview.objects.get(id=interview_id, profile_id__in=_owned_profile_ids_for_user(request.user))
 
     def _round_value(self, stage):
         raw = str(stage or '').strip().lower()
@@ -2065,7 +2042,7 @@ class InterviewDetailView(APIView):
         selected_job = row.job if row.job_id else None
         if raw_job_id:
             try:
-                selected_job = _accessible_jobs_for_user(request.user).get(
+                selected_job = _writable_jobs_for_user(request.user).get(
                     id=raw_job_id,
                     is_removed=False,
                 )
@@ -2091,7 +2068,7 @@ class InterviewDetailView(APIView):
         company_key = str(company_name or '').strip().lower()
         job_key = str(job_role or '').strip().lower()
         duplicate = Interview.objects.filter(
-            profile_id__in=_accessible_profile_ids_for_user(request.user),
+            profile_id__in=_owned_profile_ids_for_user(request.user),
             company_key=company_key,
             job_role_key=job_key,
         ).exclude(id=row.id).exists()
@@ -2183,7 +2160,7 @@ class ResumeListCreateView(APIView):
         if not job_id:
             return None
         try:
-            return _accessible_jobs_for_user(request.user).get(id=job_id, is_removed=False)
+            return _writable_jobs_for_user(request.user).get(id=job_id, is_removed=False)
         except Job.DoesNotExist:
             raise ValidationError({'job': 'Job not found.'})
 
@@ -2255,12 +2232,13 @@ class ResumeDetailView(APIView):
         if not job_id:
             return None
         try:
-            return _accessible_jobs_for_user(request.user).get(id=job_id, is_removed=False)
+            return _writable_jobs_for_user(request.user).get(id=job_id, is_removed=False)
         except Job.DoesNotExist:
             raise ValidationError({'job': 'Job not found.'})
 
-    def get_object(self, request, resume_id):
-        return Resume.objects.get(id=resume_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+    def get_object(self, request, resume_id, *, for_write=False):
+        profile_ids = _owned_profile_ids_for_user(request.user) if for_write else _accessible_profile_ids_for_user(request.user)
+        return Resume.objects.get(id=resume_id, profile_id__in=profile_ids)
 
     def get(self, request, resume_id):
         try:
@@ -2275,7 +2253,7 @@ class ResumeDetailView(APIView):
         if denied:
             return denied
         try:
-            resume = self.get_object(request, resume_id)
+            resume = self.get_object(request, resume_id, for_write=True)
         except Resume.DoesNotExist:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2306,7 +2284,7 @@ class ResumeDetailView(APIView):
         if denied:
             return denied
         try:
-            resume = self.get_object(request, resume_id)
+            resume = self.get_object(request, resume_id, for_write=True)
         except Resume.DoesNotExist:
             return Response({'detail': 'Resume not found.'}, status=status.HTTP_404_NOT_FOUND)
         _remove_resume_file(resume)
@@ -2354,12 +2332,12 @@ class TailoredResumeListCreateView(APIView):
         raw_resume = str(payload.get('resume') or '').strip()
         if raw_job:
             try:
-                job = _accessible_jobs_for_user(request.user).get(id=raw_job)
+                job = _writable_jobs_for_user(request.user).get(id=raw_job)
             except Job.DoesNotExist:
                 return Response({'job': ['Job not found.']}, status=status.HTTP_400_BAD_REQUEST)
         if raw_resume:
             try:
-                resume = Resume.objects.get(id=raw_resume, profile_id__in=_accessible_profile_ids_for_user(request.user))
+                resume = Resume.objects.get(id=raw_resume, profile_id__in=_owned_profile_ids_for_user(request.user))
             except Resume.DoesNotExist:
                 return Response({'resume': ['Resume not found.']}, status=status.HTTP_400_BAD_REQUEST)
         else:
@@ -2524,7 +2502,7 @@ class TailorResumeView(APIView):
         reference_resume_id = str(request.data.get('reference_resume_id') or '').strip()
         if is_authenticated and reference_resume_id:
             try:
-                reference_resume = Resume.objects.get(id=int(reference_resume_id), profile_id__in=_accessible_profile_ids_for_user(request.user))
+                reference_resume = Resume.objects.get(id=int(reference_resume_id), profile_id__in=_owned_profile_ids_for_user(request.user))
             except Exception:  # noqa: BLE001
                 reference_resume = None
 
@@ -2543,12 +2521,12 @@ class TailorResumeView(APIView):
         if not keywords:
             return Response({'detail': 'Could not extract JD keywords.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        resumes = list(Resume.objects.filter(profile_id__in=_accessible_profile_ids_for_user(request.user), is_tailored=False).order_by('-updated_at', '-created_at')) if is_authenticated else []
+        resumes = list(Resume.objects.filter(profile_id__in=_owned_profile_ids_for_user(request.user), is_tailored=False).order_by('-updated_at', '-created_at')) if is_authenticated else []
         best = find_best_resume_match(keywords, resumes)
         latest_resume = resumes[0] if resumes else None
         selected_job = None
         if is_authenticated and job_id:
-            selected_job = _accessible_jobs_for_user(request.user).filter(job_id__iexact=job_id, is_removed=False).order_by('-updated_at', '-created_at').first()
+            selected_job = _writable_jobs_for_user(request.user).filter(job_id__iexact=job_id, is_removed=False).order_by('-updated_at', '-created_at').first()
 
         if is_authenticated and (not force_rewrite) and (reference_resume is None) and best.resume and min_match <= best.score <= max_match:
             payload = ResumeSerializer(best.resume).data
@@ -2766,7 +2744,7 @@ class ExportAtsPdfLocalView(APIView):
         resume_id = str(request.data.get("resume_id") or "").strip()
         if resume_id:
             try:
-                resume = Resume.objects.get(id=resume_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+                resume = Resume.objects.get(id=resume_id, profile_id__in=_owned_profile_ids_for_user(request.user))
             except Resume.DoesNotExist:
                 return Response({"detail": "Resume not found for PDF export."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2853,14 +2831,10 @@ class ApplicationTrackingListCreateView(APIView):
             return None
 
     def _resolve_company(self, request, payload):
-        profile_ids = _accessible_profile_ids_for_user(request.user)
         company_id = payload.get('company')
         if company_id:
             try:
-                return Company.objects.get(
-                    id=company_id,
-                    profile_id__in=profile_ids,
-                )
+                return filter_companies_for_user(request.user, Company.objects.all(), for_write=True).get(id=company_id)
             except Company.DoesNotExist:
                 return None
 
@@ -2877,7 +2851,7 @@ class ApplicationTrackingListCreateView(APIView):
         explicit_job_id = payload.get('job')
         if explicit_job_id:
             try:
-                return _accessible_jobs_for_user(request.user).get(
+                return _writable_jobs_for_user(request.user).get(
                     id=explicit_job_id,
                     is_removed=False,
                 )
@@ -2939,7 +2913,7 @@ class ApplicationTrackingListCreateView(APIView):
         if not raw:
             return None
         try:
-            return Resume.objects.get(id=raw, profile_id__in=_accessible_profile_ids_for_user(request.user))
+            return Resume.objects.get(id=raw, profile_id__in=_owned_profile_ids_for_user(request.user))
         except Resume.DoesNotExist:
             return None
 
@@ -2967,13 +2941,13 @@ class ApplicationTrackingListCreateView(APIView):
 
         if isinstance(selected_ids, list) and selected_ids:
             targets = Employee.objects.filter(
-                owner_profile_id__in=_accessible_profile_ids_for_user(request.user),
+                owner_profile_id__in=_owned_profile_ids_for_user(request.user),
                 id__in=selected_ids,
                 working_mail=True,
             )
         elif isinstance(selected_names, list) and selected_names and company_id:
             targets = Employee.objects.filter(
-                owner_profile_id__in=_accessible_profile_ids_for_user(request.user),
+                owner_profile_id__in=_owned_profile_ids_for_user(request.user),
                 company_id=company_id,
                 working_mail=True,
                 name__in=[str(name or '').strip() for name in selected_names if str(name or '').strip()],
@@ -3369,12 +3343,12 @@ class ApplicationTrackingListCreateView(APIView):
         if tailored_resume_id:
             tailored_resume = Resume.objects.filter(
                 id=tailored_resume_id,
-                profile_id__in=_accessible_profile_ids_for_user(request.user),
+                profile_id__in=_owned_profile_ids_for_user(request.user),
                 is_tailored=True,
             ).first()
             if not tailored_resume and job:
                 tailored_resume = job.resumes.filter(
-                    profile_id__in=_accessible_profile_ids_for_user(request.user),
+                    profile_id__in=_owned_profile_ids_for_user(request.user),
                     is_tailored=True,
                 ).order_by('created_at', 'id').first()
             if not tailored_resume:
@@ -3538,11 +3512,12 @@ class ApplicationTrackingDetailView(APIView):
     permission_classes = [IsAuthenticated]
     parser_classes = [JSONParser, MultiPartParser, FormParser]
 
-    def _get_object(self, request, tracking_id):
-        return Tracking.objects.get(id=tracking_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+    def _get_object(self, request, tracking_id, *, for_write=False):
+        profile_ids = _owned_profile_ids_for_user(request.user) if for_write else _accessible_profile_ids_for_user(request.user)
+        return Tracking.objects.get(id=tracking_id, profile_id__in=profile_ids)
 
-    def _get_object_any(self, request, tracking_id):
-        return Tracking.objects.get(id=tracking_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+    def _get_object_any(self, request, tracking_id, *, for_write=False):
+        return self._get_object(request, tracking_id, for_write=for_write)
 
     def _is_hard_delete(self, request):
         mode = str(request.query_params.get('delete_mode') or '').strip().lower()
@@ -3836,7 +3811,7 @@ class ApplicationTrackingDetailView(APIView):
         if denied:
             return denied
         try:
-            row = self._get_object(request, tracking_id)
+            row = self._get_object(request, tracking_id, for_write=True)
         except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -3853,7 +3828,7 @@ class ApplicationTrackingDetailView(APIView):
         company = job.company if job and job.company_id else None
         if company_id:
             try:
-                company = Company.objects.get(id=company_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+                company = filter_companies_for_user(request.user, Company.objects.all(), for_write=True).get(id=company_id)
             except Company.DoesNotExist:
                 return Response({'detail': 'Company not found.'}, status=status.HTTP_400_BAD_REQUEST)
         elif company_name:
@@ -3892,7 +3867,7 @@ class ApplicationTrackingDetailView(APIView):
                 row.resume = None
             else:
                 try:
-                    row.resume = Resume.objects.get(id=raw_resume_id, profile_id__in=_accessible_profile_ids_for_user(request.user))
+                    row.resume = Resume.objects.get(id=raw_resume_id, profile_id__in=_owned_profile_ids_for_user(request.user))
                 except Resume.DoesNotExist:
                     return rollback_detail('Resume not found.')
         if 'tailored_resume' in payload:
@@ -3903,12 +3878,12 @@ class ApplicationTrackingDetailView(APIView):
             else:
                 tailored = Resume.objects.filter(
                     id=raw_tailored_id,
-                    profile_id__in=_accessible_profile_ids_for_user(request.user),
+                    profile_id__in=_owned_profile_ids_for_user(request.user),
                     is_tailored=True,
                 ).first()
                 if not tailored and row.job_id and row.job:
                     tailored = row.job.resumes.filter(
-                        profile_id__in=_accessible_profile_ids_for_user(request.user),
+                        profile_id__in=_owned_profile_ids_for_user(request.user),
                         is_tailored=True,
                     ).order_by('created_at', 'id').first()
                 if not tailored:
@@ -3999,7 +3974,7 @@ class ApplicationTrackingDetailView(APIView):
         next_selected = None
         if isinstance(selected_hr_ids, list):
             next_selected = Employee.objects.filter(
-                owner_profile_id__in=_accessible_profile_ids_for_user(request.user),
+                owner_profile_id__in=_owned_profile_ids_for_user(request.user),
                 id__in=selected_hr_ids,
                 working_mail=True,
             )
@@ -4007,7 +3982,7 @@ class ApplicationTrackingDetailView(APIView):
             target_names = [str(name or '').strip() for name in selected_hrs if str(name or '').strip()]
             company_id_ref = row.job.company_id if row.job_id and row.job and row.job.company_id else None
             next_selected = Employee.objects.filter(
-                owner_profile_id__in=_accessible_profile_ids_for_user(request.user),
+                owner_profile_id__in=_owned_profile_ids_for_user(request.user),
                 company_id=company_id_ref,
                 working_mail=True,
                 name__in=target_names,
@@ -4194,7 +4169,7 @@ class ApplicationTrackingDetailView(APIView):
         if denied:
             return denied
         try:
-            row = self._get_object_any(request, tracking_id)
+            row = self._get_object_any(request, tracking_id, for_write=True)
         except Tracking.DoesNotExist:
             return Response({'detail': 'Tracking row not found.'}, status=status.HTTP_404_NOT_FOUND)
         row.hard_delete()

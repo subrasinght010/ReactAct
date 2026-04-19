@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator, validate_email
 from rest_framework import serializers
 
+from .dummy_data import grant_dummy_data_permission
 from .models import (
     Resume,
     MailTracking,
@@ -74,6 +75,7 @@ class SignupSerializer(serializers.ModelSerializer):
         admin_group = Group.objects.filter(name__iexact='admin').first()
         if admin_group is not None:
             user.groups.add(admin_group)
+        grant_dummy_data_permission(user)
         return user
 
 
@@ -663,6 +665,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'preferred_location_refs',
             'preferred_location_names',
             'summary',
+            'hide_dummy_data',
             'smtp_host',
             'smtp_port',
             'smtp_user',

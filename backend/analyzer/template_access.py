@@ -1,30 +1,18 @@
 from django.db.models import Q
 
-from .models import Template, UserProfile
+from .dummy_data import ensure_profile_for_user, shared_dummy_owner_ids_for_user
+from .models import SubjectTemplate, Template, UserProfile
 
 
 def ensure_template_profile_for_user(user):
-    if not getattr(user, "is_authenticated", False):
-        return None
-    profile, _ = UserProfile.objects.get_or_create(
-        user=user,
-        defaults={
-            "role": UserProfile.ROLE_ADMIN,
-            "full_name": user.username,
-            "email": user.email or "",
-        },
-    )
-    update_fields = []
-    if not profile.full_name:
-        profile.full_name = user.username
-        update_fields.append("full_name")
-    if not profile.email:
-        profile.email = user.email or ""
-        update_fields.append("email")
-    if update_fields:
-        update_fields.append("updated_at")
-        profile.save(update_fields=update_fields)
-    return profile
+    return ensure_profile_for_user(user)
+
+
+def _shared_template_profile_ids_for_user(user):
+    extra_owner_ids = shared_dummy_owner_ids_for_user(user)
+    if not extra_owner_ids:
+        return []
+    return list(UserProfile.objects.filter(user_id__in=extra_owner_ids).values_list("id", flat=True))
 
 
 def template_queryset_for_user(user):
@@ -34,6 +22,9 @@ def template_queryset_for_user(user):
     scope = Q(template_scope=Template.TEMPLATE_SCOPE_SYSTEM)
     if profile is not None:
         scope = scope | Q(profile=profile, template_scope=Template.TEMPLATE_SCOPE_USER_BASED)
+    shared_profile_ids = _shared_template_profile_ids_for_user(user)
+    if shared_profile_ids:
+        scope = scope | Q(profile_id__in=shared_profile_ids, template_scope=Template.TEMPLATE_SCOPE_USER_BASED)
     return Template.objects.filter(scope).select_related("profile__user")
 
 
@@ -58,3 +49,19 @@ def resolve_intro_template_for_user(user, template_id, category):
     if not template_id_text:
         return None
     return template_queryset_for_user(user).filter(id=template_id_text, category=category_text).first()
+
+
+def subject_template_queryset_for_user(user):
+    profile = ensure_template_profile_for_user(user)
+    if profile is None:
+        return SubjectTemplate.objects.none()
+    profile_ids = [profile.id]
+    profile_ids.extend(_shared_template_profile_ids_for_user(user))
+    return SubjectTemplate.objects.filter(profile_id__in=profile_ids).select_related("profile__user")
+
+
+def owned_subject_template_queryset_for_user(user):
+    profile = ensure_template_profile_for_user(user)
+    if profile is None:
+        return SubjectTemplate.objects.none()
+    return SubjectTemplate.objects.filter(profile=profile).select_related("profile__user")

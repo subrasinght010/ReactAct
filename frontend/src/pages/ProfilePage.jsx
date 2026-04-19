@@ -44,6 +44,7 @@ const EMPTY_PROFILE = {
   location_ref: '',
   preferred_location_refs: [],
   summary: '',
+  hide_dummy_data: false,
   smtp_host: '',
   smtp_port: '',
   smtp_user: '',
@@ -1131,6 +1132,10 @@ function ProfilePage() {
               <label>Portfolio URL<input value={profileForm.portfolio_url} onChange={(e) => setProfileForm((p) => ({ ...p, portfolio_url: e.target.value }))} /></label>
               <label>Resume Link<input value={profileForm.resume_link} onChange={(e) => setProfileForm((p) => ({ ...p, resume_link: e.target.value }))} /></label>
               <label>Summary<textarea rows={3} value={profileForm.summary} onChange={(e) => setProfileForm((p) => ({ ...p, summary: e.target.value }))} /></label>
+              <label className="profile-checkbox-label">
+                <span>Hide Dummy Data</span>
+                <input type="checkbox" checked={!!profileForm.hide_dummy_data} onChange={(e) => setProfileForm((p) => ({ ...p, hide_dummy_data: e.target.checked }))} />
+              </label>
               <label>SMTP Host<input value={profileForm.smtp_host} onChange={(e) => setProfileForm((p) => ({ ...p, smtp_host: e.target.value }))} /></label>
               <label>SMTP Port<input value={profileForm.smtp_port} onChange={(e) => setProfileForm((p) => ({ ...p, smtp_port: e.target.value.replace(/[^\d]/g, '') }))} placeholder="587" /></label>
               <label>SMTP User<input value={profileForm.smtp_user} onChange={(e) => setProfileForm((p) => ({ ...p, smtp_user: e.target.value }))} /></label>
