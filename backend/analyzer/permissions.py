@@ -1,6 +1,7 @@
 from django.db.models import Q
 from rest_framework.permissions import SAFE_METHODS, DjangoModelPermissions
 
+from .dummy_data import shared_dummy_owner_ids_for_user
 from .models import Company, Employee, Job
 
 
@@ -13,6 +14,7 @@ def build_owned_or_assigned_q(
     created_by_field='created_by_id',
     assigned_to_field='assigned_to__id',
     owner_user_field=None,
+    extra_owner_ids=None,
 ):
     if not getattr(user, 'is_authenticated', False):
         return Q(pk__in=[])
@@ -24,6 +26,8 @@ def build_owned_or_assigned_q(
         query |= Q(**{assigned_to_field: user.id})
     if owner_user_field:
         query |= Q(**{owner_user_field: user.id})
+        for owner_id in extra_owner_ids or []:
+            query |= Q(**{owner_user_field: owner_id})
     return query
 
 
@@ -38,7 +42,15 @@ def filter_queryset_by_access(user, queryset, *, access_q, global_view_perm=''):
     return rows.filter(access_q).distinct()
 
 
-def object_matches_access(user, obj, *, created_by_attr='created_by_id', assigned_to_attr='assigned_to', owner_user_attr='user_id'):
+def object_matches_access(
+    user,
+    obj,
+    *,
+    created_by_attr='created_by_id',
+    assigned_to_attr='assigned_to',
+    owner_user_attr='user_id',
+    extra_owner_ids=None,
+):
     if not getattr(user, 'is_authenticated', False):
         return False
     if bool(getattr(user, 'is_superuser', False)):
@@ -46,6 +58,8 @@ def object_matches_access(user, obj, *, created_by_attr='created_by_id', assigne
     if created_by_attr and getattr(obj, created_by_attr, None) == user.id:
         return True
     if owner_user_attr and getattr(obj, owner_user_attr, None) == user.id:
+        return True
+    if owner_user_attr and getattr(obj, owner_user_attr, None) in set(extra_owner_ids or []):
         return True
     assigned_manager = getattr(obj, assigned_to_attr, None) if assigned_to_attr else None
     if assigned_manager is None:
@@ -82,23 +96,26 @@ class OwnershipModelPermissions(DjangoModelPermissions):
         raise NotImplementedError
 
 
-def is_job_owner_or_assignee(job, user):
+def is_job_owner_or_assignee(job, user, *, for_write=False):
     return object_matches_access(
         user,
         job,
         created_by_attr='created_by_id',
         assigned_to_attr='assigned_to',
         owner_user_attr='user_id',
+        extra_owner_ids=[] if for_write else shared_dummy_owner_ids_for_user(user),
     )
 
 
 def filter_jobs_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Job.objects.all()
+    extra_owner_ids = [] if for_write else shared_dummy_owner_ids_for_user(user)
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field='created_by_id',
         assigned_to_field='assigned_to__id',
         owner_user_field='company__profile__user_id',
+        extra_owner_ids=extra_owner_ids,
     )
     return filter_queryset_by_access(
         user,
@@ -112,29 +129,32 @@ class JobAccessPermission(OwnershipModelPermissions):
     global_view_perm = GLOBAL_VIEW_ALL_JOB_PERMISSION
 
     def user_can_access_object(self, user, obj, *, for_write=False):
-        return is_job_owner_or_assignee(obj, user)
+        return is_job_owner_or_assignee(obj, user, for_write=for_write)
 
     def filter_queryset_for_user(self, user, queryset, *, for_write=False):
         return filter_jobs_for_user(user, queryset, for_write=for_write)
 
 
-def is_company_owner(company, user):
+def is_company_owner(company, user, *, for_write=False):
     return object_matches_access(
         user,
         company,
         created_by_attr=None,
         assigned_to_attr=None,
         owner_user_attr='user_id',
+        extra_owner_ids=[] if for_write else shared_dummy_owner_ids_for_user(user),
     )
 
 
 def filter_companies_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Company.objects.all()
+    extra_owner_ids = [] if for_write else shared_dummy_owner_ids_for_user(user)
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field=None,
         assigned_to_field=None,
         owner_user_field='profile__user_id',
+        extra_owner_ids=extra_owner_ids,
     )
     return filter_queryset_by_access(
         user,
@@ -145,29 +165,32 @@ def filter_companies_for_user(user, queryset=None, *, for_write=False):
 
 class CompanyAccessPermission(OwnershipModelPermissions):
     def user_can_access_object(self, user, obj, *, for_write=False):
-        return is_company_owner(obj, user)
+        return is_company_owner(obj, user, for_write=for_write)
 
     def filter_queryset_for_user(self, user, queryset, *, for_write=False):
         return filter_companies_for_user(user, queryset, for_write=for_write)
 
 
-def is_employee_owner(employee, user):
+def is_employee_owner(employee, user, *, for_write=False):
     return object_matches_access(
         user,
         employee,
         created_by_attr=None,
         assigned_to_attr=None,
         owner_user_attr='user_id',
+        extra_owner_ids=[] if for_write else shared_dummy_owner_ids_for_user(user),
     )
 
 
 def filter_employees_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Employee.objects.all()
+    extra_owner_ids = [] if for_write else shared_dummy_owner_ids_for_user(user)
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field=None,
         assigned_to_field=None,
         owner_user_field='owner_profile__user_id',
+        extra_owner_ids=extra_owner_ids,
     )
     return filter_queryset_by_access(
         user,
@@ -178,7 +201,7 @@ def filter_employees_for_user(user, queryset=None, *, for_write=False):
 
 class EmployeeAccessPermission(OwnershipModelPermissions):
     def user_can_access_object(self, user, obj, *, for_write=False):
-        return is_employee_owner(obj, user)
+        return is_employee_owner(obj, user, for_write=for_write)
 
     def filter_queryset_for_user(self, user, queryset, *, for_write=False):
         return filter_employees_for_user(user, queryset, for_write=for_write)

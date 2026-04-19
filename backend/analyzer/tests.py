@@ -10,8 +10,9 @@ from django.test.utils import override_settings
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, force_authenticate
 
+from analyzer.dummy_data import DUMMY_DATA_PERMISSION, grant_dummy_data_permission, seed_shared_dummy_workspace
 from analyzer.management.commands.send_tracking_mails import Command
-from analyzer.models import Company, Employee, Interview, Job, MailTrackingEvent, Resume, Template, Tracking, TrackingAction, UserProfile
+from analyzer.models import Company, Employee, Interview, Job, MailTrackingEvent, ProfilePanel, Resume, SubjectTemplate, Template, Tracking, TrackingAction, UserProfile
 from analyzer.profile_settings import resolve_imap_settings, resolve_openai_settings, resolve_smtp_settings
 from analyzer.serializers import CompanySerializer, InterviewSerializer, JobSerializer, ProfilePanelSerializer, UserProfileSerializer
 from analyzer.tracking_mail_utils import ensure_mail_tracking
@@ -25,9 +26,11 @@ from analyzer.views import (
     EmployeeListCreateView,
     JobDetailView,
     JobListCreateView,
+    ProfilePanelListCreateView,
     ProfileInfoView,
     ResumeDetailView,
     ResumeListCreateView,
+    SubjectTemplateListCreateView,
     TemplateDetailView,
     TemplateListCreateView,
     _validate_tracking_templates,
@@ -1192,6 +1195,90 @@ class SerializerNormalizationTests(TestCase):
         self.assertTrue(serializer.is_valid(), serializer.errors)
         user = serializer.save()
         self.assertTrue(user.groups.filter(name__iexact='admin').exists())
+        self.assertTrue(user.has_perm(DUMMY_DATA_PERMISSION))
+
+
+class DummyWorkspaceSharingTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username="viewer", password="x")
+        self.profile = UserProfile.objects.create(user=self.user, full_name="Viewer")
+        grant_dummy_data_permission(self.user)
+        self.state = seed_shared_dummy_workspace()
+
+    def test_seed_shared_dummy_workspace_creates_minimum_rows_for_each_panel(self):
+        profile = self.state["profile"]
+
+        self.assertGreaterEqual(Company.objects.filter(profile=profile).count(), 3)
+        self.assertGreaterEqual(Employee.objects.filter(owner_profile=profile).count(), 3)
+        self.assertGreaterEqual(Job.objects.filter(company__profile=profile).count(), 3)
+        self.assertGreaterEqual(Tracking.objects.filter(profile=profile).count(), 3)
+        self.assertGreaterEqual(Interview.objects.filter(profile=profile).count(), 3)
+        self.assertGreaterEqual(ProfilePanel.objects.filter(profile=profile).count(), 3)
+        self.assertGreaterEqual(Template.objects.filter(profile=profile, template_scope=Template.TEMPLATE_SCOPE_USER_BASED).count(), 3)
+        self.assertGreaterEqual(SubjectTemplate.objects.filter(profile=profile).count(), 3)
+        self.assertGreaterEqual(Resume.objects.filter(profile=profile).count(), 3)
+
+    def test_profile_panel_list_includes_dummy_rows_when_user_has_permission(self):
+        request = self.factory.get("/api/profile-panels/")
+        force_authenticate(request, user=self.user)
+
+        response = ProfilePanelListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        titles = {row["title"] for row in response.data}
+        self.assertIn("Backend Outreach Profile", titles)
+        self.assertIn("Full Stack Profile", titles)
+        self.assertIn("Follow Up Profile", titles)
+
+    def test_profile_panel_list_hides_dummy_rows_when_user_hides_dummy_data(self):
+        self.profile.hide_dummy_data = True
+        self.profile.save(update_fields=["hide_dummy_data", "updated_at"])
+
+        request = self.factory.get("/api/profile-panels/")
+        force_authenticate(request, user=self.user)
+        response = ProfilePanelListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_profile_panel_list_hides_dummy_rows_when_admin_disables_shared_dummy_data(self):
+        dummy_profile = self.state["profile"]
+        dummy_profile.hide_shared_dummy_data = True
+        dummy_profile.save(update_fields=["hide_shared_dummy_data", "updated_at"])
+
+        request = self.factory.get("/api/profile-panels/")
+        force_authenticate(request, user=self.user)
+        response = ProfilePanelListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+
+    def test_subject_template_list_includes_dummy_subject_templates(self):
+        request = self.factory.get("/api/subject-templates/")
+        force_authenticate(request, user=self.user)
+
+        response = SubjectTemplateListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        names = {row["name"] for row in response.data}
+        self.assertIn("Demo Fresh Subject", names)
+        self.assertIn("Demo Follow Up Subject", names)
+
+    def test_shared_dummy_resume_cannot_be_updated_by_viewer(self):
+        resume = Resume.objects.filter(profile=self.state["profile"]).order_by("id").first()
+        request = self.factory.put(
+            f"/api/resumes/{resume.id}/",
+            {"title": "Attempted overwrite"},
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = ResumeDetailView.as_view()(request, resume_id=resume.id)
+
+        self.assertEqual(response.status_code, 404)
+        resume.refresh_from_db()
+        self.assertNotEqual(resume.title, "Attempted overwrite")
 
 
 class DummyDataCommandTests(TestCase):
@@ -1213,5 +1300,7 @@ class DummyDataCommandTests(TestCase):
         self.assertTrue(Job.objects.filter(created_by=user).exists())
         self.assertTrue(Tracking.objects.filter(profile=profile).exists())
         self.assertTrue(Interview.objects.filter(profile=profile).exists())
+        self.assertTrue(ProfilePanel.objects.filter(profile=profile).exists())
+        self.assertTrue(SubjectTemplate.objects.filter(profile=profile).exists())
         self.assertTrue(Template.objects.filter(profile=profile, template_scope=Template.TEMPLATE_SCOPE_USER_BASED).exists())
         self.assertTrue(Template.objects.filter(template_scope=Template.TEMPLATE_SCOPE_SYSTEM).exists())
