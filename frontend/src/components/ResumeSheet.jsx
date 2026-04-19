@@ -22,7 +22,9 @@ export default function ResumeSheet({ form }) {
       className={`resume-sheet${compactSpacing ? ' is-compact' : ''}`}
       style={{
         '--resume-font-family': model.bodyFontFamily,
+        '--resume-font-size-pt': `${Number.isFinite(model.bodyFontSizePt) ? model.bodyFontSizePt : 10}`,
         '--resume-font-size': `${Number.isFinite(model.bodyFontSizePt) ? model.bodyFontSizePt : 10}pt`,
+        '--resume-line-height-value': `${Number.isFinite(model.bodyLineHeight) ? model.bodyLineHeight : 1}`,
         '--resume-line-height': `${Number.isFinite(model.bodyLineHeight) ? model.bodyLineHeight : 1}`,
         '--resume-sheet-padding-top': `${model.topPagePaddingIn}in`,
         '--resume-sheet-padding': `${model.pageMarginIn}in`,
@@ -106,13 +108,13 @@ export default function ResumeSheet({ form }) {
                       <span className="resume-exp-company">{proj.name}</span>
                       {proj.normalizedUrl && (
                         <a
-                          className="resume-link resume-project-link"
+                          className={`resume-link resume-project-link${proj.liveLink ? ' is-live' : ''}`}
                           href={proj.normalizedUrl}
                           target="_blank"
                           rel="noreferrer"
                           data-url={proj.normalizedUrl}
                         >
-                          link
+                          {proj.liveLink ? 'live' : 'link'}
                         </a>
                       )}
                     </div>

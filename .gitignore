@@ -38,3 +38,5 @@ frontend/dist/
 # Project-specific
 backend/tailored_resumes/
 backend/analyzer/migrations/__pycache__/
+log/*.log
+log/*.log.*

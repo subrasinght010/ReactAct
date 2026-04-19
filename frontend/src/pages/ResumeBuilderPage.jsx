@@ -303,6 +303,7 @@ function ResumeBuilderPage({
       {
         name: '',
         url: '',
+        liveLink: false,
         highlights: '<ul><li>Add 2-3 bullet points about what you built.</li></ul>',
       },
     ],
@@ -324,7 +325,6 @@ function ResumeBuilderPage({
   const [resumeJobId, setResumeJobId] = useState('')
   const [saveMode, setSaveMode] = useState(() => (sessionStorage.getItem('builderSaveMode') === 'edit' ? 'edit' : 'create'))
   const [saveTarget, setSaveTarget] = useState('base')
-  const [allowBaseResumeSave, setAllowBaseResumeSave] = useState(false)
   const [tailoredSourceResumeId, setTailoredSourceResumeId] = useState('')
   const [saveState, setSaveState] = useState({ saving: false, message: '' })
   const [pdfSaveState, setPdfSaveState] = useState({ saving: false, message: '' })
@@ -341,13 +341,6 @@ function ResumeBuilderPage({
     matchScore: null,
   })
   const [activeTailorAction, setActiveTailorAction] = useState('')
-  const [tailoredModal, setTailoredModal] = useState({
-    open: false,
-    name: '',
-    jobId: '',
-    loading: false,
-    jobs: [],
-  })
   const [saveModal, setSaveModal] = useState({
     open: false,
     name: '',
@@ -374,6 +367,7 @@ function ResumeBuilderPage({
   const tailorReferenceLoaded = enableTailorFlow
     ? hasBuilderSubstance(tailorReferenceBuilder || form)
     : hasBuilderSubstance(form)
+  const showSaveAsTailoredControl = enableTailorFlow && !minimalTailorUi
 
   useEffect(() => {
     if (!enableTailorFlow) return
@@ -490,12 +484,21 @@ function ResumeBuilderPage({
         ...(full.builder_data || {}),
         pageMarginIn: normalizePageMarginIn(full.builder_data?.pageMarginIn ?? prev.pageMarginIn),
         sectionUnderline: true,
-        isDefaultResume: Boolean(full.is_default),
+        isDefaultResume: saveMode === 'edit' ? Boolean(full.is_default) : false,
       }))
-      setResumeRecordId(String(full.id))
-      setResumeJobId(full?.job ? String(full.job) : '')
-      setSaveTarget(full?.is_tailored ? 'tailored' : 'base')
-      sessionStorage.setItem(resumeIdSessionKey, String(full.id))
+      if (saveMode === 'edit') {
+        setResumeRecordId(String(full.id))
+        setResumeJobId(full?.job ? String(full.job) : '')
+        setSaveTarget(full?.is_tailored ? 'tailored' : 'base')
+        setTailoredSourceResumeId(full?.is_tailored ? String(full?.source_resume_id || '') : String(full.id))
+        sessionStorage.setItem(resumeIdSessionKey, String(full.id))
+      } else {
+        setResumeRecordId(null)
+        setResumeJobId('')
+        setSaveTarget('base')
+        setTailoredSourceResumeId('')
+        sessionStorage.removeItem(resumeIdSessionKey)
+      }
       if (enableTailorFlow && !tailorReferenceBuilder && hasBuilderSubstance(full.builder_data || {})) {
         setTailorReferenceBuilder(cloneBuilderData(full.builder_data || {}))
         setTailorReferenceResumeId(String(full.id))
@@ -521,6 +524,7 @@ function ResumeBuilderPage({
           setResumeRecordId(String(full.id))
           setResumeJobId(full?.job ? String(full.job) : '')
           setSaveTarget(full?.is_tailored ? 'tailored' : 'base')
+          setTailoredSourceResumeId(full?.is_tailored ? String(full?.source_resume_id || '') : String(full.id))
           setSaveMode('edit')
           // Stored resume was loaded successfully; do not override with default resume.
           return
@@ -549,7 +553,7 @@ function ResumeBuilderPage({
     return () => {
       cancelled = true
     }
-  }, [disableAutoLoadDefaultResume, enableTailorFlow, importSessionKey, resumeIdSessionKey, tailorReferenceBuilder])
+  }, [disableAutoLoadDefaultResume, enableTailorFlow, importSessionKey, resumeIdSessionKey, saveMode, tailorReferenceBuilder])
 
   const updateField = (key, value) => {
     if (key === 'pageMarginIn') {
@@ -805,7 +809,7 @@ function ResumeBuilderPage({
       ...prev,
       projects: [
         ...(prev.projects || []),
-        { name: '', url: '', highlights: '- ' },
+        { name: '', url: '', liveLink: false, highlights: '- ' },
       ],
     }))
   }
@@ -943,13 +947,21 @@ function ResumeBuilderPage({
         }))
       }
 
-      // Tailor action is preview-first. Any subsequent Save must create/update a tailored copy, never overwrite the base.
-      setTailoredSourceResumeId(String(resumeRecordId || tailorReferenceResumeId || '').trim())
-      setSaveTarget('tailored')
-      setResumeJobId('')
-      setResumeRecordId(null)
-      setSaveMode('create')
-      sessionStorage.removeItem(resumeIdSessionKey)
+      const sourceResumeId = String(tailoredSourceResumeId || resumeRecordId || tailorReferenceResumeId || '').trim()
+      if (sourceResumeId) {
+        // Tailored preview defaults to saving a tailored copy unless the user switches back to base.
+        setTailoredSourceResumeId(sourceResumeId)
+        setSaveTarget('tailored')
+        setResumeJobId('')
+        if (saveTarget !== 'tailored') {
+          setResumeRecordId(null)
+          setSaveMode('create')
+          sessionStorage.removeItem(resumeIdSessionKey)
+        }
+      } else {
+        setTailoredSourceResumeId('')
+        setSaveTarget('base')
+      }
 
       const mode = String(result?.mode || '')
       const score = Number(result?.match_score)
@@ -1065,26 +1077,27 @@ function ResumeBuilderPage({
         job: resolvedJobId ? Number(resolvedJobId) : null,
       }
 
-      const data = (!forceCreate && resumeRecordId)
-        ? await updateResume(access, resumeRecordId, payload)
-        : (() => {
-            if (!forceCreate && saveMode === 'edit') {
-              throw new Error('Edit mode cannot create new resume. Use Add Resume (+) to create.')
-            }
-            return createResume(access, payload)
-          })()
+      const baseResumeId = String(tailoredSourceResumeId || resumeRecordId || '').trim()
+      const shouldUpdateExisting = !forceCreate && Boolean(baseResumeId) && (
+        saveMode === 'edit' || (saveTarget === 'base' && Boolean(String(tailoredSourceResumeId || '').trim()))
+      )
+      if (!forceCreate && saveMode === 'edit' && !baseResumeId) {
+        throw new Error('Edit mode requires an existing resume.')
+      }
+      const data = shouldUpdateExisting
+        ? await updateResume(access, baseResumeId, payload)
+        : await createResume(access, payload)
 
       setResumeRecordId(String(data.id))
       setResumeJobId(data?.job ? String(data.job) : '')
       sessionStorage.setItem(resumeIdSessionKey, String(data.id))
       setSaveMode('edit')
       setSaveTarget('base')
-      setTailoredSourceResumeId('')
+      setTailoredSourceResumeId(String(data.id))
       setForm((prev) => ({
         ...prev,
         isDefaultResume: Boolean(data.is_default),
       }))
-      setAllowBaseResumeSave(false)
       setSaveState({
         saving: false,
         message: `Saved: ${new Date().toLocaleTimeString()}`,
@@ -1115,7 +1128,15 @@ function ResumeBuilderPage({
         is_tailored: true,
         job: resolvedJobId ? Number(resolvedJobId) : null,
       }
-      if (resumeRecordId && saveMode === 'edit') {
+      const sourceResumeId = String(tailoredSourceResumeId || resumeRecordId || tailorReferenceResumeId || '').trim()
+      const editingExistingTailoredResume = Boolean(
+        resumeRecordId &&
+        saveMode === 'edit' &&
+        String(tailoredSourceResumeId || '').trim() &&
+        String(tailoredSourceResumeId || '').trim() !== String(resumeRecordId || '').trim(),
+      )
+
+      if (editingExistingTailoredResume) {
         const data = await updateResume(access, resumeRecordId, updatePayload)
         if (data?.id) {
           setResumeRecordId(String(data.id))
@@ -1135,7 +1156,6 @@ function ResumeBuilderPage({
         return data
       }
 
-      const sourceResumeId = String(tailoredSourceResumeId || resumeRecordId || tailorReferenceResumeId || '').trim()
       if (!sourceResumeId) {
         throw new Error('Load or save a base resume first before saving a tailored copy.')
       }
@@ -1170,12 +1190,13 @@ function ResumeBuilderPage({
   }
 
   const openSaveModal = async () => {
-    if (saveTarget === 'base' && saveMode === 'edit' && !resumeRecordId) {
+    const useTailoredSave = saveTarget === 'tailored'
+    if (!useTailoredSave && saveMode === 'edit' && !resumeRecordId) {
       setSaveState({ saving: false, message: 'Edit mode cannot create new resume. Use Add Resume (+).' })
       return
     }
     const access = localStorage.getItem('access')
-    const suggested = saveTarget === 'tailored'
+    const suggested = useTailoredSave
       ? `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
       : (String(autoTitle || '').trim() || 'My Resume')
     setSaveModal({
@@ -1198,81 +1219,17 @@ function ResumeBuilderPage({
   }
 
   const saveFromModal = async () => {
-    const suggested = saveTarget === 'tailored'
+    const useTailoredSave = saveTarget === 'tailored'
+    const suggested = useTailoredSave
       ? `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
       : (String(autoTitle || '').trim() || 'My Resume')
     const value = String(saveModal.name || '').trim() || suggested
     const selectedJobId = String(saveModal.jobId || '').trim()
-    const saved = saveTarget === 'tailored'
+    const saved = useTailoredSave
       ? await saveTailoredResumeToAccount({ titleOverride: value, jobIdOverride: selectedJobId })
       : await saveResumeToAccount({ titleOverride: value, forceCreate: false, jobIdOverride: selectedJobId })
     if (saved) {
       setSaveModal((prev) => ({ ...prev, open: false }))
-    }
-  }
-
-  const openSaveToTailored = async () => {
-    const access = localStorage.getItem('access')
-    if (!access) {
-      navigate('/login')
-      return
-    }
-    const suggested = `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
-    setTailoredModal({
-      open: true,
-      name: suggested,
-      jobId: resumeJobId || '',
-      loading: true,
-      jobs: [],
-    })
-    try {
-      const jobs = await fetchAllJobs(access, { ordering: '-created_at' })
-      setTailoredModal((prev) => ({ ...prev, loading: false, jobs }))
-    } catch {
-      setTailoredModal((prev) => ({ ...prev, loading: false, jobs: [] }))
-    }
-  }
-
-  const saveToTailored = async () => {
-    const access = localStorage.getItem('access')
-    if (!access) {
-      navigate('/login')
-      return
-    }
-    try {
-      setSaveState({ saving: true, message: '' })
-      const sourceResumeId = String(tailoredSourceResumeId || resumeRecordId || tailorReferenceResumeId || '').trim()
-      if (!sourceResumeId) {
-        setSaveState({ saving: false, message: 'Save original resume first (or load reference resume) before Save To Tailored.' })
-        return
-      }
-      const name = String(tailoredModal.name || '').trim() || `Tailored - ${String(autoTitle || '').trim() || 'Resume'}`
-      const payload = {
-        name,
-        builder_data: form,
-        resume: Number(sourceResumeId),
-        job: tailoredModal.jobId ? Number(tailoredModal.jobId) : null,
-      }
-      const data = await createTailoredResume(access, payload)
-      if (data?.id) {
-        setResumeRecordId(String(data.id))
-        setResumeJobId(data?.job ? String(data.job) : '')
-        sessionStorage.setItem(resumeIdSessionKey, String(data.id))
-        setSaveMode('edit')
-      }
-      setSaveTarget('tailored')
-      setTailoredSourceResumeId(sourceResumeId)
-      setForm((prev) => ({
-        ...prev,
-        isDefaultResume: false,
-      }))
-      setTailoredModal((prev) => ({ ...prev, open: false }))
-      setSaveState({
-        saving: false,
-        message: `Saved to Tailored: ${new Date().toLocaleTimeString()}`,
-      })
-    } catch (err) {
-      setSaveState({ saving: false, message: err.message || 'Save failed' })
     }
   }
 
@@ -1284,14 +1241,9 @@ function ResumeBuilderPage({
             {importState.importing ? 'Importing...' : 'Import PDF'}
           </button>
         )}
-        {showSaveButton && (!enableTailorFlow || allowBaseResumeSave) && (
+        {showSaveButton && (
           <button type="button" onClick={openSaveModal} disabled={saveState.saving}>
             {saveState.saving ? 'Saving...' : 'Save'}
-          </button>
-        )}
-        {showSaveButton && enableTailorFlow && (
-          <button type="button" className="secondary" onClick={openSaveToTailored} disabled={saveState.saving}>
-            {saveState.saving ? 'Saving...' : 'Save To Tailored'}
           </button>
         )}
         {showJdBox && enableTailorFlow && (
@@ -1328,15 +1280,15 @@ function ResumeBuilderPage({
           </button>
         )}
       </div>
-      {showSaveButton && enableTailorFlow && (
+      {showSaveButton && showSaveAsTailoredControl && (
         <div className="builder-actions-meta">
           <label className="checkbox">
             <input
               type="checkbox"
-              checked={allowBaseResumeSave}
-              onChange={(e) => setAllowBaseResumeSave(e.target.checked)}
+              checked={saveTarget === 'tailored'}
+              onChange={(e) => setSaveTarget(e.target.checked ? 'tailored' : 'base')}
             />
-            Allow saving/editing base resume
+            Save as tailored resume
           </label>
         </div>
       )}
@@ -1815,6 +1767,17 @@ function ResumeBuilderPage({
                   />
                 </div>
 
+                <div className="exp-row exp-row-actions">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(proj.liveLink)}
+                      onChange={(e) => updateProject(index, { liveLink: e.target.checked })}
+                    />
+                    Show as live
+                  </label>
+                </div>
+
                 <RichTextarea
                   id={`proj-highlights-${index}`}
                   label="Highlights"
@@ -1970,44 +1933,6 @@ function ResumeBuilderPage({
         </div>
         <ResumeSheet form={form} />
       </section>
-
-      {tailoredModal.open ? (
-        <div className="modal-overlay" onClick={() => setTailoredModal((prev) => ({ ...prev, open: false }))}>
-          <div className="modal-panel builder-save-modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Save Tailored Resume</h2>
-            <label>
-              Name
-              <input
-                value={tailoredModal.name}
-                onChange={(e) => setTailoredModal((prev) => ({ ...prev, name: e.target.value }))}
-                placeholder="Enter tailored resume name"
-              />
-            </label>
-            <label>
-              Job (Optional)
-              <SingleSelectDropdown
-                value={tailoredModal.jobId || ''}
-                placeholder="Search/select job"
-                clearLabel="No job association"
-                disabled={tailoredModal.loading}
-                options={(Array.isArray(tailoredModal.jobs) ? tailoredModal.jobs : []).map((job) => ({
-                  value: String(job.id),
-                  label: `${job.job_id || '-'} | ${job.role || '-'} | ${job.company_name || '-'}`,
-                }))}
-                onChange={(nextValue) => setTailoredModal((prev) => ({ ...prev, jobId: nextValue }))}
-              />
-            </label>
-            <div className="actions">
-              <button type="button" onClick={saveToTailored} disabled={saveState.saving || tailoredModal.loading}>
-                {saveState.saving ? 'Saving...' : 'Save'}
-              </button>
-              <button type="button" className="secondary" onClick={() => setTailoredModal((prev) => ({ ...prev, open: false }))}>
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
 
       {saveModal.open ? (
         <div className="modal-overlay" onClick={() => setSaveModal((prev) => ({ ...prev, open: false }))}>

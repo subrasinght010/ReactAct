@@ -458,7 +458,11 @@ function ProfilePage() {
         setProfile(nextProfile)
         setProfileForm(nextProfile)
         setProfileUsername(String(profileBase?.username || ''))
-        setResumes(Array.isArray(resumeRows) ? resumeRows : [])
+        setResumes(
+          Array.isArray(resumeRows)
+            ? resumeRows.filter((row) => !row?.is_tailored)
+            : [],
+        )
         setAchievements(Array.isArray(achRows) ? achRows : [])
         setSubjectTemplates(Array.isArray(subjectRows) ? subjectRows : [])
         setInterviews(Array.isArray(interviewRows) ? interviewRows : [])
@@ -527,12 +531,14 @@ function ProfilePage() {
 
   const openResumeInBuilder = (resumeId) => {
     sessionStorage.setItem('builderSaveMode', 'edit')
+    sessionStorage.removeItem('builderImport')
     sessionStorage.setItem('builderResumeId', String(resumeId))
     navigate('/builder')
   }
 
   const openCreateResumeInBuilder = () => {
     sessionStorage.setItem('builderSaveMode', 'create')
+    sessionStorage.removeItem('builderImport')
     sessionStorage.removeItem('builderResumeId')
     navigate('/builder')
   }
