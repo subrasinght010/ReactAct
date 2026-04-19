@@ -303,6 +303,7 @@ function ResumeBuilderPage({
       {
         name: '',
         url: '',
+        liveLink: false,
         highlights: '<ul><li>Add 2-3 bullet points about what you built.</li></ul>',
       },
     ],
@@ -808,7 +809,7 @@ function ResumeBuilderPage({
       ...prev,
       projects: [
         ...(prev.projects || []),
-        { name: '', url: '', highlights: '- ' },
+        { name: '', url: '', liveLink: false, highlights: '- ' },
       ],
     }))
   }
@@ -1764,6 +1765,17 @@ function ResumeBuilderPage({
                     onChange={(e) => updateProject(index, { url: e.target.value })}
                     placeholder="Project link (optional, e.g. https://...)"
                   />
+                </div>
+
+                <div className="exp-row exp-row-actions">
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(proj.liveLink)}
+                      onChange={(e) => updateProject(index, { liveLink: e.target.checked })}
+                    />
+                    Show as live
+                  </label>
                 </div>
 
                 <RichTextarea

@@ -203,6 +203,7 @@ export function buildResumeViewModel(form, options = {}) {
       ...proj,
       name: String(proj?.name || '').trim(),
       normalizedUrl: normalizeHttpUrl(proj?.url),
+      liveLink: Boolean(proj?.liveLink) || String(proj?.linkLabel || '').trim().toLowerCase() === 'live',
       highlights: String(proj?.highlights || ''),
     }))
     .map((proj) => {

@@ -3463,6 +3463,11 @@
     font-size: calc(var(--resume-font-size-pt, 10) * 0.86 * 1pt);
   }
 
+  .resume-project-link.is-live {
+    color: #2563eb;
+    font-weight: 700;
+  }
+
   .resume-section {
     margin-top: 6pt;
     margin-bottom: 2pt;

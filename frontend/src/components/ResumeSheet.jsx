@@ -108,13 +108,13 @@ export default function ResumeSheet({ form }) {
                       <span className="resume-exp-company">{proj.name}</span>
                       {proj.normalizedUrl && (
                         <a
-                          className="resume-link resume-project-link"
+                          className={`resume-link resume-project-link${proj.liveLink ? ' is-live' : ''}`}
                           href={proj.normalizedUrl}
                           target="_blank"
                           rel="noreferrer"
                           data-url={proj.normalizedUrl}
                         >
-                          link
+                          {proj.liveLink ? 'live' : 'link'}
                         </a>
                       )}
                     </div>

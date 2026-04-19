@@ -101,7 +101,7 @@ function renderExperienceItem(exp) {
 function renderProjectItem(project) {
   const name = escapeHtml(project.name || '')
   const link = project.normalizedUrl
-    ? `<a class="resume-link resume-project-link" href="${escapeHtml(project.normalizedUrl)}">link</a>`
+    ? `<a class="resume-link resume-project-link${project.liveLink ? ' is-live' : ''}" href="${escapeHtml(project.normalizedUrl)}">${project.liveLink ? 'live' : 'link'}</a>`
     : ''
   const content = htmlToBulletList(project.highlights)
 
@@ -398,6 +398,11 @@ export function buildAtsPdfHtml(form) {
     .resume-project-link {
       margin-left: 2pt;
       display: inline-block;
+    }
+
+    .resume-project-link.is-live {
+      color: #2563eb;
+      font-weight: 700;
     }
 
     .resume-rich,
