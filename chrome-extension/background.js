@@ -7,6 +7,57 @@ function normalizeApiBase(base) {
 
 const AUTH_STORAGE_KEY = 'applypilot_extension_auth'
 
+function getApiOrigin(apiBase) {
+  let parsed
+  try {
+    parsed = new URL(normalizeApiBase(apiBase))
+  } catch {
+    throw new Error('Enter a valid API base URL.')
+  }
+  if (!/^https?:$/.test(parsed.protocol)) {
+    throw new Error('Only http and https API URLs are supported.')
+  }
+  return parsed.origin
+}
+
+function ensureApiAccess(apiBase, interactive = false) {
+  const origin = getApiOrigin(apiBase)
+  const origins = [`${origin}/*`]
+  return new Promise((resolve, reject) => {
+    if (!chrome.permissions?.contains) {
+      resolve(origin)
+      return
+    }
+
+    chrome.permissions.contains({ origins }, (hasPermission) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || 'Could not check API access'))
+        return
+      }
+      if (hasPermission) {
+        resolve(origin)
+        return
+      }
+      if (!interactive) {
+        reject(new Error(`Grant extension access to ${origin} and try again.`))
+        return
+      }
+
+      chrome.permissions.request({ origins }, (granted) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message || 'Could not request API access'))
+          return
+        }
+        if (!granted) {
+          reject(new Error(`Access to ${origin} was denied.`))
+          return
+        }
+        resolve(origin)
+      })
+    })
+  })
+}
+
 async function openSidePanelForTab(tab, path = 'panel.html') {
   const tabId = tab?.id
   if (!tabId || !chrome.sidePanel) return false
@@ -69,6 +120,7 @@ function sendMessageToTab(tabId, payload) {
 }
 
 async function loginWithCredentials(apiBase, username, password) {
+  await ensureApiAccess(apiBase, true)
   const response = await fetch(`${normalizeApiBase(apiBase)}/token/`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -90,6 +142,7 @@ async function loginWithCredentials(apiBase, username, password) {
 }
 
 async function refreshStoredSession(apiBase) {
+  await ensureApiAccess(apiBase, true)
   const auth = await getAuthState()
   if (!auth.refresh) {
     await clearAuthState()
@@ -117,6 +170,7 @@ async function refreshStoredSession(apiBase) {
 
 async function apiFetch(path, options = {}) {
   const apiBase = normalizeApiBase(options.apiBase)
+  await ensureApiAccess(apiBase, Boolean(options.interactivePermission))
   const url = `${apiBase}${path}`
 
   async function requestWithToken(tok) {
@@ -237,6 +291,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true
   }
 
+  if (type === 'EXTENSION_ENSURE_API_ACCESS') {
+    ensureApiAccess(msg?.apiBase, Boolean(msg?.interactive))
+      .then((origin) => sendResponse({ ok: true, data: { origin } }))
+      .catch((err) => sendResponse({ ok: false, error: String(err?.message || err) }))
+    return true
+  }
+
   if (type === 'EXTENSION_GET_AUTH_STATE') {
     getAuthState()
       .then((auth) => sendResponse({ ok: true, data: authSummary(auth) }))
@@ -277,6 +338,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     apiFetch('/extension/jobs/', {
       method: 'POST',
       requireAuth: true,
+      interactivePermission: true,
       apiBase: msg?.apiBase,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg?.payload || {}),
@@ -290,6 +352,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     apiFetch('/extension/employees/', {
       method: 'POST',
       requireAuth: true,
+      interactivePermission: true,
       apiBase: msg?.apiBase,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(msg?.payload || {}),

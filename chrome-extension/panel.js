@@ -583,6 +583,20 @@ els.clearEmployeeBtn.addEventListener('click', () => clearEmployeeFields())
 els.apiBase.addEventListener('change', async () => {
   const value = String(els.apiBase.value || '').trim()
   await chromeStorageSet({ [API_BASE_STORAGE_KEY]: value, [META_CACHE_KEY]: null })
+  try {
+    if (value) {
+      const result = await extMessage({
+        type: 'EXTENSION_ENSURE_API_ACCESS',
+        apiBase: value,
+        interactive: true,
+      })
+      const origin = String(result?.origin || '').trim()
+      if (origin) setStatus(`API access granted for ${origin}`)
+    }
+    await loadMetaAndCompanies()
+  } catch (err) {
+    setStatus(String(err?.message || err || 'Could not grant API access'), true)
+  }
 })
 
 ;(async () => {

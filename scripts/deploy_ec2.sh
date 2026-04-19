@@ -10,6 +10,13 @@ cd "$ROOT_DIR"
 
 git pull origin "${DEPLOY_BRANCH:-main}"
 
+if [ -f ".env" ]; then
+  set -a
+  # Prefer a single project-level .env shared across services.
+  . ./.env
+  set +a
+fi
+
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 if [ -s "$NVM_DIR/nvm.sh" ]; then
   # Ensure the frontend build runs on a Vite-compatible Node version.
@@ -19,6 +26,13 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
 fi
 
 cd "$BACKEND_DIR"
+if [ -f ".env" ]; then
+  set -a
+  # Fallback for older deployments still storing env in backend/.env.
+  . ./.env
+  set +a
+fi
+
 if [ -d "venv" ]; then
   source venv/bin/activate
 else
