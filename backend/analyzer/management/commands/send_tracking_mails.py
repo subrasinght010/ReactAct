@@ -1,13 +1,10 @@
 import re
 import json
 import html
-import io
 import os
-import shutil
 import smtplib
 import time
 import tempfile
-import subprocess
 import urllib.error
 import urllib.request
 import logging
@@ -24,13 +21,15 @@ from django.utils import timezone
 
 from analyzer.models import Template, Tracking, TrackingAction, UserProfile
 from analyzer.profile_settings import resolve_openai_settings, resolve_smtp_settings
+from analyzer.resume_rendering import (
+    available_browser_binaries,
+    build_builder_pdf_bytes,
+    build_frontend_ats_pdf_html,
+    pdf_page_count,
+    render_pdf_bytes_from_html,
+)
 from analyzer.template_access import resolve_template_ids_for_user
 from analyzer.tracking_mail_utils import build_mail_tracking_status_map, ensure_mail_tracking, log_mail_event, recompute_tracking_delivery_status
-
-try:
-    from pypdf import PdfReader
-except Exception:  # noqa: BLE001
-    PdfReader = None
 
 
 LOGGER_NAME = "analyzer.send_tracking_mails"
@@ -572,14 +571,20 @@ class Command(BaseCommand):
         )
 
     def _resolve_attachment_payload(self, row):
+        builder = row.resume.builder_data if row and row.resume and isinstance(row.resume.builder_data, dict) else {}
+        title = str(getattr(row.resume, "title", "") or "").strip() or "Resume"
         saved_pdf_path = str(getattr(row.resume, "ats_pdf_path", "") or "").strip() if row and row.resume else ""
+
+        if builder:
+            exact_pdf = self._build_builder_pdf_bytes(builder, filename_hint=title)
+            if exact_pdf:
+                return {"path": None, "bytes": exact_pdf}
+
         if saved_pdf_path:
             saved_path = Path(saved_pdf_path)
             if saved_path.exists() and saved_path.is_file():
                 return {"path": str(saved_path), "bytes": None}
 
-        builder = row.resume.builder_data if row and row.resume and isinstance(row.resume.builder_data, dict) else {}
-        title = str(getattr(row.resume, "title", "") or "").strip() or "Resume"
         if not builder:
             return None
 
@@ -589,121 +594,19 @@ class Command(BaseCommand):
         return None
 
     def _build_builder_pdf_bytes(self, builder_data, filename_hint="resume"):
-        browser_bins = self._available_browser_binaries()
-        if not browser_bins:
-            return None
-        exact_html = self._build_frontend_ats_pdf_html(builder_data)
-        if not exact_html:
-            return None
-        pdf_bytes = self._render_browser_pdf_bytes(exact_html, browser_bins)
-        if not pdf_bytes:
-            return None
-        if self._pdf_page_count(pdf_bytes) > 1:
-            compact_builder_data = builder_data.copy() if isinstance(builder_data, dict) else {}
-            compact_builder_data["bodyFontSizePt"] = 10
-            compact_builder_data["bodyLineHeight"] = 1
-            compact_builder_data["pageMarginIn"] = 0.3
-            compact_html = self._build_frontend_ats_pdf_html(compact_builder_data)
-            compact_pdf_bytes = self._render_browser_pdf_bytes(compact_html, browser_bins)
-            if compact_pdf_bytes:
-                return compact_pdf_bytes
-        return pdf_bytes
+        return build_builder_pdf_bytes(builder_data)
 
     def _render_browser_pdf_bytes(self, html_text, browser_bins):
-        if not str(html_text or "").strip():
-            return None
-
-        with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as tmp_html:
-            tmp_html.write(html_text)
-            tmp_html_path = Path(tmp_html.name)
-
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
-            tmp_pdf_path = Path(tmp_pdf.name)
-
-        html_url = tmp_html_path.as_uri()
-        try:
-            for browser_bin in browser_bins:
-                cmd = [
-                    browser_bin,
-                    "--headless=new",
-                    "--disable-gpu",
-                    "--no-sandbox",
-                    "--no-pdf-header-footer",
-                    f"--print-to-pdf={str(tmp_pdf_path)}",
-                    html_url,
-                ]
-                run = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=45,
-                    check=False,
-                )
-                if run.returncode == 0 and tmp_pdf_path.exists() and tmp_pdf_path.stat().st_size > 0:
-                    return tmp_pdf_path.read_bytes()
-        except Exception:
-            return None
-        finally:
-            tmp_html_path.unlink(missing_ok=True)
-            tmp_pdf_path.unlink(missing_ok=True)
-        return None
+        return render_pdf_bytes_from_html(html_text)
 
     def _pdf_page_count(self, pdf_bytes):
-        if not pdf_bytes or PdfReader is None:
-            return 0
-        try:
-            reader = PdfReader(io.BytesIO(pdf_bytes))
-            return len(reader.pages or [])
-        except Exception:
-            return 0
+        return pdf_page_count(pdf_bytes)
 
     def _available_browser_binaries(self):
-        candidates = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-        ]
-        return [path for path in candidates if Path(path).exists()]
+        return available_browser_binaries()
 
     def _build_frontend_ats_pdf_html(self, builder_data):
-        if not isinstance(builder_data, dict) or not builder_data:
-            return ""
-        node_bin = shutil.which("node")
-        if not node_bin:
-            return ""
-
-        project_root = Path(__file__).resolve().parents[4]
-        module_path = project_root / "frontend" / "src" / "utils" / "resumeExport.js"
-        if not module_path.exists():
-            return ""
-
-        script = (
-            "import fs from 'node:fs';"
-            "import { buildAtsPdfHtml } from 'file://%s';"
-            "const raw = fs.readFileSync(process.argv[1], 'utf8');"
-            "const form = JSON.parse(raw || '{}');"
-            "process.stdout.write(buildAtsPdfHtml(form));"
-        ) % str(module_path).replace("\\", "/")
-
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp_json:
-            json.dump(builder_data, tmp_json)
-            tmp_json_path = Path(tmp_json.name)
-
-        try:
-            run = subprocess.run(
-                [node_bin, "--experimental-specifier-resolution=node", "--input-type=module", "-e", script, str(tmp_json_path)],
-                capture_output=True,
-                text=True,
-                timeout=45,
-                check=False,
-                cwd=str(project_root),
-            )
-            if run.returncode == 0:
-                return str(run.stdout or "").strip()
-            return ""
-        except Exception:
-            return ""
-        finally:
-            tmp_json_path.unlink(missing_ok=True)
+        return build_frontend_ats_pdf_html(builder_data)
 
     def _sanitize_resume_html(self, value):
         raw = str(value or "")
@@ -1700,6 +1603,8 @@ class Command(BaseCommand):
         text = str(body or "").replace("\r\n", "\n")
         if not text.strip():
             return ""
+        if re.search(r"(?is)^\s*(<!doctype html\b|<html\b)", text) or 'class="resume-sheet"' in text or "class='resume-sheet'" in text:
+            return text
 
         def _linkify(segment):
             escaped = html.escape(segment, quote=True)

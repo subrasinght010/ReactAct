@@ -1,3 +1,4 @@
+import os
 import shutil
 import tempfile
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from analyzer.views import (
     CompanyListCreateView,
     EmployeeDetailView,
     EmployeeListCreateView,
+    ExportAtsPdfLocalView,
     JobDetailView,
     JobListCreateView,
     ProfilePanelListCreateView,
@@ -261,6 +263,34 @@ class SendTrackingMailsThreadingTests(TestCase):
         attachment_bytes = payload.get("bytes")
         self.assertTrue(isinstance(attachment_bytes, (bytes, bytearray)))
         self.assertTrue(bytes(attachment_bytes).startswith(b"%PDF-1.4"))
+
+    @patch.object(Command, "_build_builder_pdf_bytes", return_value=b"%PDF-1.7 exact")
+    def test_attachment_prefers_shared_builder_pdf_over_saved_file(self, mocked_builder_pdf):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+            tmp_pdf.write(b"%PDF-1.4 saved")
+            saved_path = tmp_pdf.name
+        self.addCleanup(lambda: os.unlink(saved_path) if os.path.exists(saved_path) else None)
+
+        self.resume.builder_data = {
+            "resumeTitle": "Base Resume",
+            "fullName": "Subrat Singh",
+            "summary": "<p>Backend engineer</p>",
+        }
+        self.resume.ats_pdf_path = saved_path
+        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "updated_at"])
+
+        payload = self.command._resolve_attachment_payload(self.tracking)
+
+        mocked_builder_pdf.assert_called_once()
+        self.assertIsNone(payload.get("path"))
+        self.assertEqual(payload.get("bytes"), b"%PDF-1.7 exact")
+
+    def test_body_html_preserves_existing_html_document(self):
+        html_body = '<!DOCTYPE html><html><body><article class="resume-sheet"><h1>Subrat Singh</h1></article></body></html>'
+
+        rendered = self.command._body_html(html_body)
+
+        self.assertEqual(rendered, html_body)
 
     def test_log_success_persists_message_metadata(self):
         self.command._log_success(
@@ -504,6 +534,39 @@ class SendTrackingAttachmentSafetyTests(TestCase):
         payload = command._resolve_attachment_payload(tracking) or {}
         self.assertIsNone(payload.get("path"))
         self.assertIsNone(payload.get("bytes"))
+
+
+class ExportAtsPdfLocalViewTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username="pdfexporter", email="pdfexporter@example.com", password="x")
+        self.profile = UserProfile.objects.create(user=self.user)
+        self.resume = Resume.objects.create(profile=self.profile, title="Resume")
+
+    @patch("analyzer.views.build_builder_pdf_bytes", return_value=b"%PDF-1.7 export")
+    def test_export_accepts_builder_data_without_html_payload(self, mocked_builder_pdf):
+        request = self.factory.post(
+            "/api/export-ats-pdf-local/",
+            {
+                "resume_id": self.resume.id,
+                "builder_data": {
+                    "fullName": "Subrat Singh",
+                    "summary": "<p>Backend engineer</p>",
+                },
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = ExportAtsPdfLocalView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        mocked_builder_pdf.assert_called_once()
+        saved_path = response.data["saved_path"]
+        self.addCleanup(lambda: os.unlink(saved_path) if os.path.exists(saved_path) else None)
+        self.assertTrue(os.path.exists(saved_path))
+        with open(saved_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"%PDF-1.7 export")
 
 
 class TrackingFreshRuleApiTests(TestCase):

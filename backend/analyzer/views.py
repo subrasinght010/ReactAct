@@ -1,8 +1,6 @@
 import json
 import os
 import re
-import subprocess
-import tempfile
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
@@ -62,6 +60,7 @@ from .tailor import (
 from .tracking_mail_utils import build_mail_tracking_status_map
 from .management.commands.send_tracking_mails import Command as SendTrackingMailsCommand
 from .profile_settings import resolve_openai_settings
+from .resume_rendering import build_builder_pdf_bytes, render_pdf_from_html as shared_render_pdf_from_html
 from .template_access import (
     owned_template_queryset_for_user,
     owned_subject_template_queryset_for_user,
@@ -950,58 +949,8 @@ def _pick_local_pdf_path(file_name: str, resume_id: int | None = None) -> Path:
     return target_dir / f"{stem}.pdf"
 
 
-def _available_browser_binaries():
-    candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-    ]
-    return [path for path in candidates if Path(path).exists()]
-
-
 def _render_pdf_from_html(html_text: str, output_pdf: Path):
-    browser_bins = _available_browser_binaries()
-    if not browser_bins:
-        return False, "Chrome/Brave not found on this machine."
-
-    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False, encoding="utf-8") as tmp:
-        tmp.write(str(html_text or ""))
-        tmp_html_path = Path(tmp.name)
-
-    html_url = tmp_html_path.as_uri()
-    errors = []
-    try:
-        for browser_bin in browser_bins:
-            cmd = [
-                browser_bin,
-                "--headless=new",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--no-pdf-header-footer",
-                f"--print-to-pdf={str(output_pdf)}",
-                html_url,
-            ]
-            try:
-                run = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=45,
-                    check=False,
-                )
-                if run.returncode == 0 and output_pdf.exists() and output_pdf.stat().st_size > 0:
-                    return True, ""
-                stderr = (run.stderr or "").strip()
-                stdout = (run.stdout or "").strip()
-                snippet = stderr or stdout or f"exit code {run.returncode}"
-                errors.append(f"{Path(browser_bin).name}: {snippet[:220]}")
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"{Path(browser_bin).name}: {exc}")
-        return False, "; ".join(errors) or "PDF generation failed."
-    finally:
-        try:
-            tmp_html_path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
+    return shared_render_pdf_from_html(html_text, output_pdf)
 
 
 def _resolve_openai_model(user=None) -> str:
@@ -2737,8 +2686,6 @@ class ExportAtsPdfLocalView(APIView):
         builder_data = sanitize_builder_data(builder_data)
 
         html_text = str(request.data.get("html") or "").strip()
-        if len(html_text) < 40:
-            return Response({"detail": "Missing ATS HTML payload for PDF export."}, status=status.HTTP_400_BAD_REQUEST)
 
         resume = None
         resume_id = str(request.data.get("resume_id") or "").strip()
@@ -2750,13 +2697,23 @@ class ExportAtsPdfLocalView(APIView):
 
         file_name = _default_pdf_filename(builder_data, resume=resume)
         output_path = _pick_local_pdf_path(file_name, resume.id if resume else None)
-
-        ok, note = _render_pdf_from_html(html_text, output_path)
-        if not ok:
-            return Response(
-                {"detail": f"Could not generate local PDF. {note}"},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        if len(html_text) >= 40:
+            ok, note = _render_pdf_from_html(html_text, output_path)
+            if not ok:
+                pdf_bytes = build_builder_pdf_bytes(builder_data) if builder_data else None
+                if pdf_bytes:
+                    output_path.write_bytes(pdf_bytes)
+                else:
+                    return Response(
+                        {"detail": f"Could not generate local PDF. {note}"},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+        else:
+            pdf_bytes = build_builder_pdf_bytes(builder_data) if builder_data else None
+            if pdf_bytes:
+                output_path.write_bytes(pdf_bytes)
+            else:
+                return Response({"detail": "Missing ATS HTML payload for PDF export."}, status=status.HTTP_400_BAD_REQUEST)
 
         if resume:
             resume.ats_pdf_path = str(output_path)
