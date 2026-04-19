@@ -253,6 +253,8 @@ export function buildAtsPdfHtml(form) {
     }
 
     body {
+      --resume-font-size-pt: ${safeFontSizePt};
+      --resume-line-height-value: ${safeLineHeight};
       padding: ${model.topPagePaddingIn}in ${model.pageMarginIn}in ${model.pageMarginIn}in;
       font-size: ${safeFontSizePt}pt;
       line-height: ${safeLineHeight};
@@ -266,10 +268,12 @@ export function buildAtsPdfHtml(form) {
     }
 
     .resume-head {
-      margin-bottom: 4pt;
+      margin-bottom: 3pt;
       padding-bottom: 2pt;
       text-align: center;
       border-bottom: 1px solid #d1d5db;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
 
     .resume-head.no-divider {
@@ -278,10 +282,11 @@ export function buildAtsPdfHtml(form) {
 
     .resume-head h1 {
       margin: 0;
-      font-size: 20pt;
+      font-size: calc(var(--resume-font-size-pt, 10) * 1.8 * 1pt);
       font-weight: 700;
+      line-height: calc(var(--resume-line-height-value, 1) + 0.08);
       text-align: center;
-      letter-spacing: 0.02em;
+      letter-spacing: 0.01em;
     }
 
     .resume-head-line,
@@ -292,11 +297,13 @@ export function buildAtsPdfHtml(form) {
     }
 
     .resume-head-line {
-      margin-top: 1pt;
+      margin-top: 0.5pt;
+      font-size: calc(var(--resume-font-size-pt, 10) * 0.885 * 1pt);
     }
 
     .resume-head-links {
-      margin-top: 2pt;
+      margin-top: 1pt;
+      font-size: calc(var(--resume-font-size-pt, 10) * 0.86 * 1pt);
       word-break: break-word;
     }
 
@@ -305,19 +312,23 @@ export function buildAtsPdfHtml(form) {
       color: inherit;
       text-decoration: none;
       font-weight: 400;
+      font-size: inherit;
     }
 
     .resume-section {
-      margin-top: 8pt;
-      margin-bottom: 3pt;
+      margin-top: 6pt;
+      margin-bottom: 2pt;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
 
     .resume-section h2 {
-      margin: 0 0 2pt;
-      font-size: 11pt;
+      margin: 0 0 1.5pt;
+      font-size: calc(var(--resume-font-size-pt, 10) * 1 * 1pt);
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      line-height: calc(var(--resume-line-height-value, 1) + 0.15);
+      letter-spacing: 0.04em;
     }
 
     .resume-section.has-underline h2 {
@@ -326,15 +337,18 @@ export function buildAtsPdfHtml(form) {
     }
 
     .resume-exp {
-      margin-top: 4pt;
+      margin-top: 3pt;
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
 
     .resume-exp-head {
       display: flex;
       justify-content: space-between;
-      gap: 12pt;
+      gap: 8pt;
       align-items: baseline;
       font-size: inherit;
+      line-height: calc(var(--resume-line-height-value, 1) + 0.2);
       font-weight: 700;
     }
 
@@ -356,14 +370,14 @@ export function buildAtsPdfHtml(form) {
     .resume-exp-right,
     .resume-project-link {
       font-weight: 400;
-      font-size: inherit;
+      font-size: calc(var(--resume-font-size-pt, 10) * 0.885 * 1pt);
       color: #374151;
       text-decoration: none;
       white-space: nowrap;
     }
 
     .resume-exp-body {
-      margin-top: 0;
+      margin-top: 0.5pt;
     }
 
     .resume-edu-inst {
@@ -382,7 +396,7 @@ export function buildAtsPdfHtml(form) {
     }
 
     .resume-project-link {
-      margin-left: 3pt;
+      margin-left: 2pt;
       display: inline-block;
     }
 
@@ -393,25 +407,28 @@ export function buildAtsPdfHtml(form) {
 
     .resume-rich p,
     .resume-summary p {
-      margin: 2pt 0 0;
-      line-height: 1.35;
+      margin: 1.2pt 0 0;
+      font-size: calc(var(--resume-font-size-pt, 10) * 0.925 * 1pt);
+      line-height: calc(var(--resume-line-height-value, 1) + 0.22);
     }
 
     .resume-rich ul,
     .resume-summary ul {
-      margin: 4pt 0 0;
-      padding-left: 16pt;
+      margin: 2pt 0 0;
+      padding-left: 13pt;
     }
 
     .resume-rich ol,
     .resume-summary ol {
-      margin: 4pt 0 0;
-      padding-left: 16pt;
+      margin: 2pt 0 0;
+      padding-left: 13pt;
     }
 
     .resume-rich li,
     .resume-summary li {
-      margin: 1.5pt 0;
+      margin: 0.85pt 0;
+      font-size: calc(var(--resume-font-size-pt, 10) * 0.925 * 1pt);
+      line-height: calc(var(--resume-line-height-value, 1) + 0.2);
     }
 
     * {

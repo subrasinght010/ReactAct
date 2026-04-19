@@ -1,6 +1,6 @@
 export const MIN_PAGE_MARGIN_IN = 0.2
-export const DEFAULT_PAGE_MARGIN_IN = 0.3
-export const TOP_PAGE_PADDING_OFFSET_IN = 0.08
+export const DEFAULT_PAGE_MARGIN_IN = 0.25
+export const TOP_PAGE_PADDING_OFFSET_IN = 0.12
 
 const SECTION_META = [
   { key: 'summary', label: 'Summary' },

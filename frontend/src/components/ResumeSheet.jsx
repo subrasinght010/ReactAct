@@ -22,7 +22,9 @@ export default function ResumeSheet({ form }) {
       className={`resume-sheet${compactSpacing ? ' is-compact' : ''}`}
       style={{
         '--resume-font-family': model.bodyFontFamily,
+        '--resume-font-size-pt': `${Number.isFinite(model.bodyFontSizePt) ? model.bodyFontSizePt : 10}`,
         '--resume-font-size': `${Number.isFinite(model.bodyFontSizePt) ? model.bodyFontSizePt : 10}pt`,
+        '--resume-line-height-value': `${Number.isFinite(model.bodyLineHeight) ? model.bodyLineHeight : 1}`,
         '--resume-line-height': `${Number.isFinite(model.bodyLineHeight) ? model.bodyLineHeight : 1}`,
         '--resume-sheet-padding-top': `${model.topPagePaddingIn}in`,
         '--resume-sheet-padding': `${model.pageMarginIn}in`,
