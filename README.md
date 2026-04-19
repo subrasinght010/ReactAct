@@ -330,14 +330,35 @@ Notes:
 
 ## Screenshots
 
-Add product screenshots in `docs/screenshots/` and reference them here.
-
+Add product screenshots in `assets/screenshots/` and reference them here.
 Recommended screenshots:
 
-- Login page
+- Job Page
+![App Screenshot](assets/screenshots/img1.png)
+![App Screenshot](assets/screenshots/img16.png)
+
 - Home page
+![App Screenshot](assets/screenshots/img13.png)
+![App Screenshot](assets/screenshots/img5.png)
+
 - Profile page
-- Tracking page
+![App Screenshot](assets/screenshots/img2.png)
+
+- Company And Employee Page
+![App Screenshot](assets/screenshots/img6.png)
+
+
 - Tracking Test Mail panel
-- Resume Builder page
+![App Screenshot](assets/screenshots/img11.png)
+![App Screenshot](assets/screenshots/img9.png)
+![App Screenshot](assets/screenshots/img12.png)
+![App Screenshot](assets/screenshots/img8.png)
+
+
+
+- Mail Details page
+![App Screenshot](assets/screenshots/img7.png)
+
 - Chrome Extension side panel
+![App Screenshot](assets/screenshots/img19.png)
+![App Screenshot](assets/screenshots/img18.png)
