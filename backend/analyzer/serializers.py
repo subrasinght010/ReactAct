@@ -424,6 +424,7 @@ class CompanySerializer(serializers.ModelSerializer):
 
 
 class JobSerializer(serializers.ModelSerializer):
+    job_id = serializers.CharField(required=False, allow_blank=True)
     job_link = serializers.CharField(required=False, allow_blank=True)
     company_name = serializers.SerializerMethodField()
     has_tailored_resume = serializers.SerializerMethodField()
@@ -480,10 +481,7 @@ class JobSerializer(serializers.ModelSerializer):
         return obj.applied_at is not None
 
     def validate_job_id(self, value):
-        text = str(value or '').strip()
-        if not text:
-            raise serializers.ValidationError('Job ID is required.')
-        return text
+        return str(value or '').strip()
 
     def validate_role(self, value):
         text = str(value or '').strip()

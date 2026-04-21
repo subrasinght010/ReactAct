@@ -13,7 +13,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from analyzer.dummy_data import DUMMY_DATA_PERMISSION, grant_dummy_data_permission, seed_shared_dummy_workspace
 from analyzer.management.commands.send_tracking_mails import Command
-from analyzer.models import Company, Employee, Interview, Job, MailTrackingEvent, ProfilePanel, Resume, SubjectTemplate, Template, Tracking, TrackingAction, UserProfile
+from analyzer.models import Company, Employee, Interview, Job, Location, MailTrackingEvent, ProfilePanel, Resume, SubjectTemplate, Template, Tracking, TrackingAction, UserProfile
 from analyzer.profile_settings import resolve_imap_settings, resolve_openai_settings, resolve_smtp_settings
 from analyzer.serializers import CompanySerializer, InterviewSerializer, JobSerializer, ProfilePanelSerializer, UserProfileSerializer
 from analyzer.tracking_mail_utils import ensure_mail_tracking
@@ -25,6 +25,9 @@ from analyzer.views import (
     CompanyListCreateView,
     EmployeeDetailView,
     EmployeeListCreateView,
+    ExtensionCompanySearchView,
+    ExtensionFormMetaView,
+    ExtensionJobCreateView,
     ExportAtsPdfLocalView,
     JobDetailView,
     JobListCreateView,
@@ -493,6 +496,12 @@ class TrackingTemplateValidationTests(TestCase):
     def test_follow_up_requires_at_least_one_template(self):
         self.assertEqual(_validate_tracking_templates([], "followed_up"), "For follow up, select at least 1 template.")
 
+    def test_fresh_allows_single_non_opening_template(self):
+        user = User.objects.create_user(username="freshtemplateone", password="x")
+        profile = UserProfile.objects.create(user=user)
+        first = Template.objects.create(profile=profile, name="General 1", category="general", achievement="One")
+        self.assertEqual(_validate_tracking_templates([first], "fresh"), "")
+
     def test_follow_up_allows_up_to_two_follow_up_templates(self):
         user = User.objects.create_user(username="followuptemplates", password="x")
         profile = UserProfile.objects.create(user=user)
@@ -957,6 +966,42 @@ class JobAccessControlTests(TestCase):
         self.assertEqual(response.data["job_id"], "OWN-2")
         self.assertIn("company_name", response.data)
 
+    def test_create_allows_blank_job_id(self):
+        request = self.factory.post(
+            "/api/jobs/",
+            {
+                "company": self.owner_company.id,
+                "job_id": "",
+                "role": "Created Without Job Id",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.owner)
+
+        response = JobListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 201)
+        job = Job.objects.get(id=response.data["id"])
+        self.assertEqual(job.job_id, "")
+
+    def test_update_allows_blank_job_id(self):
+        request = self.factory.put(
+            f"/api/jobs/{self.owner_job.id}/",
+            {
+                "company": self.owner_job.company_id,
+                "job_id": "",
+                "role": "Owner Role",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.owner)
+
+        response = JobDetailView.as_view()(request, job_id=self.owner_job.id)
+
+        self.assertEqual(response.status_code, 200)
+        self.owner_job.refresh_from_db()
+        self.assertEqual(self.owner_job.job_id, "")
+
     def test_list_returns_only_owned_or_assigned_jobs_without_global_permission(self):
         request = self.factory.get("/api/jobs/?scope=all")
         force_authenticate(request, user=self.assignee)
@@ -1010,6 +1055,100 @@ class JobAccessControlTests(TestCase):
         response = JobDetailView.as_view()(request, job_id=self.outsider_job.id)
 
         self.assertEqual(response.status_code, 404)
+
+
+class ExtensionJobCreateViewTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username="ext-job-user", email="ext-job@example.com", password="x")
+        self.profile = UserProfile.objects.create(user=self.user)
+        self.company = Company.objects.create(profile=self.profile, name="ext company")
+
+    def test_extension_create_allows_blank_job_id(self):
+        request = self.factory.post(
+            "/api/extension/jobs/",
+            {
+                "company_id": self.company.id,
+                "job_id": "",
+                "role": "Extension Role",
+                "job_link": "https://example.com/jobs/123",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = ExtensionJobCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 201)
+        created = Job.objects.get(id=response.data["job"]["id"])
+        self.assertEqual(created.job_id, "")
+
+
+class ExtensionLookupViewTests(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create_user(username="ext-lookup-user", email="ext-lookup@example.com", password="x")
+        self.profile = UserProfile.objects.create(user=self.user)
+        self.other = User.objects.create_user(username="ext-lookup-other", email="ext-lookup-other@example.com", password="x")
+        self.other_profile = UserProfile.objects.create(user=self.other)
+        self.company = Company.objects.create(profile=self.profile, name="acme")
+        Company.objects.create(profile=self.other_profile, name="acme")
+        Company.objects.create(profile=self.profile, name="beta")
+        Location.objects.create(name="Bengaluru")
+        Location.objects.create(name="Hyderabad")
+        Job.objects.create(company=self.company, role="Backend Engineer", job_link="https://example.com/backend")
+        Job.objects.create(company=self.company, role="Backend Engineer", job_link="https://example.com/backend-2")
+        Job.objects.create(company=self.company, role="Fullstack Engineer", job_link="https://example.com/fullstack")
+        Employee.objects.create(
+            owner_profile=self.profile,
+            company=self.company,
+            name="Recruiter One",
+            JobRole="Talent Acquisition Specialist",
+            department="HR",
+            profile="https://linkedin.com/in/recruiter-one",
+        )
+        Employee.objects.create(
+            owner_profile=self.profile,
+            company=self.company,
+            name="Engineer Two",
+            JobRole="Hiring Manager",
+            department="Engineering",
+            profile="https://linkedin.com/in/engineer-two",
+        )
+
+    def test_extension_company_search_returns_unique_names(self):
+        request = self.factory.get("/api/extension/companies/?q=")
+        force_authenticate(request, user=self.user)
+
+        response = ExtensionCompanySearchView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        names = [row["name"] for row in response.data.get("results") or []]
+        self.assertEqual(names, ["acme", "beta"])
+
+    def test_extension_form_meta_returns_unique_locations(self):
+        request = self.factory.get("/api/extension/form-meta/")
+        force_authenticate(request, user=self.user)
+
+        response = ExtensionFormMetaView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        locations = [row["value"] for row in response.data.get("location_options") or []]
+        self.assertEqual(locations, ["Bengaluru", "Hyderabad"])
+
+    def test_extension_form_meta_returns_unique_roles_and_departments(self):
+        request = self.factory.get("/api/extension/form-meta/")
+        force_authenticate(request, user=self.user)
+
+        response = ExtensionFormMetaView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        job_roles = [row["value"] for row in response.data.get("job_role_options") or []]
+        employee_roles = [row["value"] for row in response.data.get("employee_role_options") or []]
+        departments = [row["value"] for row in response.data.get("department_options") or []]
+        self.assertEqual(job_roles, ["Backend Engineer", "Fullstack Engineer"])
+        self.assertEqual(employee_roles, ["Hiring Manager", "Talent Acquisition Specialist"])
+        self.assertEqual(departments, ["HR", "Engineering", "Other"])
 
 
 class CompanyEmployeeAccessControlTests(TestCase):

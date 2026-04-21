@@ -454,14 +454,6 @@ def _validate_tracking_templates(templates, mail_type='fresh'):
         return 'Select at least one template.'
     if len(rows) > 5:
         return 'Select at most 5 templates.'
-
-    if len(rows) < 3:
-        return 'For fresh mail, select at least 3 templates.'
-    categories = [_template_category(item) for item in rows]
-    if 'opening' not in categories:
-        return 'For fresh mail, include at least one Opening template.'
-    if 'closing' not in categories:
-        return 'For fresh mail, include at least one Closing template.'
     return ''
 
 
@@ -4533,15 +4525,14 @@ class JobListCreateView(JobAccessMixin, APIView):
         except ValueError as exc:
             return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         job_id_value = str(data.get('job_id') or '').strip()
-        if not job_id_value:
-            return Response({'job_id': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
-        exists = _workspace_owner_jobs_for_user(request.user).filter(
-            company=company,
-            job_id__iexact=job_id_value,
-            is_removed=False,
-        ).exists()
-        if exists:
-            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
+        if job_id_value:
+            exists = _workspace_owner_jobs_for_user(request.user).filter(
+                company=company,
+                job_id__iexact=job_id_value,
+                is_removed=False,
+            ).exists()
+            if exists:
+                return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
         data['company'] = company.id
         data['job_id'] = job_id_value
         data.pop('new_company_name', None)
@@ -4601,15 +4592,14 @@ class JobDetailView(JobAccessMixin, APIView):
                     return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
             data.pop('new_company_name', None)
         target_job_id = str(data.get('job_id') if 'job_id' in data else row.job_id).strip()
-        if not target_job_id:
-            return Response({'job_id': ['This field may not be blank.']}, status=status.HTTP_400_BAD_REQUEST)
-        duplicate = Job.objects.filter(
-            company=target_company,
-            job_id__iexact=target_job_id,
-            is_removed=False,
-        ).exclude(id=row.id).exists()
-        if duplicate:
-            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
+        if target_job_id:
+            duplicate = Job.objects.filter(
+                company=target_company,
+                job_id__iexact=target_job_id,
+                is_removed=False,
+            ).exclude(id=row.id).exists()
+            if duplicate:
+                return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
         data['job_id'] = target_job_id
         serializer = JobSerializer(row, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
@@ -4970,6 +4960,48 @@ class ExtensionFormMetaView(APIView):
 
     def get(self, request):
         actor = _resolve_extension_user(request)
+        accessible_profile_ids = _accessible_profile_ids_for_user(actor) if actor else []
+        location_names = list(
+            Location.objects
+            .exclude(name__isnull=True)
+            .exclude(name__exact='')
+            .values_list('name', flat=True)
+            .order_by('name')
+            .distinct()
+        )
+        job_roles = list(
+            Job.objects
+            .filter(company__profile_id__in=accessible_profile_ids)
+            .exclude(role__isnull=True)
+            .exclude(role__exact='')
+            .values_list('role', flat=True)
+            .order_by('role')
+            .distinct()
+        ) if accessible_profile_ids else []
+        employee_roles = list(
+            Employee.objects
+            .filter(owner_profile_id__in=accessible_profile_ids)
+            .exclude(JobRole__isnull=True)
+            .exclude(JobRole__exact='')
+            .values_list('JobRole', flat=True)
+            .order_by('JobRole')
+            .distinct()
+        ) if accessible_profile_ids else []
+        department_seed = ['HR', 'Engineering', 'Other']
+        existing_departments = list(
+            Employee.objects
+            .filter(owner_profile_id__in=accessible_profile_ids)
+            .exclude(department__isnull=True)
+            .exclude(department__exact='')
+            .values_list('department', flat=True)
+            .order_by('department')
+            .distinct()
+        ) if accessible_profile_ids else []
+        department_values = []
+        for value in [*department_seed, *existing_departments]:
+            normalized = str(value or '').strip()
+            if normalized and normalized not in department_values:
+                department_values.append(normalized)
         posted_date_options = [
             {'value': 'today', 'label': 'Today'},
             {'value': 'yesterday', 'label': 'Yesterday'},
@@ -4977,18 +5009,26 @@ class ExtensionFormMetaView(APIView):
             {'value': 'last_7_days', 'label': 'Last 7 Days'},
             {'value': 'custom', 'label': 'Posted Date'},
         ]
-        location_rows = Location.objects.all().order_by('name')[:10]
         return Response(
             {
                 'department_options': [
-                    {'value': 'HR', 'label': 'HR'},
-                    {'value': 'Engineering', 'label': 'Engineering'},
-                    {'value': 'Other', 'label': 'Other'},
+                    {'value': value, 'label': value}
+                    for value in department_values
+                ],
+                'job_role_options': [
+                    {'value': str(value or '').strip(), 'label': str(value or '').strip()}
+                    for value in job_roles
+                    if str(value or '').strip()
+                ],
+                'employee_role_options': [
+                    {'value': str(value or '').strip(), 'label': str(value or '').strip()}
+                    for value in employee_roles
+                    if str(value or '').strip()
                 ],
                 'location_options': [
-                    {'value': str(row.name or '').strip(), 'label': str(row.name or '').strip()}
-                    for row in location_rows
-                    if str(row.name or '').strip()
+                    {'value': str(name or '').strip(), 'label': str(name or '').strip()}
+                    for name in location_names
+                    if str(name or '').strip()
                 ],
                 'posted_date_options': posted_date_options,
                 'workspace_role': (
@@ -5015,16 +5055,22 @@ class ExtensionCompanySearchView(APIView):
         rows = Company.objects.filter(profile_id__in=_accessible_profile_ids_for_user(actor))
         if q:
             rows = rows.filter(name__icontains=q)
-        rows = rows.order_by('name')[:50]
+        names = list(
+            rows.exclude(name__isnull=True)
+            .exclude(name__exact='')
+            .values_list('name', flat=True)
+            .order_by('name')
+            .distinct()[:100]
+        )
         return Response(
             {
                 'results': [
                     {
-                        'id': row.id,
-                        'name': row.name,
-                        'mail_format': str(row.mail_format or '').strip(),
+                        'id': name,
+                        'name': name,
+                        'mail_format': '',
                     }
-                    for row in rows
+                    for name in names
                 ]
             },
             status=status.HTTP_200_OK,
@@ -5111,8 +5157,6 @@ class ExtensionJobCreateView(APIView):
         applied_at = timezone.localdate() if is_applied else None
 
         missing = []
-        if not job_id_value:
-            missing.append('job_id')
         if not role_value:
             missing.append('role')
         if not job_link_value:
@@ -5123,16 +5167,17 @@ class ExtensionJobCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        duplicate = Job.objects.filter(
-            company=company,
-            job_id__iexact=job_id_value,
-            is_removed=False,
-        ).exists()
-        if duplicate:
-            return Response(
-                {'detail': 'This company + job_id already exists.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if job_id_value:
+            duplicate = Job.objects.filter(
+                company=company,
+                job_id__iexact=job_id_value,
+                is_removed=False,
+            ).exists()
+            if duplicate:
+                return Response(
+                    {'detail': 'This company + job_id already exists.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         created = Job.objects.create(
             company=company,
