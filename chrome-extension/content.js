@@ -15,13 +15,13 @@
 
   function extractJobTitle() {
     if (/greenhouse\.io$/i.test(String(window.location.hostname || ''))) {
-      return getTextFromSelectors([
+      return cleanRoleText(getTextFromSelectors([
         '.app-title',
         '.job__title',
         'main h1',
         'article h1',
         'h1',
-      ])
+      ]))
     }
     const el = document.querySelector('[data-automation-id="jobPostingHeader"]')
     if (!el) return ''
@@ -31,10 +31,10 @@
       .filter(Boolean)
     for (const line of lines) {
       if (!/apply|remote|location|time type|posted|job requisition/i.test(line)) {
-        return line
+        return cleanRoleText(line)
       }
     }
-    return lines[0] || ''
+    return cleanRoleText(lines[0] || '')
   }
 
   function parseDaysAgoToIsoDate(text) {
@@ -167,7 +167,7 @@
     ])
 
     return {
-      jobTitle: String(jobTitle || '').trim(),
+      jobTitle: cleanRoleText(jobTitle),
       companyName: cleanCompanyName(companyName) || normalizeCompanyToken(companyName),
       location: String(location || '').trim(),
       postedDate: '',
@@ -351,6 +351,9 @@
     let text = String(value || '').replace(/\s+/g, ' ').trim()
     if (!text) return ''
     text = text
+      .replace(/\s*(?:\.\.\.|…)\s*more$/i, '')
+      .replace(/\s*(?:see\s+more|show\s+more|read\s+more)$/i, '')
+      .replace(/\s*(?:more|less)$/i, '')
       .replace(/\s*-\s*LinkedIn.*$/i, '')
       .replace(/\s*\|\s*LinkedIn.*$/i, '')
       .replace(/\s+at\s+.+$/i, '')
