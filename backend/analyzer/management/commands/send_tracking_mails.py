@@ -1010,9 +1010,8 @@ class Command(BaseCommand):
         if not items:
             return False
         if normalized_mail_type == "followed_up":
-            return len(items) >= 1
-        categories = [self._template_category(item) for item in items]
-        return len(items) >= 3 and "opening" in categories and "closing" in categories
+            return 1 <= len(items) <= 2
+        return len(items) >= 1
 
     def _resolve_employee_email(self, employee, pattern):
         existing = str(employee.email or "").strip()

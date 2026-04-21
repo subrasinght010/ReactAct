@@ -454,14 +454,6 @@ def _validate_tracking_templates(templates, mail_type='fresh'):
         return 'Select at least one template.'
     if len(rows) > 5:
         return 'Select at most 5 templates.'
-
-    if len(rows) < 3:
-        return 'For fresh mail, select at least 3 templates.'
-    categories = [_template_category(item) for item in rows]
-    if 'opening' not in categories:
-        return 'For fresh mail, include at least one Opening template.'
-    if 'closing' not in categories:
-        return 'For fresh mail, include at least one Closing template.'
     return ''
 
 
@@ -4533,15 +4525,14 @@ class JobListCreateView(JobAccessMixin, APIView):
         except ValueError as exc:
             return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         job_id_value = str(data.get('job_id') or '').strip()
-        if not job_id_value:
-            return Response({'job_id': ['This field is required.']}, status=status.HTTP_400_BAD_REQUEST)
-        exists = _workspace_owner_jobs_for_user(request.user).filter(
-            company=company,
-            job_id__iexact=job_id_value,
-            is_removed=False,
-        ).exists()
-        if exists:
-            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
+        if job_id_value:
+            exists = _workspace_owner_jobs_for_user(request.user).filter(
+                company=company,
+                job_id__iexact=job_id_value,
+                is_removed=False,
+            ).exists()
+            if exists:
+                return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
         data['company'] = company.id
         data['job_id'] = job_id_value
         data.pop('new_company_name', None)
@@ -4601,15 +4592,14 @@ class JobDetailView(JobAccessMixin, APIView):
                     return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
             data.pop('new_company_name', None)
         target_job_id = str(data.get('job_id') if 'job_id' in data else row.job_id).strip()
-        if not target_job_id:
-            return Response({'job_id': ['This field may not be blank.']}, status=status.HTTP_400_BAD_REQUEST)
-        duplicate = Job.objects.filter(
-            company=target_company,
-            job_id__iexact=target_job_id,
-            is_removed=False,
-        ).exclude(id=row.id).exists()
-        if duplicate:
-            return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
+        if target_job_id:
+            duplicate = Job.objects.filter(
+                company=target_company,
+                job_id__iexact=target_job_id,
+                is_removed=False,
+            ).exclude(id=row.id).exists()
+            if duplicate:
+                return Response({'job_id': ['This job id already exists for this company.']}, status=status.HTTP_400_BAD_REQUEST)
         data['job_id'] = target_job_id
         serializer = JobSerializer(row, data=data, partial=True, context={'request': request})
         if serializer.is_valid():
@@ -5111,8 +5101,6 @@ class ExtensionJobCreateView(APIView):
         applied_at = timezone.localdate() if is_applied else None
 
         missing = []
-        if not job_id_value:
-            missing.append('job_id')
         if not role_value:
             missing.append('role')
         if not job_link_value:
@@ -5123,16 +5111,17 @@ class ExtensionJobCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        duplicate = Job.objects.filter(
-            company=company,
-            job_id__iexact=job_id_value,
-            is_removed=False,
-        ).exists()
-        if duplicate:
-            return Response(
-                {'detail': 'This company + job_id already exists.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        if job_id_value:
+            duplicate = Job.objects.filter(
+                company=company,
+                job_id__iexact=job_id_value,
+                is_removed=False,
+            ).exists()
+            if duplicate:
+                return Response(
+                    {'detail': 'This company + job_id already exists.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         created = Job.objects.create(
             company=company,

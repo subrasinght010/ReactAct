@@ -226,8 +226,8 @@ function JobsPage() {
     const role = String(jobForm.role || '').trim()
     const companySel = String(jobForm.company || '').trim()
     const rawNew = String(jobForm.new_company_name || '').trim()
-    if (!jobId || !role) {
-      setFormError('Job ID and Role are required.')
+    if (!role) {
+      setFormError('Role is required.')
       return
     }
     if (!rawNew && !companySel) {
@@ -498,7 +498,7 @@ function JobsPage() {
             <p className="hint jobs-form-hint tracking-form-span-2">If the company is missing, type a name below. Extra spaces are removed; matching names reuse one company.</p>
             <div className="tracking-form-section-title tracking-form-span-2">Role & Identity</div>
             <label>
-              Job ID*
+              Job ID
               <input value={jobForm.job_id} onChange={(e) => setJobForm((prev) => ({ ...prev, job_id: e.target.value }))} />
             </label>
             <label>

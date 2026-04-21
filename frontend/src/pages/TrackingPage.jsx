@@ -22,6 +22,7 @@ import {
 } from '../api'
 
 const EMPTY_MILESTONE_DOTS = 20
+const TRACKING_TEMPLATE_SLOT_COUNT = 2
 const WAVE_INSET_PX = 88
 const WAVE_POINT_SPACING_PX = 50
 const WAVE_SVG_TOP_PX = 11
@@ -443,11 +444,21 @@ function templateSelectionError(templateChoice, values, options) {
     .map((id) => (Array.isArray(options) ? options.find((item) => String(item?.id || '') === String(id)) : null))
     .filter(Boolean)
   if (rows.length !== ids.length) return 'One or more selected templates were not found.'
-  if (rows.length < 3) return 'For fresh mail, select at least 3 templates.'
-  const categories = rows.map((item) => String(item?.category || 'general').trim().toLowerCase())
-  if (!categories.includes('opening')) return 'For fresh mail, include at least one Opening template.'
-  if (!categories.includes('closing')) return 'For fresh mail, include at least one Closing template.'
   return ''
+}
+
+function selectedTemplatePreviewRows(values, options) {
+  const ids = orderedAchievementIds(values).slice(0, TRACKING_TEMPLATE_SLOT_COUNT)
+  const source = Array.isArray(options) ? options : []
+  return ids
+    .map((id) => source.find((item) => String(item?.id || item?.value || '') === String(id)))
+    .filter(Boolean)
+    .map((item) => ({
+      id: String(item?.id || item?.value || ''),
+      label: formatTemplateLibraryLabel(item),
+      text: String(item?.paragraph || item?.achievement || '').trim(),
+    }))
+    .filter((item) => item.text)
 }
 
 function orderedAchievementIds(values) {
@@ -504,7 +515,7 @@ function buildFollowUpCandidates(row) {
 }
 
 function syncLegacyAchievementFields(form, options) {
-  const ids = orderedAchievementIds(form?.achievement_ids_ordered)
+  const ids = orderedAchievementIds(form?.achievement_ids_ordered).slice(0, TRACKING_TEMPLATE_SLOT_COUNT)
   const first = (Array.isArray(options) ? options : []).find((item) => String(item?.id || '') === String(ids[0] || ''))
   return {
     ...form,
@@ -569,7 +580,10 @@ function hardcodedAchievementSlotDisabled(values, index) {
 }
 
 function updateHardcodedAchievementIds(values, index, nextValue) {
-  const nextIds = Array.from({ length: 5 }, (_, currentIndex) => String((Array.isArray(values) ? values[currentIndex] : '') || '').trim())
+  const nextIds = Array.from(
+    { length: TRACKING_TEMPLATE_SLOT_COUNT },
+    (_, currentIndex) => String((Array.isArray(values) ? values[currentIndex] : '') || '').trim(),
+  )
   nextIds[index] = String(nextValue || '').trim()
   for (let currentIndex = index + 1; currentIndex < nextIds.length; currentIndex += 1) {
     if (!nextIds[currentIndex - 1]) nextIds[currentIndex] = ''
@@ -991,14 +1005,14 @@ function TrackingPage() {
         has_attachment: Boolean(fullRow.resume_preview || fullRow.tailored_resume),
         achievement_id: fullRow.achievement_id ? String(fullRow.achievement_id) : '',
         achievement_ids_ordered: Array.isArray(fullRow.achievement_ids_ordered) && fullRow.achievement_ids_ordered.length
-          ? fullRow.achievement_ids_ordered.map((id) => String(id))
+          ? fullRow.achievement_ids_ordered.map((id) => String(id)).slice(0, TRACKING_TEMPLATE_SLOT_COUNT)
           : (String(fullRow.mail_type || 'fresh').trim() === 'followed_up' && fullRow.personalized_template_id
             ? [String(fullRow.personalized_template_id)]
             : (fullRow.achievement_id ? [String(fullRow.achievement_id)] : [])),
         template_ids_ordered: Array.isArray(fullRow.template_ids_ordered)
-          ? fullRow.template_ids_ordered.map((id) => String(id))
+          ? fullRow.template_ids_ordered.map((id) => String(id)).slice(0, TRACKING_TEMPLATE_SLOT_COUNT)
           : (Array.isArray(fullRow.achievement_ids_ordered)
-            ? fullRow.achievement_ids_ordered.map((id) => String(id))
+            ? fullRow.achievement_ids_ordered.map((id) => String(id)).slice(0, TRACKING_TEMPLATE_SLOT_COUNT)
             : (fullRow.achievement_id ? [String(fullRow.achievement_id)] : [])),
         personalized_template_id: fullRow.personalized_template_id ? String(fullRow.personalized_template_id) : '',
         use_hardcoded_personalized_intro: Boolean(fullRow.use_hardcoded_personalized_intro),
@@ -1411,6 +1425,7 @@ function TrackingPage() {
     () => (Array.isArray(achievementOptions) ? achievementOptions : [])
       .filter((item) => String(item?.category || '').trim().toLowerCase() === 'personalized')
       .map((item) => ({
+        ...item,
         value: String(item.id),
         label: formatTemplateLibraryLabel(item),
       })),
@@ -1420,10 +1435,39 @@ function TrackingPage() {
     () => (Array.isArray(achievementOptions) ? achievementOptions : [])
       .filter((item) => String(item?.category || '').trim().toLowerCase() === 'follow_up')
       .map((item) => ({
+        ...item,
         value: String(item.id),
         label: formatTemplateLibraryLabel(item),
       })),
     [achievementOptions],
+  )
+  const createSelectedTemplatePreviews = useMemo(
+    () => selectedTemplatePreviewRows(
+      createForm?.achievement_ids_ordered,
+      String(createForm?.mail_type || '').trim() === 'followed_up' ? followUpTemplateOptions : createAchievementOptionsForMode,
+    ),
+    [createForm?.achievement_ids_ordered, createForm?.mail_type, createAchievementOptionsForMode, followUpTemplateOptions],
+  )
+  const editSelectedTemplatePreviews = useMemo(
+    () => selectedTemplatePreviewRows(
+      editForm?.achievement_ids_ordered,
+      String(editForm?.mail_type || '').trim() === 'followed_up' ? followUpTemplateOptions : editAchievementOptionsForMode,
+    ),
+    [editForm?.achievement_ids_ordered, editForm?.mail_type, editAchievementOptionsForMode, followUpTemplateOptions],
+  )
+  const createSelectedPersonalizedPreview = useMemo(
+    () => selectedTemplatePreviewRows(
+      createForm?.personalized_template_id ? [createForm.personalized_template_id] : [],
+      personalizedTemplateOptions,
+    ),
+    [createForm?.personalized_template_id, personalizedTemplateOptions],
+  )
+  const editSelectedPersonalizedPreview = useMemo(
+    () => selectedTemplatePreviewRows(
+      editForm?.personalized_template_id ? [editForm.personalized_template_id] : [],
+      personalizedTemplateOptions,
+    ),
+    [editForm?.personalized_template_id, personalizedTemplateOptions],
   )
   const createImmediateRuleWarning = useMemo(
     () => buildImmediateTrackingRuleWarning({
@@ -1941,9 +1985,9 @@ function TrackingPage() {
             {createForm.mail_type !== 'followed_up' ? (
               <div className="tracking-form-span-2 tracking-template-stack">
                 <div className="tracking-form-section-title">Templates</div>
-                <p className="hint">Fresh mail: minimum 3 templates with at least one Opening and one Closing. Duplicate selection is blocked.</p>
+                <p className="hint">Fresh mail: select at least 1 template. Duplicate selection is blocked.</p>
                 <div className="tracking-template-stack-list">
-                  {[0, 1, 2, 3, 4].map((index) => (
+                  {Array.from({ length: TRACKING_TEMPLATE_SLOT_COUNT }, (_, index) => index).map((index) => (
                     <label key={`create-template-${index}`} className="tracking-template-stack-item">
                       {`Template ${index + 1}`}
                       <SingleSelectDropdown
@@ -1974,6 +2018,16 @@ function TrackingPage() {
                     </label>
                   ))}
                 </div>
+                {createSelectedTemplatePreviews.length ? (
+                  <div className="tracking-template-preview-list">
+                    {createSelectedTemplatePreviews.map((item, index) => (
+                      <article key={`create-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                        <div className="tracking-template-preview-title">{item.label || `Template ${index + 1}`}</div>
+                        <p className="tracking-template-preview-text">{item.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {createForm.mail_type === 'followed_up' ? (
@@ -1981,7 +2035,7 @@ function TrackingPage() {
                 <div className="tracking-form-section-title">Follow Up Templates</div>
                 <p className="hint">For follow up, select at least 1 and at most 2 Follow Up templates.</p>
                 <div className="tracking-template-stack-list">
-                  {[0, 1].map((index) => (
+                  {Array.from({ length: TRACKING_TEMPLATE_SLOT_COUNT }, (_, index) => index).map((index) => (
                     <label key={`create-followup-template-${index}`} className="tracking-template-stack-item">
                       {`Follow Up Template ${index + 1}`}
                       <SingleSelectDropdown
@@ -2008,6 +2062,16 @@ function TrackingPage() {
                     </label>
                   ))}
                 </div>
+                {createSelectedTemplatePreviews.length ? (
+                  <div className="tracking-template-preview-list">
+                    {createSelectedTemplatePreviews.map((item, index) => (
+                      <article key={`create-followup-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                        <div className="tracking-template-preview-title">{item.label || `Follow Up Template ${index + 1}`}</div>
+                        <p className="tracking-template-preview-text">{item.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <>
@@ -2025,17 +2089,29 @@ function TrackingPage() {
                   Use Personalized Template For Employee
                 </label>
                 {createForm.use_hardcoded_personalized_intro ? (
-                  <label className="tracking-form-span-2">
-                    Personalized Template
-                    <SingleSelectDropdown
-                      value={createForm.personalized_template_id || ''}
-                      placeholder="Search and select personalized template"
-                      searchPlaceholder="Type personalized template name"
-                      clearLabel="No personalized template selected"
-                      options={personalizedTemplateOptions}
-                      onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
-                    />
-                  </label>
+                  <div className="tracking-form-span-2 tracking-template-stack">
+                    <label className="tracking-template-stack-item">
+                      Personalized Template
+                      <SingleSelectDropdown
+                        value={createForm.personalized_template_id || ''}
+                        placeholder="Search and select personalized template"
+                        searchPlaceholder="Type personalized template name"
+                        clearLabel="No personalized template selected"
+                        options={personalizedTemplateOptions}
+                        onChange={(nextValue) => setCreateForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
+                      />
+                    </label>
+                    {createSelectedPersonalizedPreview.length ? (
+                      <div className="tracking-template-preview-list">
+                        {createSelectedPersonalizedPreview.map((item, index) => (
+                          <article key={`create-personalized-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                            <div className="tracking-template-preview-title">{item.label || 'Personalized Template'}</div>
+                            <p className="tracking-template-preview-text">{item.text}</p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <p className="hint tracking-form-span-2">Mail content will come fully from your selected templates. Add a personalized template only if you want an employee-specific intro block.</p>
                 )}
@@ -2318,9 +2394,9 @@ function TrackingPage() {
             {editForm.mail_type !== 'followed_up' ? (
               <div className="tracking-form-span-2 tracking-template-stack">
                 <div className="tracking-form-section-title">Templates</div>
-                <p className="hint">Fresh mail: minimum 3 templates with at least one Opening and one Closing. Duplicate selection is blocked.</p>
+                <p className="hint">Fresh mail: select at least 1 template. Duplicate selection is blocked.</p>
                 <div className="tracking-template-stack-list">
-                  {[0, 1, 2, 3, 4].map((index) => (
+                  {Array.from({ length: TRACKING_TEMPLATE_SLOT_COUNT }, (_, index) => index).map((index) => (
                     <label key={`edit-template-${index}`} className="tracking-template-stack-item">
                       {`Template ${index + 1}`}
                       <SingleSelectDropdown
@@ -2351,6 +2427,16 @@ function TrackingPage() {
                     </label>
                   ))}
                 </div>
+                {editSelectedTemplatePreviews.length ? (
+                  <div className="tracking-template-preview-list">
+                    {editSelectedTemplatePreviews.map((item, index) => (
+                      <article key={`edit-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                        <div className="tracking-template-preview-title">{item.label || `Template ${index + 1}`}</div>
+                        <p className="tracking-template-preview-text">{item.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {editForm.mail_type === 'followed_up' ? (
@@ -2358,7 +2444,7 @@ function TrackingPage() {
                 <div className="tracking-form-section-title">Follow Up Templates</div>
                 <p className="hint">For follow up, select at least 1 and at most 2 Follow Up templates.</p>
                 <div className="tracking-template-stack-list">
-                  {[0, 1].map((index) => (
+                  {Array.from({ length: TRACKING_TEMPLATE_SLOT_COUNT }, (_, index) => index).map((index) => (
                     <label key={`edit-followup-template-${index}`} className="tracking-template-stack-item">
                       {`Follow Up Template ${index + 1}`}
                       <SingleSelectDropdown
@@ -2385,6 +2471,16 @@ function TrackingPage() {
                     </label>
                   ))}
                 </div>
+                {editSelectedTemplatePreviews.length ? (
+                  <div className="tracking-template-preview-list">
+                    {editSelectedTemplatePreviews.map((item, index) => (
+                      <article key={`edit-followup-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                        <div className="tracking-template-preview-title">{item.label || `Follow Up Template ${index + 1}`}</div>
+                        <p className="tracking-template-preview-text">{item.text}</p>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <>
@@ -2402,17 +2498,29 @@ function TrackingPage() {
                   Use Personalized Template For Employee
                 </label>
                 {editForm.use_hardcoded_personalized_intro ? (
-                  <label className="tracking-form-span-2">
-                    Personalized Template
-                    <SingleSelectDropdown
-                      value={editForm.personalized_template_id || ''}
-                      placeholder="Search and select personalized template"
-                      searchPlaceholder="Type personalized template name"
-                      clearLabel="No personalized template selected"
-                      options={personalizedTemplateOptions}
-                      onChange={(nextValue) => setEditForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
-                    />
-                  </label>
+                  <div className="tracking-form-span-2 tracking-template-stack">
+                    <label className="tracking-template-stack-item">
+                      Personalized Template
+                      <SingleSelectDropdown
+                        value={editForm.personalized_template_id || ''}
+                        placeholder="Search and select personalized template"
+                        searchPlaceholder="Type personalized template name"
+                        clearLabel="No personalized template selected"
+                        options={personalizedTemplateOptions}
+                        onChange={(nextValue) => setEditForm((prev) => ({ ...prev, personalized_template_id: nextValue || '' }))}
+                      />
+                    </label>
+                    {editSelectedPersonalizedPreview.length ? (
+                      <div className="tracking-template-preview-list">
+                        {editSelectedPersonalizedPreview.map((item, index) => (
+                          <article key={`edit-personalized-template-preview-${item.id || index}`} className="tracking-template-preview-card">
+                            <div className="tracking-template-preview-title">{item.label || 'Personalized Template'}</div>
+                            <p className="tracking-template-preview-text">{item.text}</p>
+                          </article>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <p className="hint tracking-form-span-2">Mail content will come fully from your selected templates. Add a personalized template only if you want an employee-specific intro block.</p>
                 )}
