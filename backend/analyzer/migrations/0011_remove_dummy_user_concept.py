@@ -10,6 +10,7 @@ def delete_dummy_permission(apps, schema_editor):
     ).delete()
 
 
+
 class Migration(migrations.Migration):
 
     dependencies = [
