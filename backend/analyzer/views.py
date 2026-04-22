@@ -119,6 +119,19 @@ def _accessible_profile_ids_for_user(user):
     return _owned_profile_ids_for_user(user)
 
 
+def _find_accessible_company_by_name(user, raw_name, *, exclude_id=None, for_write=False):
+    normalized = normalize_company_name(raw_name)
+    if not normalized:
+        return None
+    rows = filter_companies_for_user(user, Company.objects.all(), for_write=for_write)
+    if exclude_id is not None:
+        rows = rows.exclude(id=exclude_id)
+    for company in rows.only('id', 'name').order_by('id'):
+        if normalize_company_name(company.name) == normalized:
+            return company
+    return None
+
+
 def _accessible_jobs_for_user(user):
     return filter_jobs_for_user(user, Job.objects.all())
 
@@ -4302,8 +4315,8 @@ class CompanyListCreateView(CompanyAccessMixin, APIView):
         company_name = normalize_company_name(payload.get('name'))
         if not company_name:
             return Response({'name': ['Company name is required.']}, status=status.HTTP_400_BAD_REQUEST)
-        exists = Company.objects.filter(profile=workspace_profile, name__iexact=company_name).exists()
-        if exists:
+        duplicate = _find_accessible_company_by_name(request.user, company_name, for_write=True)
+        if duplicate is not None:
             return Response({'name': ['This company already exists.']}, status=status.HTTP_400_BAD_REQUEST)
         payload['name'] = company_name
         serializer = CompanySerializer(data=payload)
@@ -4326,11 +4339,13 @@ class CompanyDetailView(CompanyAccessMixin, APIView):
             company_name = normalize_company_name(payload.get('name'))
             if not company_name:
                 return Response({'name': ['Company name is required.']}, status=status.HTTP_400_BAD_REQUEST)
-            duplicate = Company.objects.filter(
-                profile=row.profile,
-                name__iexact=company_name,
-            ).exclude(id=row.id).exists()
-            if duplicate:
+            duplicate = _find_accessible_company_by_name(
+                request.user,
+                company_name,
+                exclude_id=row.id,
+                for_write=True,
+            )
+            if duplicate is not None:
                 return Response({'name': ['This company already exists.']}, status=status.HTTP_400_BAD_REQUEST)
             payload['name'] = company_name
         serializer = CompanySerializer(row, data=payload, partial=True)
@@ -4530,19 +4545,21 @@ class JobListCreateView(JobAccessMixin, APIView):
             data._mutable = True
         company_id = data.get('company')
         new_company_name = data.get('new_company_name')
-        try:
-            company = resolve_company_for_job(
-                workspace_owner,
-                company_id=company_id,
-                new_company_name=new_company_name,
-            )
-        except Company.DoesNotExist:
-            return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
-        except ValueError as exc:
-            return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+        company = _find_accessible_company_by_name(request.user, new_company_name, for_write=True)
+        if company is None:
+            try:
+                company = resolve_company_for_job(
+                    workspace_owner,
+                    company_id=company_id,
+                    new_company_name=new_company_name,
+                )
+            except Company.DoesNotExist:
+                return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
+            except ValueError as exc:
+                return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
         job_id_value = str(data.get('job_id') or '').strip()
         if job_id_value:
-            exists = _workspace_owner_jobs_for_user(request.user).filter(
+            exists = _writable_jobs_for_user(request.user).filter(
                 company=company,
                 job_id__iexact=job_id_value,
                 is_removed=False,
@@ -4594,18 +4611,20 @@ class JobDetailView(JobAccessMixin, APIView):
             norm_new = normalize_company_name(newn) if newn is not None else ''
             has_company_id = cid is not None and str(cid).strip() != ''
             if norm_new or has_company_id:
-                try:
-                    company = resolve_company_for_job(
-                        row.user,
-                        company_id=cid if has_company_id else None,
-                        new_company_name=newn,
-                    )
-                    data['company'] = company.id
-                    target_company = company
-                except Company.DoesNotExist:
-                    return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
-                except ValueError as exc:
-                    return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+                company = _find_accessible_company_by_name(request.user, newn, for_write=True) if norm_new else None
+                if company is None:
+                    try:
+                        company = resolve_company_for_job(
+                            row.user,
+                            company_id=cid if has_company_id else None,
+                            new_company_name=newn,
+                        )
+                    except Company.DoesNotExist:
+                        return Response({'company': ['Company not found.']}, status=status.HTTP_400_BAD_REQUEST)
+                    except ValueError as exc:
+                        return Response({'company': [str(exc)]}, status=status.HTTP_400_BAD_REQUEST)
+                data['company'] = company.id
+                target_company = company
             data.pop('new_company_name', None)
         target_job_id = str(data.get('job_id') if 'job_id' in data else row.job_id).strip()
         if target_job_id:

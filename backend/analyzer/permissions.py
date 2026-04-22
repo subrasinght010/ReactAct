@@ -111,6 +111,10 @@ def user_has_global_workspace_access(user):
     return _is_superadmin_group_member(user)
 
 
+def user_has_global_resource_read_access(user):
+    return bool(getattr(user, 'is_authenticated', False))
+
+
 def user_has_global_job_write_access(user):
     return user_has_global_workspace_access(user)
 
@@ -263,6 +267,8 @@ class OwnershipModelPermissions(DjangoModelPermissions):
 
 
 def is_job_owner_or_assignee(job, user, *, for_write=False):
+    if not for_write and user_has_global_resource_read_access(user):
+        return True
     if for_write and user_has_global_job_write_access(user):
         return True
     return object_matches_access(
@@ -277,6 +283,8 @@ def is_job_owner_or_assignee(job, user, *, for_write=False):
 
 def filter_jobs_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Job.objects.all()
+    if not for_write and user_has_global_resource_read_access(user):
+        return rows.distinct()
     if for_write and user_has_global_job_write_access(user):
         return rows.distinct()
     access_q = build_owned_or_assigned_q(
@@ -306,6 +314,8 @@ class JobAccessPermission(OwnershipModelPermissions):
 
 
 def is_company_owner(company, user, *, for_write=False):
+    if not for_write and user_has_global_resource_read_access(user):
+        return True
     if user_has_global_workspace_access(user):
         return True
     return object_matches_access(
@@ -320,6 +330,8 @@ def is_company_owner(company, user, *, for_write=False):
 
 def filter_companies_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Company.objects.all()
+    if not for_write and user_has_global_resource_read_access(user):
+        return rows.distinct()
     if user_has_global_workspace_access(user):
         return rows.distinct()
     access_q = build_owned_or_assigned_q(
@@ -347,6 +359,8 @@ class CompanyAccessPermission(OwnershipModelPermissions):
 
 
 def is_employee_owner(employee, user, *, for_write=False):
+    if not for_write and user_has_global_resource_read_access(user):
+        return True
     if user_has_global_workspace_access(user):
         return True
     return object_matches_access(
@@ -361,6 +375,8 @@ def is_employee_owner(employee, user, *, for_write=False):
 
 def filter_employees_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Employee.objects.all()
+    if not for_write and user_has_global_resource_read_access(user):
+        return rows.distinct()
     if user_has_global_workspace_access(user):
         return rows.distinct()
     access_q = build_owned_or_assigned_q(
