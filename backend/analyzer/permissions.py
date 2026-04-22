@@ -30,6 +30,8 @@ METHOD_ACTION_MAP = {
     'DELETE': 'delete',
 }
 
+SUPERADMIN_GROUP_NAME = 'superadmin'
+
 
 def _resource_label(resource):
     return str(resource or 'resource').strip().lower() or 'resource'
@@ -87,6 +89,30 @@ def _role_grants_resource_management(user, resource):
     if role in {UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN} and _resource_label(resource) == 'template':
         return True
     return False
+
+
+def _is_superadmin_group_member(user):
+    if not getattr(user, 'is_authenticated', False):
+        return False
+    group_manager = getattr(user, 'groups', None)
+    if group_manager is None:
+        return False
+    filter_method = getattr(group_manager, 'filter', None)
+    if not callable(filter_method):
+        return False
+    return group_manager.filter(name__iexact=SUPERADMIN_GROUP_NAME).exists()
+
+
+def user_has_global_workspace_access(user):
+    if not getattr(user, 'is_authenticated', False):
+        return False
+    if bool(getattr(user, 'is_superuser', False)):
+        return True
+    return _is_superadmin_group_member(user)
+
+
+def user_has_global_job_write_access(user):
+    return user_has_global_workspace_access(user)
 
 
 def user_can_manage_resource(user, resource, action):
@@ -237,6 +263,8 @@ class OwnershipModelPermissions(DjangoModelPermissions):
 
 
 def is_job_owner_or_assignee(job, user, *, for_write=False):
+    if for_write and user_has_global_job_write_access(user):
+        return True
     return object_matches_access(
         user,
         job,
@@ -249,6 +277,8 @@ def is_job_owner_or_assignee(job, user, *, for_write=False):
 
 def filter_jobs_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Job.objects.all()
+    if for_write and user_has_global_job_write_access(user):
+        return rows.distinct()
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field='created_by_id',
@@ -276,6 +306,8 @@ class JobAccessPermission(OwnershipModelPermissions):
 
 
 def is_company_owner(company, user, *, for_write=False):
+    if user_has_global_workspace_access(user):
+        return True
     return object_matches_access(
         user,
         company,
@@ -288,6 +320,8 @@ def is_company_owner(company, user, *, for_write=False):
 
 def filter_companies_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Company.objects.all()
+    if user_has_global_workspace_access(user):
+        return rows.distinct()
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field=None,
@@ -313,6 +347,8 @@ class CompanyAccessPermission(OwnershipModelPermissions):
 
 
 def is_employee_owner(employee, user, *, for_write=False):
+    if user_has_global_workspace_access(user):
+        return True
     return object_matches_access(
         user,
         employee,
@@ -325,6 +361,8 @@ def is_employee_owner(employee, user, *, for_write=False):
 
 def filter_employees_for_user(user, queryset=None, *, for_write=False):
     rows = queryset if queryset is not None else Employee.objects.all()
+    if user_has_global_workspace_access(user):
+        return rows.distinct()
     access_q = build_owned_or_assigned_q(
         user,
         created_by_field=None,
