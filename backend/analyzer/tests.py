@@ -1024,7 +1024,7 @@ class JobAccessControlTests(TestCase):
         self.owner_job.refresh_from_db()
         self.assertEqual(self.owner_job.job_id, "")
 
-    def test_list_returns_only_owned_or_assigned_jobs_without_global_permission(self):
+    def test_list_returns_all_jobs_for_any_authenticated_user(self):
         request = self.factory.get("/api/jobs/?scope=all")
         force_authenticate(request, user=self.assignee)
 
@@ -1032,7 +1032,7 @@ class JobAccessControlTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         returned_ids = {int(row["id"]) for row in response.data.get("results") or []}
-        self.assertEqual(returned_ids, {self.assigned_job.id})
+        self.assertEqual(returned_ids, {self.owner_job.id, self.assigned_job.id, self.outsider_job.id})
 
     def test_list_returns_all_jobs_with_view_all_job_permission(self):
         request = self.factory.get("/api/jobs/?scope=all")
@@ -1044,13 +1044,14 @@ class JobAccessControlTests(TestCase):
         returned_ids = {int(row["id"]) for row in response.data.get("results") or []}
         self.assertEqual(returned_ids, {self.owner_job.id, self.assigned_job.id, self.outsider_job.id})
 
-    def test_detail_hides_unrelated_job_without_global_permission(self):
+    def test_detail_shows_unrelated_job_for_any_authenticated_user(self):
         request = self.factory.get(f"/api/jobs/{self.outsider_job.id}/")
         force_authenticate(request, user=self.owner)
 
         response = JobDetailView.as_view()(request, job_id=self.outsider_job.id)
 
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(int(response.data["id"]), self.outsider_job.id)
 
     def test_assignee_can_update_job(self):
         request = self.factory.put(
@@ -1087,6 +1088,25 @@ class JobAccessControlTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.outsider_job.refresh_from_db()
         self.assertEqual(self.outsider_job.role, "Updated By Superadmin Group")
+
+    def test_superadmin_group_member_cannot_create_duplicate_company_job_id_pair_via_existing_company_name(self):
+        request = self.factory.post(
+            "/api/jobs/",
+            {
+                "new_company_name": "  OUTSIDER   COMPANY ",
+                "job_id": self.outsider_job.job_id,
+                "role": "Duplicate Attempt",
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.superadmin_member)
+
+        response = JobListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("already exists", str(response.data.get("job_id", [""])[0]).lower())
+        self.assertEqual(Company.objects.filter(name="outsider company").count(), 1)
+        self.assertEqual(Job.objects.filter(company=self.outsider_company, job_id=self.outsider_job.job_id).count(), 1)
 
     def test_view_all_job_does_not_allow_delete_without_ownership(self):
         request = self.factory.delete(f"/api/jobs/{self.outsider_job.id}/")
@@ -1346,7 +1366,7 @@ class CompanyEmployeeAccessControlTests(TestCase):
         superadmin_group = Group.objects.create(name="superadmin")
         self.superadmin_member.groups.add(superadmin_group)
 
-    def test_company_list_is_filtered_to_owner_even_with_scope_all(self):
+    def test_company_list_is_visible_to_any_authenticated_user(self):
         request = self.factory.get("/api/companies/?scope=all")
         force_authenticate(request, user=self.owner)
 
@@ -1355,7 +1375,17 @@ class CompanyEmployeeAccessControlTests(TestCase):
         self.assertEqual(response.status_code, 200)
         names = {str(row.get("name") or "") for row in response.data.get("results") or []}
         self.assertIn("owner co", names)
-        self.assertNotIn("outsider co", names)
+        self.assertIn("outsider co", names)
+
+    def test_employee_list_is_visible_to_any_authenticated_user(self):
+        request = self.factory.get("/api/employees/")
+        force_authenticate(request, user=self.outsider)
+
+        response = EmployeeListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 200)
+        names = {str(row.get("name") or "") for row in response.data or []}
+        self.assertIn("Owner Employee", names)
 
     def test_outsider_cannot_update_other_company(self):
         request = self.factory.put(
@@ -1401,6 +1431,19 @@ class CompanyEmployeeAccessControlTests(TestCase):
         created = Employee.objects.get(id=response.data["id"])
         self.assertEqual(created.company_id, self.outsider_company.id)
         self.assertEqual(created.owner_profile_id, self.superadmin_profile.id)
+
+    def test_superadmin_group_member_cannot_create_duplicate_accessible_company(self):
+        request = self.factory.post(
+            "/api/companies/",
+            {"name": "  OWNER   CO  "},
+            format="json",
+        )
+        force_authenticate(request, user=self.superadmin_member)
+
+        response = CompanyListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(Company.objects.filter(name="owner co").count(), 1)
 
     def test_outsider_cannot_delete_other_employee(self):
         request = self.factory.delete(f"/api/employees/{self.owner_employee.id}/")
