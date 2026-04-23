@@ -1282,7 +1282,7 @@ class Command(BaseCommand):
                 sender_contact = normalized_contact_number
             trailing_blocks = [value for value in [sender_email, sender_contact] if str(value or "").strip()]
             if trailing_blocks:
-                return "\n".join(sign_lines) + "\n\n" + "\n\n".join(trailing_blocks)
+                return "\n".join([*sign_lines, *trailing_blocks])
         return "\n".join(sign_lines)
 
     def _inject_dynamic_names(self, text, employee_name, sender_name):

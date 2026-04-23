@@ -397,7 +397,7 @@ class SendTrackingMailsThreadingTests(TestCase):
 
         self.assertEqual(
             signature,
-            "Thanks,\nSubrat Singh\n\nprofile@example.com\n\n+91 9999999999",
+            "Thanks,\nSubrat Singh\nprofile@example.com\n+91 9999999999",
         )
 
     def test_build_signature_keeps_follow_up_short_with_full_name_only(self):
