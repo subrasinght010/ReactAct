@@ -14,7 +14,9 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from analyzer.management.commands.send_tracking_mails import Command
 from analyzer.models import Company, Employee, Interview, Job, Location, MailTrackingEvent, ProfilePanel, Resume, SubjectTemplate, Template, Tracking, TrackingAction, UserProfile
 from analyzer.profile_settings import resolve_imap_settings, resolve_openai_settings, resolve_smtp_settings
+from analyzer.resume_rendering import builder_data_hash
 from analyzer.serializers import CompanySerializer, InterviewSerializer, JobSerializer, ProfilePanelSerializer, SubjectTemplateSerializer, UserProfileSerializer
+from analyzer.tailor import sanitize_builder_data
 from analyzer.tracking_mail_utils import ensure_mail_tracking
 from analyzer.views import (
     ApplicationTrackingDetailView,
@@ -35,6 +37,7 @@ from analyzer.views import (
     ResumeDetailView,
     ResumeListCreateView,
     SubjectTemplateListCreateView,
+    TailoredResumeListCreateView,
     TemplateDetailView,
     TemplateListCreateView,
     _validate_tracking_templates,
@@ -272,27 +275,22 @@ class SendTrackingMailsThreadingTests(TestCase):
         self.assertEqual(DummySMTP.last_from_email, "profile-sender@example.com")
         self.assertEqual(DummySMTP.last_to_emails, ["hr@acme.com"])
 
-    def test_attachment_fallback_uses_in_memory_pdf_bytes(self):
+    def test_attachment_requires_saved_matching_ats_pdf(self):
         self.resume.builder_data = {
             "resumeTitle": "Base Resume",
             "fullName": "Subrat Singh",
             "summary": "<p>Backend engineer</p>",
         }
         self.resume.ats_pdf_path = ""
-        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "updated_at"])
+        self.resume.ats_pdf_builder_hash = ""
+        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
 
         with patch.object(Command, "_build_builder_pdf_bytes", return_value=b"%PDF-1.4 generated") as mocked_builder_pdf:
             payload = self.command._resolve_attachment_payload(self.tracking)
 
-        self.assertIsNone(payload.get("path"))
-        attachment_bytes = payload.get("bytes")
-        self.assertTrue(isinstance(attachment_bytes, (bytes, bytearray)))
-        self.assertTrue(bytes(attachment_bytes).startswith(b"%PDF-1.4"))
-        mocked_builder_pdf.assert_called_once_with(
-            self.resume.builder_data,
-            filename_hint="Base Resume",
-            preserve_highlights=True,
-        )
+        self.assertIn("Please save or export ATS PDF from the builder", str(payload.get("error") or ""))
+        self.assertIn('base resume "Base Resume"', str(payload.get("error") or ""))
+        mocked_builder_pdf.assert_not_called()
 
     def test_profile_resume_link_uses_profile_value_without_hardcoded_fallback(self):
         self.assertEqual(self.command._profile_resume_link(self.profile), "https://example.com/resume.pdf")
@@ -314,13 +312,33 @@ class SendTrackingMailsThreadingTests(TestCase):
             "summary": "<p>Backend engineer</p>",
         }
         self.resume.ats_pdf_path = saved_path
-        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "updated_at"])
+        self.resume.ats_pdf_builder_hash = builder_data_hash(sanitize_builder_data(self.resume.builder_data))
+        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
 
         payload = self.command._resolve_attachment_payload(self.tracking)
 
         mocked_builder_pdf.assert_not_called()
         self.assertEqual(payload.get("path"), saved_path)
         self.assertIsNone(payload.get("bytes"))
+
+    def test_attachment_rejects_stale_saved_pdf_when_builder_changed(self):
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+            tmp_pdf.write(b"%PDF-1.4 saved")
+            saved_path = tmp_pdf.name
+        self.addCleanup(lambda: os.unlink(saved_path) if os.path.exists(saved_path) else None)
+
+        self.resume.builder_data = {
+            "resumeTitle": "Base Resume",
+            "fullName": "Subrat Singh",
+            "summary": "<p>Updated builder</p>",
+        }
+        self.resume.ats_pdf_path = saved_path
+        self.resume.ats_pdf_builder_hash = "old-hash"
+        self.resume.save(update_fields=["builder_data", "ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
+
+        payload = self.command._resolve_attachment_payload(self.tracking)
+
+        self.assertIn("outdated or missing", str(payload.get("error") or ""))
 
     def test_body_html_preserves_existing_html_document(self):
         html_body = '<!DOCTYPE html><html><body><article class="resume-sheet"><h1>Subrat Singh</h1></article></body></html>'
@@ -701,8 +719,12 @@ class ExportAtsPdfLocalViewTests(TestCase):
         saved_path = response.data["saved_path"]
         self.addCleanup(lambda: os.unlink(saved_path) if os.path.exists(saved_path) else None)
         self.assertTrue(os.path.exists(saved_path))
+        self.assertTrue(saved_path.endswith(f"resume_{self.resume.id}.pdf"))
         with open(saved_path, "rb") as handle:
             self.assertEqual(handle.read(), b"%PDF-1.7 export")
+        self.resume.refresh_from_db()
+        self.assertEqual(self.resume.ats_pdf_path, saved_path)
+        self.assertEqual(self.resume.ats_pdf_builder_hash, builder_data_hash(called_builder_data))
 
 
 class TrackingFreshRuleApiTests(TestCase):
@@ -1941,7 +1963,8 @@ class ResumeSaveStorageTests(TestCase):
         shutil.rmtree(self._temp_media_dir, ignore_errors=True)
         super().tearDown()
 
-    def test_create_resume_keeps_only_db_data_without_file(self):
+    @patch("analyzer.views.build_builder_pdf_bytes", return_value=b"%PDF-1.7 autosave")
+    def test_create_resume_keeps_only_db_data_without_file(self, mocked_builder_pdf):
         request = self.factory.post(
             "/api/resumes/",
             {
@@ -1959,8 +1982,14 @@ class ResumeSaveStorageTests(TestCase):
         self.assertEqual(response.status_code, 201)
         resume = Resume.objects.get(id=response.data["id"])
         self.assertFalse(bool(resume.file))
+        self.assertTrue(resume.ats_pdf_path.endswith(f"resume_{resume.id}.pdf"))
+        self.assertEqual(resume.ats_pdf_builder_hash, builder_data_hash(sanitize_builder_data(resume.builder_data)))
+        self.addCleanup(lambda: os.unlink(resume.ats_pdf_path) if str(resume.ats_pdf_path or "").strip() and os.path.exists(resume.ats_pdf_path) else None)
+        self.assertTrue(os.path.exists(resume.ats_pdf_path))
+        mocked_builder_pdf.assert_called_once()
 
-    def test_update_resume_clears_existing_file_attachment(self):
+    @patch("analyzer.views.build_builder_pdf_bytes", return_value=b"%PDF-1.7 autosave")
+    def test_update_resume_clears_existing_file_attachment(self, mocked_builder_pdf):
         resume = Resume.objects.create(
             profile=self.profile,
             title="Old Resume",
@@ -1988,6 +2017,41 @@ class ResumeSaveStorageTests(TestCase):
         resume.refresh_from_db()
         self.assertFalse(bool(resume.file))
         self.assertFalse(resume.file.storage.exists(old_file_name))
+        self.assertTrue(resume.ats_pdf_path.endswith(f"resume_{resume.id}.pdf"))
+        self.assertEqual(resume.ats_pdf_builder_hash, builder_data_hash(sanitize_builder_data(resume.builder_data)))
+        self.addCleanup(lambda: os.unlink(resume.ats_pdf_path) if str(resume.ats_pdf_path or "").strip() and os.path.exists(resume.ats_pdf_path) else None)
+        self.assertTrue(os.path.exists(resume.ats_pdf_path))
+        mocked_builder_pdf.assert_called_once()
+
+    @patch("analyzer.views.build_builder_pdf_bytes", return_value=b"%PDF-1.7 autosave")
+    def test_create_tailored_resume_refreshes_ats_pdf(self, mocked_builder_pdf):
+        source_resume = Resume.objects.create(
+            profile=self.profile,
+            title="Source Resume",
+            builder_data={"fullName": "Source User"},
+        )
+
+        request = self.factory.post(
+            "/api/tailored-resumes/",
+            {
+                "name": "Tailored Resume",
+                "resume": source_resume.id,
+                "builder_data": {"fullName": "Tailored User"},
+            },
+            format="json",
+        )
+        force_authenticate(request, user=self.user)
+
+        response = TailoredResumeListCreateView.as_view()(request)
+
+        self.assertEqual(response.status_code, 201)
+        tailored = Resume.objects.get(id=response.data["id"])
+        self.assertTrue(tailored.is_tailored)
+        self.assertTrue(tailored.ats_pdf_path.endswith(f"resume_{tailored.id}.pdf"))
+        self.assertEqual(tailored.ats_pdf_builder_hash, builder_data_hash(sanitize_builder_data(tailored.builder_data)))
+        self.addCleanup(lambda: os.unlink(tailored.ats_pdf_path) if str(tailored.ats_pdf_path or "").strip() and os.path.exists(tailored.ats_pdf_path) else None)
+        self.assertTrue(os.path.exists(tailored.ats_pdf_path))
+        mocked_builder_pdf.assert_called_once()
 
     def test_delete_resume_removes_existing_file_attachment(self):
         resume = Resume.objects.create(

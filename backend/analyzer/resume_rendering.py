@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import shutil
 import subprocess
@@ -9,6 +10,60 @@ try:
     from pypdf import PdfReader
 except Exception:  # noqa: BLE001
     PdfReader = None
+
+
+def builder_data_hash(builder_data) -> str:
+    if not isinstance(builder_data, dict):
+        builder_data = {}
+    payload = json.dumps(builder_data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def sanitize_pdf_filename_stem(raw: str) -> str:
+    value = str(raw or "").strip()
+    value = " ".join(value.split())
+    value = "".join(ch for ch in value if ch.isalnum() or ch in {" ", "_", "-"})
+    value = value.strip("._- ")
+    value = value.replace("-", " ")
+    value = "_".join(part for part in value.split(" ") if part).strip("._-").lower()
+    return value or "resume"
+
+
+def default_pdf_filename(builder_data: dict, resume=None) -> str:
+    data = builder_data if isinstance(builder_data, dict) else {}
+    full_name = str(data.get("fullName") or "").strip()
+    parts = []
+    if full_name:
+        parts.append(full_name)
+    elif str(getattr(resume, "title", "") or "").strip():
+        parts.append(str(getattr(resume, "title", "") or "").strip())
+
+    resume_job = getattr(resume, "job", None) if resume else None
+    company_name = ""
+    job_code = ""
+    if resume_job:
+        job_code = str(getattr(resume_job, "job_id", "") or "").strip()
+        company = getattr(resume_job, "company", None)
+        company_name = str(getattr(company, "name", "") or "").strip()
+
+    if company_name:
+        parts.append(company_name)
+    if job_code:
+        parts.append(job_code)
+    if not company_name:
+        parts.append("3 YOE")
+
+    stem = sanitize_pdf_filename_stem(" - ".join([part for part in parts if part]) or "Resume")
+    return f"{stem}.pdf"
+
+
+def pick_local_pdf_path(file_name: str, resume_id: int | None = None) -> Path:
+    target_dir = Path(__file__).resolve().parents[1] / "storage" / "ats_pdfs"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if resume_id:
+        return target_dir / f"resume_{int(resume_id)}.pdf"
+    stem = sanitize_pdf_filename_stem(Path(str(file_name or "")).stem)
+    return target_dir / f"{stem}.pdf"
 
 
 def available_browser_binaries():

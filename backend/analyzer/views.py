@@ -63,7 +63,13 @@ from .tailor import (
 from .tracking_mail_utils import build_mail_tracking_status_map
 from .management.commands.send_tracking_mails import Command as SendTrackingMailsCommand
 from .profile_settings import resolve_openai_settings
-from .resume_rendering import build_builder_pdf_bytes, render_pdf_from_html as shared_render_pdf_from_html
+from .resume_rendering import (
+    build_builder_pdf_bytes,
+    builder_data_hash,
+    default_pdf_filename,
+    pick_local_pdf_path,
+    render_pdf_from_html as shared_render_pdf_from_html,
+)
 from .template_access import (
     owned_template_queryset_for_user,
     owned_subject_template_queryset_for_user,
@@ -926,55 +932,45 @@ def _restrict_to_reference_sections(reference_builder: dict, result_builder: dic
     return sanitize_builder_data(result)
 
 
-def _sanitize_filename_stem(raw: str) -> str:
-    value = re.sub(r"\s+", " ", str(raw or "").strip())
-    value = re.sub(r"[^\w\s-]", "", value)
-    value = value.strip("._- ")
-    value = value.replace("-", " ")
-    value = re.sub(r"\s+", "_", value).strip("._-").lower()
-    return value or "resume"
-
-
-def _default_pdf_filename(builder_data: dict, resume=None) -> str:
-    data = builder_data if isinstance(builder_data, dict) else {}
-    full_name = str(data.get("fullName") or "").strip()
-    parts = []
-    if full_name:
-        parts.append(full_name)
-    elif str(getattr(resume, "title", "") or "").strip():
-        parts.append(str(getattr(resume, "title", "") or "").strip())
-
-    resume_job = getattr(resume, "job", None) if resume else None
-    company_name = ""
-    job_code = ""
-    if resume_job:
-        job_code = str(getattr(resume_job, "job_id", "") or "").strip()
-        company = getattr(resume_job, "company", None)
-        company_name = str(getattr(company, "name", "") or "").strip()
-
-    if company_name:
-        parts.append(company_name)
-    if job_code:
-        parts.append(job_code)
-    if not company_name:
-        parts.append("3 YOE")
-
-    stem = _sanitize_filename_stem(" - ".join([part for part in parts if part]) or "Resume")
-    return f"{stem}.pdf"
-
-
-def _pick_local_pdf_path(file_name: str, resume_id: int | None = None) -> Path:
-    target_dir = Path(__file__).resolve().parents[1] / "storage" / "ats_pdfs"
-    target_dir.mkdir(parents=True, exist_ok=True)
-    stem = _sanitize_filename_stem(Path(str(file_name or "")).stem)
-    if not stem:
-        stem = "Resume"
-    # Always overwrite existing file as requested.
-    return target_dir / f"{stem}.pdf"
-
-
 def _render_pdf_from_html(html_text: str, output_pdf: Path):
     return shared_render_pdf_from_html(html_text, output_pdf)
+
+
+def _refresh_resume_ats_pdf(resume, builder_data=None, html_text=""):
+    if not resume:
+        return False, ""
+    payload = sanitize_builder_data(builder_data if isinstance(builder_data, dict) else getattr(resume, "builder_data", {}) or {})
+    if not payload:
+        resume.ats_pdf_path = ""
+        resume.ats_pdf_builder_hash = ""
+        resume.save(update_fields=["ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
+        return False, ""
+
+    file_name = default_pdf_filename(payload, resume=resume)
+    output_path = pick_local_pdf_path(file_name, resume.id if resume else None)
+    html_value = str(html_text or "").strip()
+    if len(html_value) >= 40:
+        ok, _note = _render_pdf_from_html(html_value, output_path)
+        if not ok:
+            pdf_bytes = build_builder_pdf_bytes(payload, preserve_highlights=True)
+            if not pdf_bytes:
+                resume.ats_pdf_path = ""
+                resume.ats_pdf_builder_hash = ""
+                resume.save(update_fields=["ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
+                return False, "Resume saved, but ATS PDF could not be regenerated."
+            output_path.write_bytes(pdf_bytes)
+    else:
+        pdf_bytes = build_builder_pdf_bytes(payload, preserve_highlights=True)
+        if not pdf_bytes:
+            resume.ats_pdf_path = ""
+            resume.ats_pdf_builder_hash = ""
+            resume.save(update_fields=["ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
+            return False, "Resume saved, but ATS PDF could not be regenerated."
+        output_path.write_bytes(pdf_bytes)
+    resume.ats_pdf_path = str(output_path)
+    resume.ats_pdf_builder_hash = builder_data_hash(payload)
+    resume.save(update_fields=["ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
+    return True, ""
 
 
 def _resolve_openai_model(user=None) -> str:
@@ -2096,6 +2092,7 @@ class ResumeListCreateView(APIView):
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data or {})
         if hasattr(data, 'pop'):
             data.pop('job', None)
+            data.pop('ats_html', None)
         return data
 
     def _apply_default_resume(self, profile, resume):
@@ -2134,6 +2131,7 @@ class ResumeListCreateView(APIView):
                 return Response({'title': ['This field may not be blank.']}, status=status.HTTP_400_BAD_REQUEST)
 
             incoming_builder = serializer.validated_data.get("builder_data") or {}
+            incoming_ats_html = str(request.data.get("ats_html") or "").strip()
             incoming_text = (serializer.validated_data.get("original_text") or "").strip()
             if not incoming_text and incoming_builder:
                 incoming_text = _builder_data_to_text(incoming_builder)
@@ -2148,14 +2146,18 @@ class ResumeListCreateView(APIView):
                 job=selected_job,
                 source_resume=None,
                 ats_pdf_path='',
+                ats_pdf_builder_hash='',
                 file=None,
                 original_text=incoming_text or serializer.validated_data.get("original_text") or "",
             )
             _remove_resume_file(created)
             created.save(update_fields=['file'])
             self._apply_default_resume(profile, created)
-
-            return Response(ResumeSerializer(created).data, status=status.HTTP_201_CREATED)
+            _, ats_pdf_warning = _refresh_resume_ats_pdf(created, incoming_builder, incoming_ats_html)
+            response_data = ResumeSerializer(created).data
+            if ats_pdf_warning:
+                response_data["ats_pdf_warning"] = ats_pdf_warning
+            return Response(response_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -2166,6 +2168,7 @@ class ResumeDetailView(APIView):
         data = request.data.copy() if hasattr(request.data, 'copy') else dict(request.data or {})
         if hasattr(data, 'pop'):
             data.pop('job', None)
+            data.pop('ats_html', None)
         return data
 
     def _apply_default_resume(self, profile, resume):
@@ -2212,6 +2215,7 @@ class ResumeDetailView(APIView):
             title_changed = 'title' in serializer.validated_data
             save_kwargs = {
                 'ats_pdf_path': '' if (builder_changed or title_changed) else resume.ats_pdf_path,
+                'ats_pdf_builder_hash': '' if (builder_changed or title_changed) else resume.ats_pdf_builder_hash,
                 'file': None,
             }
             if 'job' in request.data or 'job' in serializer.validated_data:
@@ -2224,7 +2228,13 @@ class ResumeDetailView(APIView):
             _remove_resume_file(updated)
             updated.save(update_fields=['file'])
             self._apply_default_resume(_workspace_profile_for_user(request.user), updated)
-            return Response(serializer.data)
+            current_builder = updated.builder_data if isinstance(getattr(updated, "builder_data", None), dict) else {}
+            current_ats_html = str(request.data.get("ats_html") or "").strip()
+            _, ats_pdf_warning = _refresh_resume_ats_pdf(updated, current_builder, current_ats_html)
+            response_data = ResumeSerializer(updated).data
+            if ats_pdf_warning:
+                response_data["ats_pdf_warning"] = ats_pdf_warning
+            return Response(response_data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, resume_id):
@@ -2265,6 +2275,7 @@ class TailoredResumeListCreateView(APIView):
             return denied
         payload = dict(request.data or {})
         name = str(payload.get('name') or '').strip() or 'Tailored Resume'
+        ats_html = str(payload.get('ats_html') or '').strip()
         builder_data = payload.get('builder_data') or {}
         if isinstance(builder_data, str):
             try:
@@ -2300,8 +2311,14 @@ class TailoredResumeListCreateView(APIView):
             source_resume=resume,
             status='optimized',
             file=None,
+            ats_pdf_path='',
+            ats_pdf_builder_hash='',
         )
-        return Response(TailoredResumeSerializer(created).data, status=status.HTTP_201_CREATED)
+        _, ats_pdf_warning = _refresh_resume_ats_pdf(created, created.builder_data, ats_html)
+        response_data = TailoredResumeSerializer(created).data
+        if ats_pdf_warning:
+            response_data["ats_pdf_warning"] = ats_pdf_warning
+        return Response(response_data, status=status.HTTP_201_CREATED)
 
 
 class TailorResumeView(APIView):
@@ -2567,13 +2584,19 @@ class TailorResumeView(APIView):
             source_resume=reference_resume or best.resume or latest_resume,
             status='optimized',
             file=None,
+            ats_pdf_path='',
+            ats_pdf_builder_hash='',
         )
+        _, ats_pdf_warning = _refresh_resume_ats_pdf(created, tailored_builder)
         self._enforce_resume_limit(_workspace_profile_for_user(request.user))
 
+        response_data = ResumeSerializer(created).data
+        if ats_pdf_warning:
+            response_data["ats_pdf_warning"] = ats_pdf_warning
         return Response(
             {
                 'mode': 'created_new',
-                'resume': ResumeSerializer(created).data,
+                'resume': response_data,
                 'keywords': keywords,
                 'matched_keywords': best.matched_keywords,
                 'match_score': round(best.score, 4),
@@ -2694,8 +2717,8 @@ class ExportAtsPdfLocalView(APIView):
             except Resume.DoesNotExist:
                 return Response({"detail": "Resume not found for PDF export."}, status=status.HTTP_404_NOT_FOUND)
 
-        file_name = _default_pdf_filename(builder_data, resume=resume)
-        output_path = _pick_local_pdf_path(file_name, resume.id if resume else None)
+        file_name = default_pdf_filename(builder_data, resume=resume)
+        output_path = pick_local_pdf_path(file_name, resume.id if resume else None)
         if len(html_text) >= 40:
             ok, note = _render_pdf_from_html(html_text, output_path)
             if not ok:
@@ -2716,7 +2739,8 @@ class ExportAtsPdfLocalView(APIView):
 
         if resume:
             resume.ats_pdf_path = str(output_path)
-            resume.save(update_fields=["ats_pdf_path", "updated_at"])
+            resume.ats_pdf_builder_hash = builder_data_hash(builder_data)
+            resume.save(update_fields=["ats_pdf_path", "ats_pdf_builder_hash", "updated_at"])
 
         return Response(
             {
