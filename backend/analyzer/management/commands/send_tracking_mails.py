@@ -1562,7 +1562,7 @@ class Command(BaseCommand):
             lines.append(f"LinkedIn: {str(linkedin).strip()}")
         return lines
 
-    def _build_ordered_hardcoded_mail(self, *, row=None, emp_name, intro_paragraphs=None, achievement_paragraphs=None, ask_line="", attachment_line="", sender_name="", email="", contact="", linkedin=""):
+    def _build_ordered_hardcoded_mail(self, *, row=None, profile=None, emp_name, intro_paragraphs=None, achievement_paragraphs=None, ask_line="", attachment_line="", sender_name="", email="", contact="", linkedin=""):
         body_sections = [f"Hi {emp_name},"]
 
         for paragraph in intro_paragraphs or []:
@@ -1583,7 +1583,7 @@ class Command(BaseCommand):
         if attachment_text:
             body_sections.append(attachment_text)
 
-        signature_text = self._build_signature(row, None)
+        signature_text = self._build_signature(row, profile)
         if signature_text:
             body_sections.append(signature_text)
 
@@ -1645,6 +1645,7 @@ class Command(BaseCommand):
             subject = saved_subject
         body = self._build_ordered_hardcoded_mail(
             row=row,
+            profile=profile,
             emp_name=emp_name,
             intro_paragraphs=[personalized_intro] if personalized_intro else [],
             achievement_paragraphs=ordered_template_paragraphs,
